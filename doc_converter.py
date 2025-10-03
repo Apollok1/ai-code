@@ -24,7 +24,7 @@ st.set_page_config(page_title="📄 Document Converter", layout="wide", page_ico
 
 # === CONFIG ===
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:11434")
-ANYTHINGLLM_URL = os.getenv("ANYTHINGLLM_URL", "")
+ANYTHINGLLM_URL = os.getenv("ANYTHINGLLM_URL", "http://anythingllm:3001")
 ANYTHINGLLM_API_KEY = os.getenv("ANYTHINGLLM_API_KEY", "")
 WHISPER_URL = os.getenv("WHISPER_URL", "http://whisper:9000")
 
