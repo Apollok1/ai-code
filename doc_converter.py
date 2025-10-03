@@ -74,21 +74,27 @@ def ocr_image_bytes(img_bytes: bytes, lang: str = 'pol+eng') -> str:
     except Exception as e:
         logger.warning(f"OCR error: {e}")
         return ""
-
 def extract_audio_whisper(file) -> tuple[str, int]:
     """Audio → tekst przez Whisper ASR."""
     try:
         file.seek(0)
-        files = {'audio_file': (file.name, file.read(), file.type)}
+        files = {'audio_file': file}
+
         r = requests.post(
-            f"{WHISPER_URL}/asr",
+            f"{WHISPER_URL}/asr?task=transcribe&language=pl&output=json",
             files=files,
-            params={"task": "transcribe", "language": "pl"},
             timeout=120
         )
         r.raise_for_status()
+
+        # Debug
+        logger.info(f"Whisper response: {r.text[:200]}")
+
         result = r.json()
         return result.get("text", ""), 1
+    except requests.exceptions.JSONDecodeError as e:
+        logger.error(f"Whisper JSON error: {e}, response: {r.text[:500]}")
+        return f"[BŁĄD: Whisper zwrócił nieprawidłowy format]", 0
     except Exception as e:
         logger.error(f"Whisper error: {e}")
         return f"[BŁĄD AUDIO: {e}]", 0
