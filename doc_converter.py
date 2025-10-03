@@ -5,6 +5,7 @@ import re
 import requests
 import logging
 import os
+import json
 from datetime import datetime
 from PIL import Image
 import numpy as np
@@ -28,13 +29,74 @@ ANYTHINGLLM_URL = os.getenv("ANYTHINGLLM_URL", "http://anythingllm:3001")
 ANYTHINGLLM_API_KEY = os.getenv("ANYTHINGLLM_API_KEY", "")
 WHISPER_URL = os.getenv("WHISPER_URL", "http://whisper:9000")
 
+# === STAŁE ===
+MIN_TEXT_FOR_OCR_SKIP = 100
+VISION_TRANSCRIBE_PROMPT = (
+    "Przepisz DOKŁADNIE cały tekst z obrazu. Zachowaj pisownię, układ, symbole. "
+    "Nie tłumacz, nie interpretuj - tylko przepisz. Jeśli coś nieczytelne - wpisz [NIECZYTELNE]."
+)
+VISION_DESCRIBE_PROMPT = (
+    "Opisz ten obraz: co na nim widać? Wymień kluczowe elementy, teksty, wykresy lub diagramy, "
+    "ogólny kontekst i ewentualny przekaz."
+)
+
+IMAGE_MODE_MAP = {
+    "OCR": "ocr",
+    "Vision: przepisz tekst": "vision_transcribe",
+    "Vision: opisz obraz": "vision_describe",
+    "OCR + Vision opis": "ocr_plus_vision_desc",
+}
+
 # === HELPERY ===
+
+def safe_filename(name: str) -> str:
+    """Sanityzacja nazwy pliku."""
+    base = os.path.basename(name)
+    base = re.sub(r'[^A-Za-z0-9._-]+', '_', base)
+    return base or "plik"
+
+def create_run_dir(base_dir: str) -> str:
+    """Katalog dla tego uruchomienia."""
+    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+    run_dir = os.path.join(base_dir, f"run_{ts}")
+    os.makedirs(run_dir, exist_ok=True)
+    return run_dir
+
+def save_text(path: str, text: str):
+    """Zapis teksty do pliku."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text or "")
+
+def format_timestamp(seconds: float) -> str:
+    """SRT format: 00:00:00,000"""
+    ms = int(round((seconds - int(seconds)) * 1000))
+    s = int(seconds)
+    h = s // 3600
+    s = s % 3600
+    m = s // 60
+    s = s % 60
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+def segments_to_srt(segments: list) -> str:
+    """Whisper segments → SRT."""
+    lines = []
+    for i, seg in enumerate(segments, 1):
+        start = format_timestamp(seg.get("start", 0.0))
+        end = format_timestamp(seg.get("end", 0.0))
+        text = (seg.get("text") or "").strip()
+        lines.append(f"{i}\n{start} --> {end}\n{text}\n")
+    return "\n".join(lines)
+
+def calculate_timeout(file_size_bytes: int, base: int = 120) -> int:
+    """Dynamiczny timeout bazując na rozmiarze pliku."""
+    size_mb = file_size_bytes / 1024 / 1024
+    return max(base, int(size_mb * 10))  # ~10s/MB
 
 def list_ollama_models():
     """Lista modeli z Ollama."""
-    ollama_url = os.getenv("OLLAMA_URL", "http://ollama:11434")
     try:
-        r = requests.get(f"{ollama_url}/api/tags", timeout=5)
+        r = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5)
         if r.ok:
             return [m.get("name", "") for m in r.json().get("models", [])]
     except Exception as e:
@@ -61,7 +123,7 @@ def query_ollama_vision(prompt: str, image_b64: str, model: str):
         return r.json().get("response", "")
     except Exception as e:
         logger.error(f"Vision model error: {e}")
-        return f"[BŁĄD: {e}]"
+        return f"[BŁĄD VISION: {e}]"
 
 def ocr_image_bytes(img_bytes: bytes, lang: str = 'pol+eng') -> str:
     """OCR Tesseract z preprocessingiem."""
@@ -74,36 +136,65 @@ def ocr_image_bytes(img_bytes: bytes, lang: str = 'pol+eng') -> str:
     except Exception as e:
         logger.warning(f"OCR error: {e}")
         return ""
-def extract_audio_whisper(file) -> tuple[str, int]:
-    """Audio → tekst przez Whisper ASR."""
+
+def extract_audio_whisper(file):
+    """Audio → tekst przez Whisper ASR. Zwraca (text, pages, meta)."""
     try:
         file.seek(0)
+        timeout = calculate_timeout(file.size)
         files = {'audio_file': file}
 
         r = requests.post(
-            f"{WHISPER_URL}/asr?task=transcribe&language=pl&output=json",
+            f"{WHISPER_URL}/asr?task=transcribe&language=pl&word_timestamps=true&output=json",
             files=files,
-            timeout=120
+            timeout=timeout
         )
         r.raise_for_status()
 
-        # Debug
-        logger.info(f"Whisper response: {r.text[:200]}")
+        # Walidacja JSON
+        try:
+            result = r.json()
+        except json.JSONDecodeError as je:
+            logger.error(f"Whisper JSON decode error: {je}, response: {r.text[:500]}")
+            return f"[BŁĄD: Whisper zwrócił nieprawidłowy format]", 0, {"type": "audio", "error": "invalid_json"}
 
-        result = r.json()
-        return result.get("text", ""), 1
-    except requests.exceptions.JSONDecodeError as e:
-        logger.error(f"Whisper JSON error: {e}, response: {r.text[:500]}")
-        return f"[BŁĄD: Whisper zwrócił nieprawidłowy format]", 0
+        text = result.get("text", "") or ""
+        segments = result.get("segments", [])
+        
+        # Metadata - tylko istotne dane, nie cały JSON
+        meta = {
+            "type": "audio",
+            "segments_count": len(segments),
+            "duration": result.get("duration"),
+            "language": result.get("language"),
+            "segments": segments  # Potrzebne dla SRT
+        }
+        
+        # Format z timestampami
+        if segments:
+            lines = ["=== TRANSKRYPCJA Z TIMESTAMPAMI ===\n"]
+            for seg in segments:
+                start = seg.get("start", 0)
+                end = seg.get("end", 0)
+                txt = seg.get("text", "").strip()
+                lines.append(f"[{start:.1f}s - {end:.1f}s] {txt}")
+            text = "\n".join(lines)
+        
+        return text, 1, meta
+        
+    except requests.exceptions.Timeout:
+        logger.error(f"Whisper timeout after {timeout}s")
+        return f"[BŁĄD: Timeout - plik zbyt długi]", 0, {"type": "audio", "error": "timeout"}
     except Exception as e:
         logger.error(f"Whisper error: {e}")
-        return f"[BŁĄD AUDIO: {e}]", 0
+        return f"[BŁĄD AUDIO: {e}]", 0, {"type": "audio", "error": str(e)}
 
 def extract_pdf(file, use_vision: bool, vision_model: str, ocr_pages_limit: int = 20):
     """PDF: tekst + opcjonalnie OCR/Vision."""
     texts = []
     try:
         with pdfplumber.open(file) as pdf:
+            total_pages = len(pdf.pages)
             for i, page in enumerate(pdf.pages):
                 if i >= ocr_pages_limit:
                     texts.append(f"\n[... limit {ocr_pages_limit} stron ...]")
@@ -113,33 +204,34 @@ def extract_pdf(file, use_vision: bool, vision_model: str, ocr_pages_limit: int 
 
         full_text = "\n".join(texts)
 
-        if len(full_text.strip()) < 100:
+        if len(full_text.strip()) < MIN_TEXT_FOR_OCR_SKIP:
             file.seek(0)
             images = convert_from_bytes(file.read(), fmt="jpeg", dpi=150, first_page=1, last_page=min(ocr_pages_limit, 10))
 
             if use_vision and vision_model:
                 st.info(f"🖼️ Używam {vision_model} do analizy obrazów...")
                 for idx, img in enumerate(images[:5], 1):
+                    st.caption(f"Przetwarzam stronę {idx}/{len(images[:5])}")
                     buf = io.BytesIO()
                     img.save(buf, format="JPEG", quality=85)
                     img_b64 = base64.b64encode(buf.getvalue()).decode()
 
-                    prompt = """Przepisz DOKŁADNIE cały tekst z obrazu. Zachowaj pisównię, układ, symbole. Nie tłumacz, nie interpretuj - tylko przepisz. Jeśli nieczytelne - wpisz [NIECZYTELNE]."""
-
-                    response = query_ollama_vision(prompt, img_b64, vision_model)
+                    response = query_ollama_vision(VISION_TRANSCRIBE_PROMPT, img_b64, vision_model)
                     texts.append(f"\n--- Strona {idx} (Vision) ---\n{response}")
             else:
                 st.info("📝 OCR Tesseract...")
                 for idx, img in enumerate(images[:ocr_pages_limit], 1):
+                    st.caption(f"OCR strona {idx}/{len(images)}")
                     buf = io.BytesIO()
                     img.save(buf, format="JPEG")
                     ocr_text = ocr_image_bytes(buf.getvalue())
                     texts.append(f"\n--- Strona {idx} (OCR) ---\n{ocr_text}")
 
-        return "\n".join(texts), len(texts)
+        meta = {"type": "pdf", "pages": total_pages}
+        return "\n".join(texts), len(texts), meta
     except Exception as e:
         logger.error(f"PDF extract error: {e}")
-        return f"[BŁĄD PDF: {e}]", 0
+        return f"[BŁĄD PDF: {e}]", 0, {"type": "pdf", "error": str(e)}
 
 def extract_pptx(file, use_vision: bool, vision_model: str):
     """PPTX: tekst + obrazy (opcjonalnie Vision)."""
@@ -165,18 +257,17 @@ def extract_pptx(file, use_vision: bool, vision_model: str):
                         try:
                             img_stream = shape.image.blob
                             img_b64 = base64.b64encode(img_stream).decode()
-                            prompt = "Opisz ten obraz ze slajdu: co widzisz? Jaki tekst, wykresy, diagramy?"
-                            response = query_ollama_vision(prompt, img_b64, vision_model)
+                            response = query_ollama_vision(VISION_DESCRIBE_PROMPT, img_b64, vision_model)
                             parts.append(f"[Obraz] {response}")
                         except:
                             pass
 
             slides_text.append("\n".join(parts))
 
-        return "\n\n".join(slides_text), len(prs.slides)
+        return "\n\n".join(slides_text), len(prs.slides), {"type": "pptx", "slides": len(prs.slides)}
     except Exception as e:
         logger.error(f"PPTX error: {e}")
-        return f"[BŁĄD PPTX: {e}]", 0
+        return f"[BŁĄD PPTX: {e}]", 0, {"type": "pptx", "error": str(e)}
 
 def extract_docx(file):
     """DOCX: tekst + tabele."""
@@ -188,30 +279,41 @@ def extract_docx(file):
             for row in tbl.rows:
                 paras.append(" | ".join(cell.text for cell in row.cells))
 
-        return "\n".join(paras), len(paras)
+        return "\n".join(paras), len(paras), {"type": "docx"}
     except Exception as e:
         logger.error(f"DOCX error: {e}")
-        return f"[BŁĄD DOCX: {e}]", 0
+        return f"[BŁĄD DOCX: {e}]", 0, {"type": "docx", "error": str(e)}
 
-def extract_image(file, use_vision: bool, vision_model: str):
-    """Obraz: Vision lub OCR."""
+def extract_image(file, use_vision: bool, vision_model: str, image_mode: str):
+    """Obraz: OCR / Vision (przepisz) / Vision (opisz) / OCR+opis."""
     try:
         file.seek(0)
         img_bytes = file.read()
+        results = []
+        meta = {"type": "image", "mode": image_mode}
 
-        if use_vision and vision_model:
-            img_b64 = base64.b64encode(img_bytes).decode()
-            prompt = """Przepisz DOKŁADNIE cały tekst z obrazu. Zachowaj pisównię, układ, symbole. Nie tłumacz, nie interpretuj - tylko przepisz. Jeśli nieczytelne - wpisz [NIECZYTELNE]."""
-            text = query_ollama_vision(prompt, img_b64, vision_model)
-        else:
-            text = ocr_image_bytes(img_bytes)
+        if image_mode in ("ocr", "ocr_plus_vision_desc"):
+            ocr_text = ocr_image_bytes(img_bytes)
+            results.append(f"=== OCR ===\n{ocr_text}")
 
-        return text, 1
+        if image_mode in ("vision_transcribe", "vision_describe", "ocr_plus_vision_desc"):
+            if use_vision and vision_model:
+                img_b64 = base64.b64encode(img_bytes).decode()
+                prompt = VISION_TRANSCRIBE_PROMPT if image_mode == "vision_transcribe" else VISION_DESCRIBE_PROMPT
+                vis = query_ollama_vision(prompt, img_b64, vision_model)
+                tag = "Vision (transkrypcja)" if image_mode == "vision_transcribe" else "Vision (opis)"
+                results.append(f"=== {tag} ===\n{vis}")
+                meta["vision_model"] = vision_model
+            else:
+                results.append("[Vision niedostępne]")
+
+        text = "\n\n".join(results).strip()
+        return text, 1, meta
     except Exception as e:
         logger.error(f"Image error: {e}")
-        return f"[BŁĄD IMG: {e}]", 0
+        return f"[BŁĄD IMG: {e}]", 0, {"type": "image", "error": str(e)}
 
-def process_file(file, use_vision: bool, vision_model: str, ocr_limit: int):
+def process_file(file, use_vision: bool, vision_model: str, ocr_limit: int, image_mode: str):
     """Router do odpowiedniego ekstraktora."""
     name = file.name.lower()
 
@@ -222,14 +324,15 @@ def process_file(file, use_vision: bool, vision_model: str, ocr_limit: int):
     elif name.endswith('.docx'):
         return extract_docx(file)
     elif name.endswith(('.jpg', '.jpeg', '.png')):
-        return extract_image(file, use_vision, vision_model)
+        return extract_image(file, use_vision, vision_model, image_mode)
     elif name.endswith(('.mp3', '.wav', '.m4a', '.ogg', '.flac')):
         return extract_audio_whisper(file)
     elif name.endswith('.txt'):
         file.seek(0)
-        return file.read().decode('utf-8', errors='ignore'), 1
+        content = file.read().decode('utf-8', errors='ignore')
+        return content, 1, {"type": "txt"}
     else:
-        return "[Nieobsługiwany format]", 0
+        return "[Nieobsługiwany format]", 0, {"type": "unknown"}
 
 def send_to_anythingllm(text: str, filename: str):
     """Wyślij dokument do AnythingLLM."""
@@ -271,6 +374,27 @@ with st.sidebar:
     st.subheader("OCR")
     ocr_pages_limit = st.slider("Limit stron OCR", 5, 50, 20)
 
+    st.subheader("Obrazy (IMG)")
+    if use_vision and selected_vision:
+        image_mode_label = st.selectbox(
+            "Tryb dla obrazów",
+            options=list(IMAGE_MODE_MAP.keys()),
+            index=3
+        )
+    else:
+        image_mode_label = st.selectbox(
+            "Tryb dla obrazów",
+            options=["OCR"],
+            index=0,
+            disabled=True
+        )
+    image_mode = IMAGE_MODE_MAP.get(image_mode_label, "ocr")
+
+    st.subheader("Zapis lokalny")
+    enable_local_save = st.checkbox("Zapisz wyniki lokalnie", value=False)
+    base_output_dir = st.text_input("Katalog wyjściowy", value="outputs")
+    per_file_save = st.checkbox("Zapisz też każdy plik osobno", value=True)
+
     st.subheader("AnythingLLM")
     has_anythingllm = bool(ANYTHINGLLM_URL and ANYTHINGLLM_API_KEY)
     st.caption(f"Status: {'✅ Skonfigurowane' if has_anythingllm else '❌ Brak config'}")
@@ -288,6 +412,11 @@ if uploaded_files:
         all_texts = []
         stats = {'processed': 0, 'errors': 0, 'pages': 0}
 
+        run_dir = None
+        if enable_local_save:
+            run_dir = create_run_dir(base_output_dir)
+            st.info(f"💾 Wyniki będą zapisane w: {run_dir}")
+
         progress = st.progress(0)
         for idx, file in enumerate(uploaded_files):
             progress.progress((idx + 1) / len(uploaded_files), text=f"Przetwarzam: {file.name}")
@@ -295,7 +424,7 @@ if uploaded_files:
             st.subheader(f"📄 {file.name}")
 
             try:
-                text, pages = process_file(file, use_vision, selected_vision, ocr_pages_limit)
+                text, pages, meta = process_file(file, use_vision, selected_vision, ocr_pages_limit, image_mode)
 
                 all_texts.append(f"\n{'='*80}\n")
                 all_texts.append(f"PLIK: {file.name}\n")
@@ -310,8 +439,22 @@ if uploaded_files:
                 with st.expander(f"Preview: {file.name}"):
                     st.text(text[:2000] + ("..." if len(text) > 2000 else ""))
 
+                if enable_local_save and per_file_save and run_dir:
+                    fname_base = os.path.splitext(safe_filename(file.name))[0]
+                    out_txt = os.path.join(run_dir, f"{fname_base}.txt")
+                    save_text(out_txt, text)
+                    st.caption(f"💾 Zapisano: {out_txt}")
+
+                    if isinstance(meta, dict) and meta.get("type") == "audio":
+                        segments = meta.get("segments", [])
+                        if segments:
+                            srt_path = os.path.join(run_dir, f"{fname_base}.srt")
+                            save_text(srt_path, segments_to_srt(segments))
+                            st.caption(f"💾 Zapisano SRT: {srt_path}")
+
             except Exception as e:
                 st.error(f"❌ Błąd: {e}")
+                logger.exception(f"Error processing {file.name}")
                 stats['errors'] += 1
 
         progress.empty()
@@ -320,6 +463,11 @@ if uploaded_files:
         st.metric("Strony/sekcje", stats['pages'])
 
         combined_text = "\n".join(all_texts)
+
+        if enable_local_save and run_dir:
+            combined_path = os.path.join(run_dir, f"combined_{datetime.now().strftime('%Y%m%d_%H%M')}.txt")
+            save_text(combined_path, combined_text)
+            st.success(f"📦 Połączony wynik: {combined_path}")
 
         st.download_button(
             "⬇️ Pobierz TXT",
