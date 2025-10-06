@@ -1085,11 +1085,11 @@ def parse_cad_project_structured(file_stream):
             # Suma TYLKO jeśli to główny poziom (1.0, 2.0) I ma pod-elementy
            # Suma TYLKO dla głównych numerów bez kropki (1, 2, 3) lub pustych wierszy
             is_summary = (
-                pos.replace('.', '').isdigit() and '.' not in pos  # Tylko 1, 2, 3 (bez kropki)
+                pos.replace(',', '').isdigit() and ',' not in pos  # Tylko 1, 2, 3 (bez kropki)
             ) or (
                 hours_layout == 0 and hours_detail == 0 and hours_doc == 0  # Puste wiersze
 )
-            is_summary = pos.endswith('.0') or (pos.replace('.', '').isdigit() and '.' not in pos[1:])
+            is_summary = pos.endswith(',0') or (pos.replace(',', '').isdigit() and ',' not in pos[1:])
             
             component = {
                 'id': pos, 'name': name, 'comment': comment,
