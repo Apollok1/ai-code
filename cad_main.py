@@ -929,15 +929,6 @@ def parse_ai_response(text: str, components_from_excel=None):
 
 
 
-    total_layout = total_detail = total_2d = 0.0
-    
-    if not text:
-        warnings.append("Brak odpowiedzi od AI")
-        return {
-            "total_hours": 0.0, "total_layout": 0.0, "total_detail": 0.0, "total_2d": 0.0,
-            "components": components_from_excel or [], "raw_text": "", "warnings": warnings
-        }
-    
     # JSON parsing
     try:
         clean_text = text.strip()
@@ -1684,7 +1675,13 @@ def main():
             # Edytor komponentów
             # Edytor komponentów
             if final_components:
-                parts_only = [c for c in final_components if not c.get('is_summary', False)]
+                # Filtruj komponenty z godzinami > 0
+                parts_only = [
+                    c for c in final_components
+                    if not c.get('is_summary', False)
+                    and c.get('hours', 0) > 0
+                    and c.get('name') not in ['[part]', '[assembly]', '', ' ']
+                ]
 
                 st.subheader("📝 Komponenty")
                 st.caption(f"ℹ️ Pokazano {len(parts_only)} komponentów (z {len(final_components)} z Excela, pominięto sumy)")
