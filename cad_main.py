@@ -4,6 +4,8 @@ import pandas as pd
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import json
 import os
 from datetime import datetime
@@ -34,6 +36,8 @@ DB_NAME = os.getenv('DB_NAME', 'cad_estimator')
 DB_USER = os.getenv('DB_USER', 'cad_user')
 DB_PASSWORD = os.getenv('DB_PASSWORD', 'cad_password_2024')
 EMBED_MODEL = os.getenv('EMBED_MODEL', 'nomic-embed-text')
+EMBED_DIM = int(os.getenv('EMBED_DIM', '768'))
+
 
 
 # === DZIAŁY ===
@@ -259,13 +263,27 @@ def to_pgvector(vec):
     if not vec:
         return None
     return '[' + ','.join(f'{float(x):.6f}' for x in vec) + ']'
-
+    
+_session = None
+def get_session():
+    """Zwraca globalną sesję requests z mechanizmem ponawiania."""
+    global _session
+    if _session is None:
+        s = requests.Session()
+        retries = Retry(total=3, backoff_factor=0.5, status_forcelist=[429, 500, 502, 503, 504])
+        s.mount('http://', HTTPAdapter(max_retries=retries))
+        s.mount('https://', HTTPAdapter(max_retries=retries))
+        _session = s
+    return _session
+    
+# Zamień całą funkcję `get_embedding_ollama` na tę wersję
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_embedding_ollama(text: str, model: str = EMBED_MODEL) -> list:
-    """Pobiera embedding z Ollama."""
+    """Pobiera embedding z Ollama (z retry)."""
     try:
-        r = requests.post(f"{OLLAMA_URL}/api/embeddings", 
-                         json={"model": model, "prompt": text}, timeout=30)
+        s = get_session()
+        r = s.post(f"{OLLAMA_URL}/api/embeddings",
+                   json={"model": model, "prompt": text}, timeout=30)
         r.raise_for_status()
         return r.json().get("embedding", [])
     except Exception as e:
@@ -277,7 +295,7 @@ def ensure_project_embedding(cur, project_id: int, description: str):
     if not description or len(description.strip()) < 10:
         return
     emb = get_embedding_ollama(description)
-    if emb and len(emb) == 768:
+    if emb and len(emb) == EMBED_DIM:
         try:
             cur.execute("UPDATE projects SET description_embedding = %s::vector WHERE id=%s",
                        (to_pgvector(emb), project_id))
@@ -289,7 +307,7 @@ def ensure_pattern_embedding(cur, pattern_key: str, dept: str, text_for_embed: s
     if not text_for_embed or len(text_for_embed.strip()) < 3:
         return
     emb = get_embedding_ollama(text_for_embed)
-    if emb and len(emb) == 768:
+    if emb and len(emb) == EMBED_DIM:
         try:
             cur.execute("""
                 UPDATE component_patterns
@@ -420,11 +438,12 @@ def best_pattern_key(cur, dept: str, key: str, threshold: int = 88) -> str:
     match, score, _ = process.extractOne(key, keys, scorer=fuzz.token_sort_ratio)
     return match if score >= threshold else key
 
+# Zamień całą funkcję `update_pattern_smart`
 def update_pattern_smart(cur, name, dept, layout_h, detail_h, doc_h, total_h, source='actual'):
-    """Welford + outlier + confidence + fuzzy + embedding."""
+    """Welford + outlier + confidence + fuzzy + embedding (naprawione n++)."""
     key = best_pattern_key(cur, dept, canonicalize_name(name))
     total = float(layout_h) + float(detail_h) + float(doc_h)
-    
+
     cur.execute("""
         SELECT avg_hours_3d_layout, avg_hours_3d_detail, avg_hours_2d, avg_hours_total,
                m2_layout, m2_detail, m2_doc, m2_total, occurrences
@@ -434,14 +453,15 @@ def update_pattern_smart(cur, name, dept, layout_h, detail_h, doc_h, total_h, so
     row = cur.fetchone()
     
     if row:
-        ml, md, mc, mt, m2l, m2d, m2c, m2t, n = row
-        ml, m2l, n = _welford_step(ml, m2l, n, layout_h)
-        md, m2d, n = _welford_step(md, m2d, n, detail_h)
-        mc, m2c, n = _welford_step(mc, m2c, n, doc_h)
-        mt, m2t, n = _welford_step(mt, m2t, n, total)
+        ml, md, mc, mt, m2l, m2d, m2c, m2t, n0 = row
+        ml, m2l, _ = _welford_step(ml, m2l, n0, float(layout_h))
+        md, m2d, _ = _welford_step(md, m2d, n0, float(detail_h))
+        mc, m2c, _ = _welford_step(mc, m2c, n0, float(doc_h))
+        mt, m2t, _ = _welford_step(mt, m2t, n0, float(total))
         
-        std_total = (m2t / max(n - 1, 1)) ** 0.5 if n and n > 1 else 0.0
-        confidence = min(1.0, n / 10.0) * (1.0 / (1.0 + (std_total / (mt or 1e-6))))
+        n1 = (n0 or 0) + 1
+        std_total = (m2t / max(n1 - 1, 1)) ** 0.5 if n1 > 1 else 0.0
+        confidence = min(1.0, n1 / 10.0) * (1.0 / (1.0 + (std_total / (mt or 1e-6))))
         
         cur.execute("""
             UPDATE component_patterns
@@ -452,7 +472,7 @@ def update_pattern_smart(cur, name, dept, layout_h, detail_h, doc_h, total_h, so
                 last_actual_sample_at=CASE WHEN %s='actual' THEN NOW() ELSE last_actual_sample_at END,
                 pattern_key=%s
             WHERE pattern_key=%s AND department=%s
-        """, (ml, md, mc, mt, m2l, m2d, m2c, m2t, n, confidence, source, source, key, key, dept))
+        """, (ml, md, mc, mt, m2l, m2d, m2c, m2t, n1, confidence, source, source, key, key, dept))
     else:
         cur.execute("""
             INSERT INTO component_patterns (
@@ -467,7 +487,7 @@ def update_pattern_smart(cur, name, dept, layout_h, detail_h, doc_h, total_h, so
     ensure_pattern_embedding(cur, key, dept, name)
     return True
 def update_category_baseline(cur, dept, category, layout_h, detail_h, doc_h):
-    """Aktualizuje baseline dla kategorii."""
+    """Aktualizuje baseline dla kategorii (naprawione n++)."""
     cur.execute("""
         SELECT mean_layout, mean_detail, mean_doc, m2_layout, m2_detail, m2_doc, occurrences
         FROM category_baselines WHERE department=%s AND category=%s
@@ -475,11 +495,12 @@ def update_category_baseline(cur, dept, category, layout_h, detail_h, doc_h):
     row = cur.fetchone()
     
     if row:
-        ml, md, mc, m2l, m2d, m2c, n = row
-        ml, m2l, n = _welford_step(ml, m2l, n, layout_h)
-        md, m2d, n = _welford_step(md, m2d, n, detail_h)
-        mc, m2c, n = _welford_step(mc, m2c, n, doc_h)
-        conf = min(1.0, n / 10.0)
+        ml, md, mc, m2l, m2d, m2c, n0 = row
+        ml, m2l, _ = _welford_step(ml, m2l, n0, float(layout_h))
+        md, m2d, _ = _welford_step(md, m2d, n0, float(detail_h))
+        mc, m2c, _ = _welford_step(mc, m2c, n0, float(doc_h))
+        n1 = (n0 or 0) + 1
+        conf = min(1.0, n1 / 10.0)
         
         cur.execute("""
             UPDATE category_baselines
@@ -487,7 +508,7 @@ def update_category_baseline(cur, dept, category, layout_h, detail_h, doc_h):
                 m2_layout=%s, m2_detail=%s, m2_doc=%s,
                 occurrences=%s, confidence=%s, last_updated=NOW()
             WHERE department=%s AND category=%s
-        """, (ml, md, mc, m2l, m2d, m2c, n, conf, dept, category))
+        """, (ml, md, mc, m2l, m2d, m2c, n1, conf, dept, category))
     else:
         cur.execute("""
             INSERT INTO category_baselines (department, category, mean_layout, mean_detail, mean_doc, occurrences, confidence)
@@ -675,54 +696,7 @@ def get_db_connection():
 def init_db():
     try:
         with get_db_connection() as conn, conn.cursor() as cur:
-            cur.execute('''
-                CREATE TABLE IF NOT EXISTS projects (
-                    id SERIAL PRIMARY KEY,
-                    name VARCHAR(255) NOT NULL,
-                    client VARCHAR(255),
-                    department VARCHAR(10),
-                    cad_system VARCHAR(50),
-                    components JSONB,
-                    estimated_hours_3d_layout FLOAT DEFAULT 0,
-                    estimated_hours_3d_detail FLOAT DEFAULT 0,
-                    estimated_hours_2d FLOAT DEFAULT 0,
-                    estimated_hours FLOAT,
-                    actual_hours FLOAT,
-                    complexity_score INTEGER,
-                    accuracy FLOAT,
-                    description TEXT,
-                    ai_analysis TEXT,
-                    created_at TIMESTAMP DEFAULT NOW(),
-                    updated_at TIMESTAMP DEFAULT NOW()
-                )
-            ''')
-            
-            cur.execute('ALTER TABLE projects ADD COLUMN IF NOT EXISTS department VARCHAR(10)')
-            
-            cur.execute('''
-                CREATE TABLE IF NOT EXISTS component_patterns (
-                    id SERIAL PRIMARY KEY,
-                    name VARCHAR(255) NOT NULL,
-                    department VARCHAR(10),
-                    avg_hours_3d_layout FLOAT DEFAULT 0,
-                    avg_hours_3d_detail FLOAT DEFAULT 0,
-                    avg_hours_2d FLOAT DEFAULT 0,
-                    avg_hours_total FLOAT DEFAULT 0,
-                    proportion_layout FLOAT DEFAULT 0.33,
-                    proportion_detail FLOAT DEFAULT 0.33,
-                    proportion_doc FLOAT DEFAULT 0.33,
-                    std_dev_hours FLOAT DEFAULT 0,
-                    occurrences INTEGER DEFAULT 0,
-                    min_hours FLOAT,
-                    max_hours FLOAT,
-                    typical_complexity FLOAT DEFAULT 1.0,
-                    cad_systems JSONB,
-                    last_updated TIMESTAMP DEFAULT NOW(),
-                    UNIQUE(name, department)
-                )
-            ''')
-            
-            cur.execute('''
+            cur.execute('''              
                 CREATE TABLE IF NOT EXISTS project_versions (
                     id SERIAL PRIMARY KEY,
                     project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
@@ -753,10 +727,66 @@ def init_db():
             cur.execute('CREATE INDEX IF NOT EXISTS idx_patterns_department ON component_patterns(department)')
             cur.execute('CREATE INDEX IF NOT EXISTS idx_component_patterns_name ON component_patterns(name, department)')
             cur.execute('CREATE INDEX IF NOT EXISTS idx_versions_project ON project_versions(project_id, created_at DESC)')
+            # Wstaw ten kod w funkcji `init_db` tuż przed `conn.commit()`
+            # === POCZĄTEK MIGRACJI BAZY DANYCH ===
             
+            # 1. Włącz rozszerzenie pgvector
+            cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+            
+            # 2. Dodaj kolumny wektorowe i indeksy do tabel
+            cur.execute(f"ALTER TABLE projects ADD COLUMN IF NOT EXISTS description_embedding vector({EMBED_DIM});")
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_projects_desc_embed_hnsw
+                ON projects USING hnsw (description_embedding vector_l2_ops);
+            """)
+            
+            cur.execute(f"""
+                ALTER TABLE component_patterns
+                ADD COLUMN IF NOT EXISTS pattern_key TEXT,
+                ADD COLUMN IF NOT EXISTS name_embedding vector({EMBED_DIM}),
+                ADD COLUMN IF NOT EXISTS avg_hours_total DOUBLE PRECISION DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS m2_layout DOUBLE PRECISION DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS m2_detail DOUBLE PRECISION DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS m2_doc DOUBLE PRECISION DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS m2_total DOUBLE PRECISION DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS confidence DOUBLE PRECISION DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS source TEXT,
+                ADD COLUMN IF NOT EXISTS last_actual_sample_at TIMESTAMP;
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_component_patterns_name_embed_hnsw
+                ON component_patterns USING hnsw (name_embedding vector_l2_ops);
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_component_patterns_pattern_key_dept
+                ON component_patterns(pattern_key, department);
+            """)
+            
+            # 3. Utwórz brakującą tabelę `category_baselines`
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS category_baselines (
+                  id SERIAL PRIMARY KEY,
+                  department VARCHAR(10),
+                  category TEXT,
+                  mean_layout DOUBLE PRECISION DEFAULT 0,
+                  mean_detail DOUBLE PRECISION DEFAULT 0,
+                  mean_doc DOUBLE PRECISION DEFAULT 0,
+                  m2_layout DOUBLE PRECISION DEFAULT 0,
+                  m2_detail DOUBLE PRECISION DEFAULT 0,
+                  m2_doc DOUBLE PRECISION DEFAULT 0,
+                  occurrences INTEGER DEFAULT 0,
+                  confidence DOUBLE PRECISION DEFAULT 0,
+                  last_updated TIMESTAMP DEFAULT NOW(),
+                  UNIQUE(department, category)
+                );
+            """)
+            
+            # === KONIEC MIGRACJI ===
             conn.commit()
             logger.info("Baza zainicjalizowana")
             return True
+
+    
     except Exception as e:
         logger.error(f"Błąd inicjalizacji: {e}")
         st.error(f"Błąd inicjalizacji: {e}")
@@ -778,14 +808,17 @@ def model_available(name_prefix: str) -> bool:
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def query_ollama_cached(_payload_str: str) -> str:
+    """Wykonuje zapytanie do Ollama z cache'owaniem (z retry)."""
     payload = json.loads(_payload_str)
     try:
-        r = requests.post(f"{OLLAMA_URL}/api/generate", json=payload, timeout=60)
+        s = get_session()
+        r = s.post(f"{OLLAMA_URL}/api/generate", json=payload, timeout=60)
         r.raise_for_status()
         return r.json().get('response', 'Brak odpowiedzi.')
     except Exception as e:
         logger.error(f"Błąd AI: {e}")
         return f"Błąd Ollama: {e}"
+
 
 def query_ollama(prompt: str, model: str = "llama3:latest", images_b64=None, format_json=False) -> str:
     payload = {"model": model, "prompt": prompt, "stream": False}
@@ -807,11 +840,11 @@ def encode_image_b64(file, max_px=1280, quality=85):
         return base64.b64encode(file.getvalue()).decode("utf-8")
 
 def parse_ai_response(text: str, components_from_excel=None):
-    """Parsing z priorytetem JSON, fallback na regex."""
+    """Parsing z priorytetem JSON, fallback na regex (uproszczone, bez duplikacji)."""
     warnings = []
     parsed_components = []
     total_layout = total_detail = total_2d = 0.0
-    data = {}  # DODANE - inicjalizacja
+    data = {}
 
     if not text:
         warnings.append("Brak odpowiedzi od AI")
@@ -822,39 +855,31 @@ def parse_ai_response(text: str, components_from_excel=None):
             "risks_detailed": [], "recommendations": []
         }
 
-    # JSON parsing
+    # Oczyść code-fence
+    clean = text.strip()
+    if clean.startswith("```json"):
+        clean = clean[7:]
+    if clean.startswith("```"):
+        clean = clean[3:]
+    if clean.endswith("```"):
+        clean = clean[:-3]
+
+    # Spróbuj JSON
     try:
-        clean_text = text.strip()
-        if clean_text.startswith("```json"):
-            clean_text = clean_text[7:]
-        if clean_text.startswith("```"):
-            clean_text = clean_text[3:]
-        if clean_text.endswith("```"):
-            clean_text = clean_text[:-3]
+        data = json.loads(clean)
 
-
-        data = json.loads(clean_text)
-
-        if "risks" in data:
-            normalized_risks = []
-            for risk in data["risks"]:
-                if isinstance(risk, str):
-                    normalized_risks.append({
-                        "risk": risk,
-                        "impact": "nieznany",
-                        "mitigation": "Do określenia"
-                    })
-                elif isinstance(risk, dict):
-                    normalized_risks.append({
-                        "risk": risk.get("risk", "Nieznane ryzyko"),
-                        "impact": risk.get("impact", "nieznany"),
-                        "mitigation": risk.get("mitigation", "Brak")
-                    })
-            data["risks"] = normalized_risks
-
-
-
-
+        # Normalizacja risks
+        risks = []
+        for r in data.get("risks", []):
+            if isinstance(r, str):
+                risks.append({"risk": r, "impact": "nieznany", "mitigation": "Do określenia"})
+            else:
+                risks.append({
+                    "risk": r.get("risk", "Nieznane ryzyko"),
+                    "impact": r.get("impact", "nieznany"),
+                    "mitigation": r.get("mitigation", "Brak")
+                })
+        data["risks"] = risks
 
         for c in data.get("components", []):
             item = {
@@ -871,36 +896,30 @@ def parse_ai_response(text: str, components_from_excel=None):
         total_detail = float(sums.get("detail", 0) or sum(x["hours_3d_detail"] for x in parsed_components))
         total_2d = float(sums.get("doc", 0) or sum(x["hours_2d"] for x in parsed_components))
 
-        logger.info("✅ JSON parsing success")
-
     except json.JSONDecodeError:
         logger.warning("JSON failed, fallback to regex")
         warnings.append("Fallback do regex")
-        data = {}  # DODANE
-
-        # Regex fallback
         pattern = r"-\s*([^\n]+?)\s+Layout:\s*(\d+[.,]?\d*)\s*h?,?\s*Detail:\s*(\d+[.,]?\d*)\s*h?,?\s*2D:\s*(\d+[.,]?\d*)\s*h?"
-        for match in re.finditer(pattern, text, re.IGNORECASE):
+        for m in re.finditer(pattern, text, re.IGNORECASE):
             try:
                 parsed_components.append({
-                    "name": match.group(1).strip(),
-                    "hours_3d_layout": float(match.group(2).replace(',', '.')),
-                    "hours_3d_detail": float(match.group(3).replace(',', '.')),
-                    "hours_2d": float(match.group(4).replace(',', '.')),
-                    "hours": sum([float(match.group(i).replace(',', '.')) for i in [2,3,4]])
+                    "name": m.group(1).strip(),
+                    "hours_3d_layout": float(m.group(2).replace(',', '.')),
+                    "hours_3d_detail": float(m.group(3).replace(',', '.')),
+                    "hours_2d": float(m.group(4).replace(',', '.')),
+                    "hours": sum(float(m.group(i).replace(',', '.')) for i in [2,3,4])
                 })
             except:
                 pass
-    # Użyj Excela jeśli AI zwróciło mniej niż 50% komponentów
+    
+    # fallback do Excela gdy AI zwróciło za mało
     excel_parts = [c for c in (components_from_excel or []) if not c.get('is_summary', False)]
-
-    if not parsed_components:
+    if not parsed_components and excel_parts:
         warnings.append("Użyto danych z Excel - AI nie zwróciło komponentów")
         parsed_components = excel_parts
-    elif len(parsed_components) < len(excel_parts) * 0.5:
+    elif parsed_components and excel_parts and len(parsed_components) < len(excel_parts) * 0.5:
         warnings.append(f"AI zwróciło tylko {len(parsed_components)} z {len(excel_parts)} komponentów - użyto danych z Excel")
         parsed_components = excel_parts
-
 
     if total_layout == 0 and parsed_components:
         total_layout = sum(c.get('hours_3d_layout', 0) for c in parsed_components)
@@ -908,8 +927,7 @@ def parse_ai_response(text: str, components_from_excel=None):
         total_detail = sum(c.get('hours_3d_detail', 0) for c in parsed_components)
     if total_2d == 0 and parsed_components:
         total_2d = sum(c.get('hours_2d', 0) for c in parsed_components)
-
-    # ZMIENIONY RETURN - dodane nowe pola
+    
     return {
         "total_hours": max(0.0, total_layout + total_detail + total_2d),
         "total_layout": total_layout,
@@ -924,10 +942,6 @@ def parse_ai_response(text: str, components_from_excel=None):
         "risks_detailed": data.get("risks", []),
         "recommendations": data.get("recommendations", [])
     }
-
-
-
-
 
     # JSON parsing
     try:
@@ -1274,17 +1288,19 @@ def get_project_versions(conn, project_id):
         """, (project_id,))
         return cur.fetchall()
 
+# Zamień całą funkcję `find_similar_projects`
 def find_similar_projects(conn, description, department, limit=3):
+    """Wyszukiwanie projektów za pomocą websearch_to_tsquery."""
     if not description:
         return []
-    terms = ' & '.join(description.split()[:10])
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute("""
             SELECT id, name, client, estimated_hours, actual_hours, department
-            FROM projects WHERE department = %s
-            AND to_tsvector('simple', coalesce(description,'')) @@ to_tsquery('simple', %s)
+            FROM projects
+            WHERE department = %s
+              AND to_tsvector('simple', coalesce(name,'') || ' ' || coalesce(client,'') || ' ' || coalesce(description,'')) @@ websearch_to_tsquery('simple', %s)
             ORDER BY created_at DESC LIMIT %s
-        """, (department, terms, limit))
+        """, (department, description, limit))
         return cur.fetchall()
 
 def validate_project_input(name, estimated_hours):
@@ -1311,7 +1327,8 @@ def batch_import_excels(files, department):
     
     for i, file in enumerate(files):
         try:
-            progress_bar.progress((i + 1) / total, text=f"Przetwarzanie {file.name} ({i+1}/{total})...")
+            progress_bar.progress(int((i + 1) / total * 100), text=f"Przetwarzanie {file.name} ({i+1}/{total})...")
+            
             components = process_excel(file)
             
             if not components:
@@ -1423,16 +1440,16 @@ def main():
                     cur.execute("""
                         SELECT id, name, client, department, estimated_hours, description
                         FROM projects WHERE department = %s
-                        AND to_tsvector('simple', name || ' ' || client || ' ' || description) @@ to_tsquery('simple', %s)
+                        AND to_tsvector('simple', coalesce(name,'') || ' ' || coalesce(client,'') || ' ' || coalesce(description,'')) @@ websearch_to_tsquery('simple', %s)
                         ORDER BY created_at DESC LIMIT 10
-                    """, (search_dept, ' & '.join(search_query.split())))
+                    """, (search_dept, search_query))
                 else:
                     cur.execute("""
                         SELECT id, name, client, department, estimated_hours, description
                         FROM projects
-                        WHERE to_tsvector('simple', name || ' ' || client || ' ' || description) @@ to_tsquery('simple', %s)
+                        WHERE to_tsvector('simple', coalesce(name,'') || ' ' || coalesce(client,'') || ' ' || coalesce(description,'')) @@ websearch_to_tsquery('simple', %s)
                         ORDER BY created_at DESC LIMIT 10
-                    """, (' & '.join(search_query.split()),))
+                    """, (search_query,))
                 results = cur.fetchall()
             
             if results:
