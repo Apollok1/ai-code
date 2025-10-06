@@ -794,10 +794,102 @@ def encode_image_b64(file, max_px=1280, quality=85):
     except Exception as e:
         logger.warning(f"Błąd kompresji: {e}")
         return base64.b64encode(file.getvalue()).decode("utf-8")
+
 def parse_ai_response(text: str, components_from_excel=None):
     """Parsing z priorytetem JSON, fallback na regex."""
     warnings = []
     parsed_components = []
+    total_layout = total_detail = total_2d = 0.0
+    data = {}  # DODANE - inicjalizacja
+
+    if not text:
+        warnings.append("Brak odpowiedzi od AI")
+        return {
+            "total_hours": 0.0, "total_layout": 0.0, "total_detail": 0.0, "total_2d": 0.0,
+            "components": components_from_excel or [], "raw_text": "", "warnings": warnings,
+            "analysis": {}, "missing_info": [], "phases": {},
+            "risks_detailed": [], "recommendations": []
+        }
+
+    # JSON parsing
+    try:
+        clean_text = text.strip()
+        if clean_text.startswith("```json"):
+            clean_text = clean_text[7:]
+        if clean_text.startswith("```"):
+            clean_text = clean_text[3:]
+        if clean_text.endswith("```"):
+            clean_text = clean_text[:-3]
+
+        data = json.loads(clean_text)
+
+        for c in data.get("components", []):
+            item = {
+                "name": c.get("name", "bez nazwy"),
+                "hours_3d_layout": float(c.get("layout_h", 0) or 0),
+                "hours_3d_detail": float(c.get("detail_h", 0) or 0),
+                "hours_2d": float(c.get("doc_h", 0) or 0),
+            }
+            item["hours"] = item["hours_3d_layout"] + item["hours_3d_detail"] + item["hours_2d"]
+            parsed_components.append(item)
+
+        sums = data.get("sums", {})
+        total_layout = float(sums.get("layout", 0) or sum(x["hours_3d_layout"] for x in parsed_components))
+        total_detail = float(sums.get("detail", 0) or sum(x["hours_3d_detail"] for x in parsed_components))
+        total_2d = float(sums.get("doc", 0) or sum(x["hours_2d"] for x in parsed_components))
+
+        logger.info("✅ JSON parsing success")
+
+    except json.JSONDecodeError:
+        logger.warning("JSON failed, fallback to regex")
+        warnings.append("Fallback do regex")
+        data = {}  # DODANE
+
+        # Regex fallback
+        pattern = r"-\s*([^\n]+?)\s+Layout:\s*(\d+[.,]?\d*)\s*h?,?\s*Detail:\s*(\d+[.,]?\d*)\s*h?,?\s*2D:\s*(\d+[.,]?\d*)\s*h?"
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            try:
+                parsed_components.append({
+                    "name": match.group(1).strip(),
+                    "hours_3d_layout": float(match.group(2).replace(',', '.')),
+                    "hours_3d_detail": float(match.group(3).replace(',', '.')),
+                    "hours_2d": float(match.group(4).replace(',', '.')),
+                    "hours": sum([float(match.group(i).replace(',', '.')) for i in [2,3,4]])
+                })
+            except:
+                pass
+
+    if not parsed_components and components_from_excel:
+        warnings.append("Użyto danych z Excel")
+        parsed_components = [c for c in components_from_excel if not c.get('is_summary', False)]
+
+    if total_layout == 0 and parsed_components:
+        total_layout = sum(c.get('hours_3d_layout', 0) for c in parsed_components)
+    if total_detail == 0 and parsed_components:
+        total_detail = sum(c.get('hours_3d_detail', 0) for c in parsed_components)
+    if total_2d == 0 and parsed_components:
+        total_2d = sum(c.get('hours_2d', 0) for c in parsed_components)
+
+    # ZMIENIONY RETURN - dodane nowe pola
+    return {
+        "total_hours": max(0.0, total_layout + total_detail + total_2d),
+        "total_layout": total_layout,
+        "total_detail": total_detail,
+        "total_2d": total_2d,
+        "components": parsed_components,
+        "raw_text": text,
+        "warnings": warnings,
+        "analysis": data.get("analysis", {}),
+        "missing_info": data.get("missing_info", []),
+        "phases": data.get("phases", {}),
+        "risks_detailed": data.get("risks", []),
+        "recommendations": data.get("recommendations", [])
+    }
+
+
+
+
+
     total_layout = total_detail = total_2d = 0.0
     
     if not text:
@@ -1410,8 +1502,62 @@ def main():
             analysis = st.session_state["ai_analysis"]
             st.subheader("Wynik analizy")
             
-           # with st.expander("Odpowiedź AI", expanded=False):
-             #   st.markdown(analysis["raw_text"])
+            # with st.expander("Odpowiedź AI", expanded=False):
+            #  st.markdown(analysis["raw_text"])
+            # === NOWE EXPANDERY ===
+            if analysis.get("analysis"):
+                with st.expander("📊 Analiza projektu", expanded=True):
+                    anal = analysis["analysis"]
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Typ", anal.get("project_type", "N/A"))
+                    col2.metric("Złożoność", anal.get("complexity", "N/A"))
+                    if anal.get("estimated_accuracy"):
+                        col3.metric("Dokładność", anal["estimated_accuracy"])
+
+            if analysis.get("missing_info"):
+                st.warning("⚠️ AI wykryło braki w opisie - uzupełnij dla lepszej wyceny:")
+                for info in analysis["missing_info"]:
+                    st.write(f"❓ {info}")
+
+                if st.button("📝 Edytuj opis i analizuj ponownie"):
+                    st.session_state["reanalyze_mode"] = True
+
+            if st.session_state.get("reanalyze_mode"):
+                new_description = st.text_area(
+                    "Uzupełnij opis projektu",
+                    value=st.session_state.get("description", ""),
+                    height=200,
+                    key="new_description"
+                )
+                if st.button("🔄 Analizuj z nowym opisem", type="primary"):
+                    st.session_state["description"] = new_description
+                    st.session_state["reanalyze_mode"] = False
+                    st.rerun()
+
+            if analysis.get("phases"):
+                with st.expander("🔧 Szczegóły faz projektu"):
+                    for phase_name, phase_data in analysis["phases"].items():
+                        st.markdown(f"**{phase_name.upper()} - {phase_data.get('hours', 0):.1f}h**")
+                        tasks = phase_data.get("tasks", [])
+                        if tasks:
+                            for task in tasks:
+                                st.write(f"  • {task}")
+                        st.divider()
+
+            if analysis.get("risks_detailed"):
+                with st.expander("⚠️ Ryzyka i mitygacje"):
+                    for risk in analysis["risks_detailed"]:
+                        impact = risk.get("impact", "nieznany")
+                        icon = {"niski": "🟢", "średni": "🟡", "wysoki": "🔴"}.get(impact, "⚪")
+                        st.markdown(f"{icon} **{risk.get('risk', 'Ryzyko')}** (wpływ: {impact})")
+                        st.write(f"  → Mitygacja: {risk.get('mitigation', 'Brak')}")
+                        st.divider()
+
+            if analysis.get("recommendations"):
+                with st.expander("💡 Rekomendacje"):
+                    for rec in analysis["recommendations"]:
+                        st.write(f"✓ {rec}")
+
 
             with st.expander("🤖 Odpowiedź AI (raw)", expanded=False):
                 try:
@@ -1464,9 +1610,13 @@ def main():
             # Edytor komponentów
             if final_components:
                 parts_only = [c for c in final_components if not c.get('is_summary', False)]
-                
+
                 st.subheader("📝 Komponenty")
+                st.caption(f"ℹ️ Pokazano {len(parts_only)} komponentów (z {len(final_components)} z Excela, pominięto sumy)")
+
                 for i, comp in enumerate(parts_only):
+
+
                     # Skróć nazwę w tytule expandera
                     display_name = comp['name'][:50] + "..." if len(comp['name']) > 50 else comp['name']
 
