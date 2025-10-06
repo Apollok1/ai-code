@@ -1126,15 +1126,16 @@ def parse_cad_project_structured(file_stream):
     parts_only = [
         c for c in result['components']
         if not c.get('is_summary', False)
-        and c.get('hours', 0) > 0  # DODANE - tylko z godzinami
-        and c.get('name') not in ['[part]', '[assembly]', '']  # DODANE - pomiń puste nazwy
+        and c.get('hours', 0) > 0
+        and c.get('name') not in ['[part]', '[assembly]', '', ' ']
     ]
+
+    # DEBUG
     logger.info(f"=== PARSER DEBUG ===")
     logger.info(f"Total components parsed: {len(result['components'])}")
-    logger.info(f"Parts only (non-summary): {len(parts_only)}")
-    for c in result['components']:
-        logger.info(f"  {c['id']} | {c['name']} | is_summary={c['is_summary']} | hours={c['hours']:.1f}h")
-
+    logger.info(f"Parts with hours > 0: {len(parts_only)}")
+    for c in parts_only:
+        logger.info(f"  {c['id']} | {c['name']} | hours={c['hours']:.1f}h")
 
     result['totals']['layout'] = sum(c['hours_3d_layout'] for c in parts_only)
     result['totals']['detail'] = sum(c['hours_3d_detail'] for c in parts_only)
