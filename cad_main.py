@@ -891,10 +891,16 @@ def parse_ai_response(text: str, components_from_excel=None):
                 })
             except:
                 pass
+    # Użyj Excela jeśli AI zwróciło mniej niż 50% komponentów
+    excel_parts = [c for c in (components_from_excel or []) if not c.get('is_summary', False)]
 
-    if not parsed_components and components_from_excel:
-        warnings.append("Użyto danych z Excel")
-        parsed_components = [c for c in components_from_excel if not c.get('is_summary', False)]
+    if not parsed_components:
+        warnings.append("Użyto danych z Excel - AI nie zwróciło komponentów")
+        parsed_components = excel_parts
+    elif len(parsed_components) < len(excel_parts) * 0.5:
+        warnings.append(f"AI zwróciło tylko {len(parsed_components)} z {len(excel_parts)} komponentów - użyto danych z Excel")
+        parsed_components = excel_parts
+
 
     if total_layout == 0 and parsed_components:
         total_layout = sum(c.get('hours_3d_layout', 0) for c in parsed_components)
