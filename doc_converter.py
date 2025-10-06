@@ -390,18 +390,17 @@ def process_file(file, use_vision: bool, vision_model: str, ocr_limit: int, imag
         return extract_docx(file)
     elif name.endswith(('.jpg', '.jpeg', '.png')):
         return extract_image(file, use_vision, vision_model, image_mode)
-
     elif name.endswith(('.mp3', '.wav', '.m4a', '.ogg', '.flac')):
-    # Sprawdź czy Pyannote dostępny
-    pyannote_url = os.getenv("PYANNOTE_URL", "http://pyannote:8000")
-    try:
-        r = requests.get(f"{pyannote_url}/health", timeout=2)
-        if r.ok and r.json().get("model_loaded"):
-            return extract_audio_with_speakers(file)
-    except:
-        pass
-    # Fallback: tylko Whisper
-    return extract_audio_whisper(file)
+        # Sprawdź czy Pyannote dostępny
+        pyannote_url = os.getenv("PYANNOTE_URL", "http://pyannote:8000")
+        try:
+            r = requests.get(f"{pyannote_url}/health", timeout=2)
+            if r.ok and r.json().get("model_loaded"):
+                return extract_audio_with_speakers(file)
+        except:
+            pass
+        # Fallback: tylko Whisper
+        return extract_audio_whisper(file)
     elif name.endswith('.txt'):
         file.seek(0)
         content = file.read().decode('utf-8', errors='ignore')
