@@ -1082,22 +1082,31 @@ def parse_cad_project_structured(file_stream):
                 pass
             
             total_hours = hours_layout + hours_detail + hours_doc
-            # Suma TYLKO jeśli to główny poziom (1.0, 2.0) I ma pod-elementy
-           # Suma TYLKO dla głównych numerów bez kropki (1, 2, 3) lub pustych wierszy
-            is_summary = (
-                pos.replace(',', '').isdigit() and ',' not in pos  # Tylko 1, 2, 3 (bez kropki)
-            ) or (
-                hours_layout == 0 and hours_detail == 0 and hours_doc == 0  # Puste wiersze
-)
-            is_summary = pos.endswith(',0') or (pos.replace(',', '').isdigit() and ',' not in pos[1:])
-            
+
+            # LOGIKA DLA PRZECINKA: 1,0 / 1,1 / 1,2
+            # is_summary = True dla: 1,0 / 2,0 / 3,0 (główne złożenia)
+            # is_summary = False dla: 1,1 / 1,2 / 1,3 (części składowe)
+
+            is_summary = False
+
+            # Wykryj pozycje typu X,0 (np. 1,0, 2,0, 3,0)
+            if re.match(r'^\d+,0$', pos):
+                is_summary = True
+            # LUB same cyfry bez separatora (1, 2, 3)
+            elif pos.isdigit():
+                is_summary = True
+
+            # Level bazuje na ilości przecinków
+            level = pos.count(',')
+
             component = {
                 'id': pos, 'name': name, 'comment': comment,
                 'type': 'assembly' if is_summary else 'part',
-                'level': pos.count('.'),
+                'level': level,  # Zmienione z pos.count('.')
                 'parts': {'standard': std_parts, 'special': spec_parts, 'total': std_parts + spec_parts},
-                'hours_3d_layout': hours_layout, 'hours_3d_detail': hours_detail, 
-                'hours_2d': hours_doc, 'hours': total_hours, 'is_summary': is_summary
+                'hours_3d_layout': hours_layout, 'hours_3d_detail': hours_detail,
+                'hours_2d': hours_doc, 'hours': total_hours, 'is_summary': is_summary,
+                'subcomponents': subcomponents  # Jeśli parsowałeś wcześniej
             }
             
             result['components'].append(component)
