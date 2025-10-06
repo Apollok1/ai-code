@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import psycopg2
@@ -1083,16 +1084,16 @@ def parse_cad_project_structured(file_stream):
             
             total_hours = hours_layout + hours_detail + hours_doc
 
-            # LOGIKA DLA PRZECINKA: 1,0 / 1,1 / 1,2
-            # is_summary = True dla: 1,0 / 2,0 / 3,0 (główne złożenia)
-            # is_summary = False dla: 1,1 / 1,2 / 1,3 (części składowe)
+            # LOGIKA DLA PRZECINKA: 0,0 / 1,0 / 2,0 / 1,1 / 1,2
+            # is_summary = True dla: 0,0 / 1,0 / 2,0 / 3,0 (główne złożenia - POMIJANE)
+            # is_summary = False dla: 1,1 / 1,2 / 1,3 (części składowe - ZLICZONE)
 
             is_summary = False
 
-            # Wykryj pozycje typu X,0 (np. 1,0, 2,0, 3,0)
+            # Wykryj pozycje typu X,0 (np. 0,0, 1,0, 2,0, 3,0)
             if re.match(r'^\d+,0$', pos):
                 is_summary = True
-            # LUB same cyfry bez separatora (1, 2, 3)
+            # LUB same cyfry bez separatora (0, 1, 2, 3)
             elif pos.isdigit():
                 is_summary = True
 
