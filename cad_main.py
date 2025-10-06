@@ -1038,20 +1038,43 @@ def categorize_component(name: str) -> str:
         if any(k in n for k in keys):
             return cat
     return "inne"
-
 def show_project_timeline(components):
     if not components:
+        st.info("Brak komponentów do wyświetlenia")
         return
-    df = pd.DataFrame([c for c in components if not c.get('is_summary', False)])
-    if 'hours' not in df.columns or df.empty:
+
+    parts = [c for c in components if not c.get('is_summary', False) and c.get('hours', 0) > 0]
+    if not parts:
+        st.info("Brak komponentów z godzinami")
         return
-    df = df.copy()
-    df['start'] = 0
-    df['end'] = df['hours'].cumsum()
-    fig = px.timeline(df, x_start='start', x_end='end', y='name',
-                      title="Harmonogram realizacji")
-    fig.update_yaxes(autorange="reversed")
+
+    #累積 godziny → timeline
+    timeline_data = []
+    cumulative = 0
+
+    for comp in parts:
+        hours = comp.get('hours', 0)
+        timeline_data.append({
+            'Task': comp['name'][:30] + "..." if len(comp['name']) > 30 else comp['name'],
+            'Start': cumulative,
+            'Finish': cumulative + hours,
+            'Hours': hours
+        })
+        cumulative += hours
+
+    df = pd.DataFrame(timeline_data)
+
+    fig = px.bar(
+        df,
+        x='Hours',
+        y='Task',
+        orientation='h',
+        title="Harmonogram realizacji (sekwencyjnie)",
+        labels={'Hours': 'Godziny', 'Task': 'Komponent'}
+    )
+    fig.update_layout(yaxis={'categoryorder':'total ascending'})
     st.plotly_chart(fig, use_container_width=True)
+
 
 def export_quotation_to_excel(project_data):
     output = BytesIO()
@@ -1387,9 +1410,38 @@ def main():
             analysis = st.session_state["ai_analysis"]
             st.subheader("Wynik analizy")
             
-            with st.expander("Odpowiedź AI", expanded=False):
-                st.markdown(analysis["raw_text"])
-            
+           # with st.expander("Odpowiedź AI", expanded=False):
+             #   st.markdown(analysis["raw_text"])
+
+            with st.expander("🤖 Odpowiedź AI (raw)", expanded=False):
+                try:
+                    parsed_json = json.loads(analysis["raw_text"])
+
+                    st.markdown("### 📋 Komponenty")
+                    for comp in parsed_json.get("components", []):
+                        st.write(f"**{comp.get('name')}**: Layout {comp.get('layout_h', 0):.1f}h + Detail {comp.get('detail_h', 0):.1f}h + 2D {comp.get('doc_h', 0):.1f}h")
+
+                    st.markdown("### 📊 Podsumowanie")
+                    sums = parsed_json.get("sums", {})
+                    st.write(f"- Layout: {sums.get('layout', 0):.1f}h")
+                    st.write(f"- Detail: {sums.get('detail', 0):.1f}h")
+                    st.write(f"- 2D: {sums.get('doc', 0):.1f}h")
+                    st.write(f"- **TOTAL: {sums.get('total', 0):.1f}h**")
+
+                    st.markdown("### 📝 Założenia")
+                    for ass in parsed_json.get("assumptions", []):
+                        st.write(f"- {ass}")
+
+                    st.markdown("### ⚠️ Ryzyka")
+                    for risk in parsed_json.get("risks", []):
+                        if isinstance(risk, dict):
+                            st.write(f"- {risk.get('risk', risk)}")
+                        else:
+                            st.write(f"- {risk}")
+
+                except:
+                    # Fallback jeśli JSON niepoprawny
+                    st.text(analysis["raw_text"])
             for w in analysis.get("warnings", []):
                 st.warning(w)
             
@@ -1415,7 +1467,13 @@ def main():
                 
                 st.subheader("📝 Komponenty")
                 for i, comp in enumerate(parts_only):
-                    with st.expander(f"{comp['name']} - {comp.get('hours', 0):.1f}h"):
+                    # Skróć nazwę w tytule expandera
+                    display_name = comp['name'][:50] + "..." if len(comp['name']) > 50 else comp['name']
+
+                    with st.expander(f"{display_name} - {comp.get('hours', 0):.1f}h"):
+                        # Pełna nazwa wewnątrz
+                        st.markdown(f"**Pełna nazwa:** {comp['name']}")
+
                         col1, col2, col3 = st.columns(3)
                         new_layout = col1.number_input("Layout", value=float(comp.get('hours_3d_layout', 0)), key=f"l_{i}")
                         new_detail = col2.number_input("Detail", value=float(comp.get('hours_3d_detail', 0)), key=f"d_{i}")
