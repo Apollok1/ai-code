@@ -558,6 +558,10 @@ METODYKA SZACOWANIA:
    - Specyfikacja materiałowa (BOM)
    - Instrukcje montażu
    - Dokumentacja techniczna
+5. RYZYKA - każde MUSI mieć:
+   - "risk": opis
+   - "impact": niski/średni/wysoki
+   - "mitigation": jak minimalizować
 
 CZYNNIKI KOMPLIKUJĄCE (dodaj czas):
 - Spawanie precyzyjne: +20%
@@ -633,7 +637,13 @@ WYMAGANY FORMAT ODPOWIEDZI - ZWRÓĆ TYLKO CZYSTY JSON:
   ],
   "sums": {"layout": 12.5, "detail": 42.0, "doc": 28.0, "total": 82.5},
   "assumptions": ["Założenie 1"],
-  "risks": ["Ryzyko 1"]
+  "risks": [
+    {
+      "risk": "Opis ryzyka",
+      "impact": "wysoki/średni/niski",
+      "mitigation": "Jak zminimalizować"
+    }
+  ]
 }
 
 WAŻNE: Zwróć WYŁĄCZNIE JSON bez tekstu.""")
@@ -821,7 +831,29 @@ def parse_ai_response(text: str, components_from_excel=None):
         if clean_text.endswith("```"):
             clean_text = clean_text[:-3]
 
+
         data = json.loads(clean_text)
+
+        if "risks" in data:
+            normalized_risks = []
+            for risk in data["risks"]:
+                if isinstance(risk, str):
+                    normalized_risks.append({
+                        "risk": risk,
+                        "impact": "nieznany",
+                        "mitigation": "Do określenia"
+                    })
+                elif isinstance(risk, dict):
+                    normalized_risks.append({
+                        "risk": risk.get("risk", "Nieznane ryzyko"),
+                        "impact": risk.get("impact", "nieznany"),
+                        "mitigation": risk.get("mitigation", "Brak")
+                    })
+            data["risks"] = normalized_risks
+
+
+
+
 
         for c in data.get("components", []):
             item = {
@@ -1543,15 +1575,21 @@ def main():
                             for task in tasks:
                                 st.write(f"  • {task}")
                         st.divider()
-
             if analysis.get("risks_detailed"):
                 with st.expander("⚠️ Ryzyka i mitygacje"):
                     for risk in analysis["risks_detailed"]:
-                        impact = risk.get("impact", "nieznany")
-                        icon = {"niski": "🟢", "średni": "🟡", "wysoki": "🔴"}.get(impact, "⚪")
-                        st.markdown(f"{icon} **{risk.get('risk', 'Ryzyko')}** (wpływ: {impact})")
-                        st.write(f"  → Mitygacja: {risk.get('mitigation', 'Brak')}")
+                        if isinstance(risk, str):
+                            # Fallback - nie powinno się zdarzyć po normalizacji
+                            st.write(f"⚠️ {risk}")
+                            logger.warning(f"Risk jest stringiem: {risk}")
+                        else:
+                            impact = risk.get("impact", "nieznany")
+                            icon = {"niski": "🟢", "średni": "🟡", "wysoki": "🔴"}.get(impact, "⚪")
+                            st.markdown(f"{icon} **{risk.get('risk', 'Ryzyko')}** (wpływ: {impact})")
+                            st.write(f"  → Mitygacja: {risk.get('mitigation', 'Brak')}")
                         st.divider()
+
+
 
             if analysis.get("recommendations"):
                 with st.expander("💡 Rekomendacje"):
