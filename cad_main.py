@@ -1122,7 +1122,13 @@ def parse_cad_project_structured(file_stream):
             logger.warning(f"Błąd wiersz {row_idx + 1}: {e}")
             continue
     
-    parts_only = [c for c in result['components'] if not c.get('is_summary', False)]
+    # Pomiń komponenty bez godzin (0.0h) I bez nazwy
+    parts_only = [
+        c for c in result['components']
+        if not c.get('is_summary', False)
+        and c.get('hours', 0) > 0  # DODANE - tylko z godzinami
+        and c.get('name') not in ['[part]', '[assembly]', '']  # DODANE - pomiń puste nazwy
+    ]
     logger.info(f"=== PARSER DEBUG ===")
     logger.info(f"Total components parsed: {len(result['components'])}")
     logger.info(f"Parts only (non-summary): {len(parts_only)}")
