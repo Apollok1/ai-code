@@ -28,6 +28,7 @@ OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:11434")
 ANYTHINGLLM_URL = os.getenv("ANYTHINGLLM_URL", "http://anythingllm:3001")
 ANYTHINGLLM_API_KEY = os.getenv("ANYTHINGLLM_API_KEY", "TC9T0P1-XBQ4ATS-QYSXZG8-RMFFVH6")
 WHISPER_URL = os.getenv("WHISPER_URL", "http://whisper:9000")
+PYANNOTE_URL = os.getenv("PYANNOTE_URL", "http://pyannote:8000")
 
 # === STAŁE ===
 MIN_TEXT_FOR_OCR_SKIP = 100
@@ -188,7 +189,71 @@ def extract_audio_whisper(file):
     except Exception as e:
         logger.error(f"Whisper error: {e}")
         return f"[BŁĄD AUDIO: {e}]", 0, {"type": "audio", "error": str(e)}
+def diarize_audio(file) -> dict:
+    """Pyannote speaker diarization."""
+    pyannote_url = os.getenv("PYANNOTE_URL", "http://pyannote:8000")
+    try:
+        file.seek(0)
+        timeout = calculate_timeout(file.size, base=300)
+        files = {'file': (file.name, file.read(), file.type)}
 
+        r = requests.post(
+            f"{pyannote_url}/diarize",
+            files=files,
+            timeout=timeout
+        )
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        logger.error(f"Pyannote error: {e}")
+        return {}
+
+def extract_audio_with_speakers(file):
+    """Whisper + Pyannote = transkrypcja z identyfikacją głosów."""
+    try:
+        # 1. Whisper - transkrypcja z timestampami
+        text_only, _, meta = extract_audio_whisper(file)
+        segments = meta.get("segments", [])
+
+        if not segments:
+            return text_only, 1, meta
+
+        # 2. Pyannote - diaryzacja
+        st.info("🎤 Identyfikuję głosy...")
+        file.seek(0)
+        diarization = diarize_audio(file)
+
+        if not diarization or 'segments' not in diarization:
+            st.warning("Nie udało się rozpoznać głosów - zwracam samą transkrypcję")
+            return text_only, 1, meta
+
+        # 3. Połącz - mapuj segmenty Whisper → głosy Pyannote
+        output_lines = ["=== TRANSKRYPCJA Z IDENTYFIKACJĄ GŁOSÓW ===\n"]
+
+        for seg in segments:
+            start = seg.get("start", 0)
+            end = seg.get("end", 0)
+            text = seg.get("text", "").strip()
+
+            # Znajdź kto mówi w tym przedziale
+            speaker = "SPEAKER_?"
+            for spk_seg in diarization['segments']:
+                spk_start = spk_seg.get('start', 0)
+                spk_end = spk_seg.get('end', 999999)
+                if spk_start <= start <= spk_end:
+                    speaker = spk_seg.get('speaker', 'SPEAKER_?')
+                    break
+
+            output_lines.append(f"[{start:.1f}s - {end:.1f}s] {speaker}: {text}")
+
+        result = "\n".join(output_lines)
+        meta['has_speakers'] = True
+
+        return result, 1, meta
+
+    except Exception as e:
+        logger.error(f"Audio with speakers error: {e}")
+        return f"[BŁĄD: {e}]", 0, {"type": "audio", "error": str(e)}
 def extract_pdf(file, use_vision: bool, vision_model: str, ocr_pages_limit: int = 20):
     """PDF: tekst + opcjonalnie OCR/Vision."""
     texts = []
@@ -325,8 +390,18 @@ def process_file(file, use_vision: bool, vision_model: str, ocr_limit: int, imag
         return extract_docx(file)
     elif name.endswith(('.jpg', '.jpeg', '.png')):
         return extract_image(file, use_vision, vision_model, image_mode)
+
     elif name.endswith(('.mp3', '.wav', '.m4a', '.ogg', '.flac')):
-        return extract_audio_whisper(file)
+    # Sprawdź czy Pyannote dostępny
+    pyannote_url = os.getenv("PYANNOTE_URL", "http://pyannote:8000")
+    try:
+        r = requests.get(f"{pyannote_url}/health", timeout=2)
+        if r.ok and r.json().get("model_loaded"):
+            return extract_audio_with_speakers(file)
+    except:
+        pass
+    # Fallback: tylko Whisper
+    return extract_audio_whisper(file)
     elif name.endswith('.txt'):
         file.seek(0)
         content = file.read().decode('utf-8', errors='ignore')
