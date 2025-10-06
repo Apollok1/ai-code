@@ -1117,6 +1117,13 @@ def parse_cad_project_structured(file_stream):
             continue
     
     parts_only = [c for c in result['components'] if not c.get('is_summary', False)]
+    logger.info(f"=== PARSER DEBUG ===")
+    logger.info(f"Total components parsed: {len(result['components'])}")
+    logger.info(f"Parts only (non-summary): {len(parts_only)}")
+    for c in result['components']:
+        logger.info(f"  {c['id']} | {c['name']} | is_summary={c['is_summary']} | hours={c['hours']:.1f}h")
+
+
     result['totals']['layout'] = sum(c['hours_3d_layout'] for c in parts_only)
     result['totals']['detail'] = sum(c['hours_3d_detail'] for c in parts_only)
     result['totals']['documentation'] = sum(c['hours_2d'] for c in parts_only)
@@ -1668,6 +1675,9 @@ def main():
 
                 st.subheader("📝 Komponenty")
                 st.caption(f"ℹ️ Pokazano {len(parts_only)} komponentów (z {len(final_components)} z Excela, pominięto sumy)")
+                with st.expander("🐛 DEBUG - wszystkie komponenty"):
+                    for c in final_components:
+                        st.write(f"{c.get('id')} | {c.get('name')} | is_summary={c.get('is_summary')} | hours={c.get('hours', 0):.1f}h")
 
                 for i, comp in enumerate(parts_only):
 
