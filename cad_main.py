@@ -351,67 +351,62 @@ def canonicalize_name(name: str) -> str:
     return n
 def parse_subcomponents_from_comment(comment):
     """
-    Parsuje komentarz i wyciąga pod-komponenty z ilościami.
-    
-    Przykłady:
-    "2x Płyta 500x300, 4x Wspornik L100" → [{'quantity': 2, 'name': 'Płyta 500x300'}, ...]
-    "Płyta montażowa, Wspornik, 3 śruby M8" → [{'quantity': 1, 'name': 'Płyta montażowa'}, ...]
+    Parsuje komentarz do listy pod-komponentów z ilościami.
+    Obsługuje mieszane wpisy, np.:
+    "2x - docisk śrubowy odrzucany; śruba trapezowa; konsola docisku"
+    → [{'quantity': 2, 'name': 'docisk śrubowy odrzucany'},
+       {'quantity': 1, 'name': 'śruba trapezowa'},
+       {'quantity': 1, 'name': 'konsola docisku'}]
     """
     if not comment or not isinstance(comment, str):
         return []
-    
+
+    def clean_name(s: str) -> str:
+        # usuń wiodące myślniki/spacje
+        s = re.sub(r'^\s*[-–—]\s*', '', s.strip())
+        return s
+
     subcomponents = []
-    
-    # Pattern 1: "2x Nazwa", "4 szt Nazwa", "5 Nazwa"
-    pattern = r'(\d+)\s*(?:x|szt\.?|sztuk|pcs)?\s*([^,;\n]+?)(?=[,;\n]|$)'
-    matches = re.finditer(pattern, comment, re.IGNORECASE)
-    
-    for match in matches:
+    qty_re = re.compile(r'(\d+)\s*(?:x|szt\.?|sztuk|pcs)?\s*[-–—]?\s*([^,;\n]+?)(?=[,;\n]|$)', re.IGNORECASE)
+
+    # 1) Złap wpisy z ilością
+    consumed_spans = []
+    for m in qty_re.finditer(comment):
         try:
-            qty = int(match.group(1))
-            name = match.group(2).strip()
-            
-            # Pomiń jeśli to wymiar (200mm, 5m) lub sama jednostka
-            if re.match(r'^\d+\s*(mm|cm|m|kg|ton|h)$', name, re.IGNORECASE):
-                continue
-            
-            # Pomiń bardzo krótkie (prawdopodobnie szum)
-            if len(name) < 3:
-                continue
-            
-            subcomponents.append({
-                'quantity': qty,
-                'name': name
-            })
-        except (ValueError, IndexError):
+            qty = int(m.group(1))
+            name = clean_name(m.group(2))
+            if len(name) >= 3 and not re.match(r'^\d+\s*(mm|cm|m|kg|ton|h)$', name, re.IGNORECASE):
+                subcomponents.append({'quantity': qty, 'name': name})
+                consumed_spans.append(m.span())
+        except Exception:
             continue
-    
-    # Pattern 2: Jeśli nie znaleziono liczb, podziel po przecinkach/średnikach
-    if not subcomponents:
-        separators = r'[,;]'
-        parts = [p.strip() for p in re.split(separators, comment) if p.strip()]
-        
-        for part in parts:
-            # Pomiń bardzo krótkie lub same liczby
-            if len(part) < 3 or re.match(r'^\d+$', part):
-                continue
-            
-            # Sprawdź czy jest liczba na początku
-            num_match = re.match(r'^(\d+)\s*(?:x|szt\.?)?\s*(.+)', part, re.IGNORECASE)
-            if num_match:
-                try:
-                    qty = int(num_match.group(1))
-                    name = num_match.group(2).strip()
-                    if len(name) >= 3:
-                        subcomponents.append({'quantity': qty, 'name': name})
-                except:
-                    pass
-            else:
-                # Bez liczby - domyślnie 1 sztuka
-                if not re.match(r'^\d+\s*(mm|cm|m|kg|h)$', part, re.IGNORECASE):
-                    subcomponents.append({'quantity': 1, 'name': part})
-    
-    logger.info(f"Parsed {len(subcomponents)} subcomponents from: {comment[:50]}...")
+
+    # 2) Remainder: usuń dopasowane fragmenty i podziel resztę po ; lub ,
+    if consumed_spans:
+        remainder_parts = []
+        last = 0
+        for a, b in consumed_spans:
+            remainder_parts.append(comment[last:a])
+            last = b
+        remainder_parts.append(comment[last:])
+        remainder = ';'.join(remainder_parts)
+    else:
+        remainder = comment
+
+    # 3) Wpisy bez liczby traktuj jako 1x
+    for part in re.split(r'[;,]', remainder):
+        name = clean_name(part)
+        if not name or len(name) < 3:
+            continue
+        # pomiń fragmenty, które wyglądają jak czyste liczby/jednostki
+        if re.match(r'^\d+(\.\d+)?\s*(mm|cm|m|kg|ton|h)?$', name, re.IGNORECASE):
+            continue
+        # nie dubluj elementów już znalezionych z ilościami
+        if qty_re.search(name):
+            continue
+        subcomponents.append({'quantity': 1, 'name': name})
+
+    logger.info(f"Parsed {len(subcomponents)} subcomponents from: {comment[:80]}...")
     return subcomponents
 def _welford_step(mean, m2, n, x):
     """Algorytm Welforda - aktualizacja średniej i wariancji."""
