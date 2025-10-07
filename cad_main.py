@@ -149,7 +149,103 @@ WYMAGANY FORMAT ODPOWIEDZI - ZWRÓĆ TYLKO CZYSTY JSON:
 
 WAŻNE: Zwróć WYŁĄCZNIE JSON bez tekstu.
 """
+def build_brief_prompt(description, components_excel, pdf_text, department):
+    comps = components_excel or []
+    parts_only = [c for c in comps if not c.get('is_summary')]
+    total_layout = sum(c.get('hours_3d_layout', 0) for c in parts_only)
+    total_detail = sum(c.get('hours_3d_detail', 0) for c in parts_only)
+    total_2d = sum(c.get('hours_2d', 0) for c in parts_only)
 
+    lines = []
+    lines.append("Jesteś doświadczonym inżynierem/konstruktorem. Opracuj krótki opis zadania dla zespołu projektowego.")
+    lines.append("Odpowiadaj ZAWSZE po polsku. Zwróć WYŁĄCZNIE JSON.")
+    if department and department in DEPARTMENT_CONTEXT:
+        lines.append("\n[Kontext działu]\n" + DEPARTMENT_CONTEXT[department])
+
+    lines.append("\n[Opis użytkownika]\n" + (description or "(brak)"))
+
+    lines.append("\n[Podsumowanie z Excela]")
+    lines.append(f"- 3D Layout: {total_layout:.1f}h | 3D Detail: {total_detail:.1f}h | 2D: {total_2d:.1f}h | TOTAL: {total_layout+total_detail+total_2d:.1f}h")
+    if parts_only:
+        lines.append("\n[Komponenty (przykłady)]")
+        for c in parts_only[:15]:
+            row = f"- {c.get('name','?')}: L {c.get('hours_3d_layout',0):.1f}h, D {c.get('hours_3d_detail',0):.1f}h, 2D {c.get('hours_2d',0):.1f}h"
+            if c.get('comment'):
+                row += f" | Komentarz: {c['comment'][:120]}"
+            subs = c.get('subcomponents') or []
+            if subs:
+                subs_str = ", ".join([f"{s.get('quantity',1)}x {s.get('name')}" for s in subs])[:180]
+                row += f" | Zawiera: {subs_str}"
+            lines.append(row)
+
+    if pdf_text:
+        lines.append("\n[Wyciąg z PDF (skrót)]")
+        lines.append(pdf_text[:3000])
+
+    lines.append("""
+[Twoje zadanie]
+Zbuduj brief zadania i checklistę:
+- brief_md: 5-10 zdań podsumowania (markdown), jasno co robimy i co jest out-of-scope,
+- scope: punktowo zakres (co robimy),
+- assumptions: kluczowe założenia,
+- missing_info: lista brakujących informacji/pytań do klienta (priorytetyzuj),
+- risks: ryzyka (obowiązkowo: risk, impact: niski/średni/wysoki, mitigation),
+- checklist: kontrolna lista do przejścia przed startem,
+- open_questions: pytania do klienta/PM.
+
+[Format JSON – zwróć tylko to]
+{
+  "brief_md": "markdown",
+  "scope": ["..."],
+  "assumptions": ["..."],
+  "missing_info": ["..."],
+  "risks": [{"risk":"...", "impact":"niski/średni/wysoki", "mitigation":"..."}],
+  "checklist": ["..."],
+  "open_questions": ["..."]
+}
+""")
+    return "\n".join(lines)
+
+
+def parse_brief_response(text: str) -> dict:
+    if not text:
+        return {"brief_md": "", "scope": [], "assumptions": [], "missing_info": [], "risks": [], "checklist": [], "open_questions": []}
+
+    clean = text.strip()
+    if clean.startswith("```json"):
+        clean = clean[7:]
+    if clean.startswith("```"):
+        clean = clean[3:]
+    if clean.endswith("```"):
+        clean = clean[:-3]
+
+    try:
+        data = json.loads(clean)
+        # Normalizacja pól
+        data.setdefault("brief_md", "")
+        data.setdefault("scope", [])
+        data.setdefault("assumptions", [])
+        data.setdefault("missing_info", [])
+        risks = []
+        for r in data.get("risks", []):
+            if isinstance(r, dict):
+                risks.append({
+                    "risk": r.get("risk",""),
+                    "impact": r.get("impact","nieznany"),
+                    "mitigation": r.get("mitigation","")
+                })
+            elif isinstance(r, str):
+                risks.append({"risk": r, "impact":"nieznany", "mitigation":""})
+        data["risks"] = risks
+        data.setdefault("checklist", [])
+        data.setdefault("open_questions", [])
+        return data
+    except Exception:
+        # fallback – potraktuj całość jako markdown brief
+        return {
+            "brief_md": text,
+            "scope": [], "assumptions": [], "missing_info": [], "risks": [], "checklist": [], "open_questions": []
+        }
 def build_analysis_prompt(description, components_excel, learned_patterns, pdf_text, department):
     sections = []
     sections.append(MASTER_PROMPT)
@@ -1604,8 +1700,96 @@ def render_new_project_page(selected_model):
     conserv = st.slider("Konserwatywność proponowanych dodatków", min_value=0.5, max_value=1.5, value=1.0, step=0.1)
     enable_bundles = st.checkbox("Włącz podpowiedzi z historii (bundles)", value=True,
                                  help="Podpowiada typowe sub‑komponenty dla podobnych pozycji na bazie importów historycznych")
+   
+    # 🔹 AI Brief: opis zadania i checklista
+    st.subheader("📝 AI: Opis zadania i checklista")
+    if st.button("📝 Generuj opis zadania (AI)", use_container_width=True):
+        try:
+            # Zbuduj wejście (bez wywoływania pełnej analizy)
+            components_for_brief = []
+            if excel_file is not None:
+                # Parsuj bez side-effectów UI
+                try:
+                    components_for_brief = parse_cad_project_structured_with_xlsx_comments(BytesIO(excel_file.getvalue()))['components']
+                except Exception:
+                    components_for_brief = []
+    
+            pdf_text_for_brief = ""
+            if pdf_files:
+                pdf_text_for_brief = "\n".join([extract_text_from_pdf(pf) for pf in pdf_files])
+    
+            prompt_brief = build_brief_prompt(
+                st.session_state.get("description", ""),
+                components_for_brief,
+                pdf_text_for_brief,
+                department
+            )
+    
+            ai_model_brief = selected_model or "llama3:latest"
+            resp = query_ollama(prompt_brief, model=ai_model_brief, format_json=True)
+            brief = parse_brief_response(resp)
+            st.session_state["ai_brief"] = brief
+            st.success("Opis wygenerowany ✅")
+        except Exception as e:
+            logger.exception("Brief generation failed")
+            st.error(f"Nie udało się wygenerować opisu: {e}")
+    
+    # Wyświetl brief (jeśli jest w sesji)
+    if "ai_brief" in st.session_state:
+        b = st.session_state["ai_brief"]
+        if b.get("brief_md"):
+            st.markdown(b["brief_md"])
+        cols = st.columns(2)
+        with cols[0]:
+            if b.get("missing_info"):
+                st.markdown("**Brakujące informacje / pytania:**")
+                for it in b["missing_info"]:
+                    st.write(f"• {it}")
+            if b.get("assumptions"):
+                st.markdown("**Założenia:**")
+                for it in b["assumptions"]:
+                    st.write(f"• {it}")
+            if b.get("scope"):
+                st.markdown("**Zakres:**")
+                for it in b["scope"]:
+                    st.write(f"• {it}")
+        with cols[1]:
+            if b.get("risks"):
+                st.markdown("**Ryzyka:**")
+                for r in b["risks"]:
+                    st.write(f"• {r.get('risk','')} (impact: {r.get('impact','')})")
+                    if r.get("mitigation"):
+                        st.caption(f"Mitigation: {r['mitigation']}")
+            if b.get("checklist"):
+                st.markdown("**Checklist:**")
+                for it in b["checklist"]:
+                    st.write(f"☑︎ {it}")
+            if b.get("open_questions"):
+                st.markdown("**Otwarte pytania:**")
+                for it in b["open_questions"]:
+                    st.write(f"• {it}")
+    
+        # Pobranie do .md
+        md_export = "# Opis zadania (AI)\n\n" + b.get("brief_md","") + "\n\n"
+        if b.get("missing_info"):
+            md_export += "## Brakujące informacje\n" + "\n".join([f"- {x}" for x in b["missing_info"]]) + "\n\n"
+        if b.get("assumptions"):
+            md_export += "## Założenia\n" + "\n".join([f"- {x}" for x in b["assumptions"]]) + "\n\n"
+        if b.get("scope"):
+            md_export += "## Zakres\n" + "\n".join([f"- {x}" for x in b["scope"]]) + "\n\n"
+        if b.get("risks"):
+            md_export += "## Ryzyka\n" + "\n".join([f"- {r['risk']} (impact: {r['impact']}) — {r.get('mitigation','')}" for r in b["risks"]]) + "\n\n"
+        if b.get("checklist"):
+            md_export += "## Checklist\n" + "\n".join([f"- {x}" for x in b["checklist"]]) + "\n\n"
+        if b.get("open_questions"):
+            md_export += "## Otwarte pytania\n" + "\n".join([f"- {x}" for x in b["open_questions"]]) + "\n\n"
+
+    st.download_button("⬇️ Pobierz opis (.md)", md_export.encode("utf-8"),
+                       file_name=f"opis_zadania_{datetime.now().strftime('%Y%m%d_%H%M')}.md",
+                       mime="text/markdown")
 
 
+    
     if st.button("🤖 Analizuj z AI", use_container_width=True):
         if not st.session_state.get("description") and not excel_file and not image_files and not pdf_files:
             st.warning("Podaj opis lub wgraj pliki")
