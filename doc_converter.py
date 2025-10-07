@@ -18,6 +18,10 @@ from pptx import Presentation
 from docx import Document
 import cv2
 
+# --- DODATKOWE IMPORTY DO PODSUMOWAŃ AUDIO ---
+from typing import List, Dict, Any, Tuple
+
+# Logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("doc-converter")
 
@@ -49,11 +53,10 @@ IMAGE_MODE_MAP = {
 }
 
 # === HELPERY ===
-
 def safe_filename(name: str) -> str:
     """Sanityzacja nazwy pliku."""
     base = os.path.basename(name)
-    base = re.sub(r'[^A-Za-z0-9._-]+', '_', base)
+    base = re.sub(r'[^A-Za-z0-9.-]+', '', base)
     return base or "plik"
 
 def create_run_dir(base_dir: str) -> str:
@@ -64,7 +67,7 @@ def create_run_dir(base_dir: str) -> str:
     return run_dir
 
 def save_text(path: str, text: str):
-    """Zapis teksty do pliku."""
+    """Zapis tekstu do pliku."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         f.write(text or "")
@@ -85,8 +88,8 @@ def segments_to_srt(segments: list) -> str:
     for i, seg in enumerate(segments, 1):
         start = format_timestamp(seg.get("start", 0.0))
         end = format_timestamp(seg.get("end", 0.0))
-        text = (seg.get("text") or "").strip()
-        lines.append(f"{i}\n{start} --> {end}\n{text}\n")
+        text_seg = (seg.get("text") or "").strip()
+        lines.append(f"{i}\n{start} --> {end}\n{text_seg}\n")
     return "\n".join(lines)
 
 def calculate_timeout(file_size_bytes: int, base: int = 120) -> int:
@@ -126,6 +129,19 @@ def query_ollama_vision(prompt: str, image_b64: str, model: str):
         logger.error(f"Vision model error: {e}")
         return f"[BŁĄD VISION: {e}]"
 
+def query_ollama_text(prompt: str, model: str = "llama3:latest", json_mode: bool = False, timeout: int = 120) -> str:
+    """Tekstowe zapytanie do Ollama (bez obrazów)."""
+    try:
+        payload = {"model": model, "prompt": prompt, "stream": False}
+        if json_mode:
+            payload["format"] = "json"
+        r = requests.post(f"{OLLAMA_URL}/api/generate", json=payload, timeout=timeout)
+        r.raise_for_status()
+        return r.json().get("response", "")
+    except Exception as e:
+        logger.error(f"Ollama text error: {e}")
+        return f"[BŁĄD OLLAMA: {e}]"
+
 def ocr_image_bytes(img_bytes: bytes, lang: str = 'pol+eng') -> str:
     """OCR Tesseract z preprocessingiem."""
     try:
@@ -143,8 +159,8 @@ def extract_audio_whisper(file):
     try:
         file.seek(0)
         timeout = calculate_timeout(file.size)
-        files = {'audio_file': file}
-
+        data = file.read()
+        files = {'audio_file': (file.name, data, getattr(file, "type", None) or "application/octet-stream")}
         r = requests.post(
             f"{WHISPER_URL}/asr?task=transcribe&language=pl&word_timestamps=true&output=json",
             files=files,
@@ -159,9 +175,9 @@ def extract_audio_whisper(file):
             logger.error(f"Whisper JSON decode error: {je}, response: {r.text[:500]}")
             return f"[BŁĄD: Whisper zwrócił nieprawidłowy format]", 0, {"type": "audio", "error": "invalid_json"}
 
-        text = result.get("text", "") or ""
+        text_res = result.get("text", "") or ""
         segments = result.get("segments", [])
-        
+
         # Metadata - tylko istotne dane, nie cały JSON
         meta = {
             "type": "audio",
@@ -170,33 +186,33 @@ def extract_audio_whisper(file):
             "language": result.get("language"),
             "segments": segments  # Potrzebne dla SRT
         }
-        
+
         # Format z timestampami
         if segments:
-            lines = ["=== TRANSKRYPCJA Z TIMESTAMPAMI ===\n"]
+            lines = ["=== TRANSKRYPCJA Z TIMESTAMPAMI ===", ""]
             for seg in segments:
                 start = seg.get("start", 0)
                 end = seg.get("end", 0)
                 txt = seg.get("text", "").strip()
                 lines.append(f"[{start:.1f}s - {end:.1f}s] {txt}")
-            text = "\n".join(lines)
-        
-        return text, 1, meta
-        
+            text_res = "\n".join(lines)
+
+        return text_res, 1, meta
+
     except requests.exceptions.Timeout:
         logger.error(f"Whisper timeout after {timeout}s")
         return f"[BŁĄD: Timeout - plik zbyt długi]", 0, {"type": "audio", "error": "timeout"}
     except Exception as e:
         logger.error(f"Whisper error: {e}")
         return f"[BŁĄD AUDIO: {e}]", 0, {"type": "audio", "error": str(e)}
+
 def diarize_audio(file) -> dict:
     """Pyannote speaker diarization."""
     pyannote_url = os.getenv("PYANNOTE_URL", "http://pyannote:8000")
     try:
         file.seek(0)
         timeout = calculate_timeout(file.size, base=300)
-        files = {'file': (file.name, file.read(), file.type)}
-
+        files = {'file': (file.name, file.read(), getattr(file, "type", None) or "application/octet-stream")}
         r = requests.post(
             f"{pyannote_url}/diarize",
             files=files,
@@ -218,7 +234,7 @@ def extract_audio_with_speakers(file):
         if not segments:
             return text_only, 1, meta
 
-        # 2. Pyannote - diaryzacja
+        # 2. Pyannote - diarization
         st.info("🎤 Identyfikuję głosy...")
         file.seek(0)
         diarization = diarize_audio(file)
@@ -228,12 +244,12 @@ def extract_audio_with_speakers(file):
             return text_only, 1, meta
 
         # 3. Połącz - mapuj segmenty Whisper → głosy Pyannote
-        output_lines = ["=== TRANSKRYPCJA Z IDENTYFIKACJĄ GŁOSÓW ===\n"]
+        output_lines = ["=== TRANSKRYPCJA Z IDENTYFIKACJĄ GŁOSÓW ===", ""]
 
         for seg in segments:
             start = seg.get("start", 0)
             end = seg.get("end", 0)
-            text = seg.get("text", "").strip()
+            txt = seg.get("text", "").strip()
 
             # Znajdź kto mówi w tym przedziale
             speaker = "SPEAKER_?"
@@ -244,7 +260,7 @@ def extract_audio_with_speakers(file):
                     speaker = spk_seg.get('speaker', 'SPEAKER_?')
                     break
 
-            output_lines.append(f"[{start:.1f}s - {end:.1f}s] {speaker}: {text}")
+            output_lines.append(f"[{start:.1f}s - {end:.1f}s] {speaker}: {txt}")
 
         result = "\n".join(output_lines)
         meta['has_speakers'] = True
@@ -254,10 +270,12 @@ def extract_audio_with_speakers(file):
     except Exception as e:
         logger.error(f"Audio with speakers error: {e}")
         return f"[BŁĄD: {e}]", 0, {"type": "audio", "error": str(e)}
+
 def extract_pdf(file, use_vision: bool, vision_model: str, ocr_pages_limit: int = 20):
     """PDF: tekst + opcjonalnie OCR/Vision."""
     texts = []
     try:
+        file.seek(0)
         with pdfplumber.open(file) as pdf:
             total_pages = len(pdf.pages)
             for i, page in enumerate(pdf.pages):
@@ -271,7 +289,13 @@ def extract_pdf(file, use_vision: bool, vision_model: str, ocr_pages_limit: int 
 
         if len(full_text.strip()) < MIN_TEXT_FOR_OCR_SKIP:
             file.seek(0)
-            images = convert_from_bytes(file.read(), fmt="jpeg", dpi=150, first_page=1, last_page=min(ocr_pages_limit, 10))
+            images = convert_from_bytes(
+                file.read(),
+                fmt="jpeg",
+                dpi=150,
+                first_page=1,
+                last_page=min(ocr_pages_limit, 10)
+            )
 
             if use_vision and vision_model:
                 st.info(f"🖼️ Używam {vision_model} do analizy obrazów...")
@@ -292,7 +316,7 @@ def extract_pdf(file, use_vision: bool, vision_model: str, ocr_pages_limit: int 
                     ocr_text = ocr_image_bytes(buf.getvalue())
                     texts.append(f"\n--- Strona {idx} (OCR) ---\n{ocr_text}")
 
-        meta = {"type": "pdf", "pages": total_pages}
+        meta = {"type": "pdf", "pages": len(texts)}
         return "\n".join(texts), len(texts), meta
     except Exception as e:
         logger.error(f"PDF extract error: {e}")
@@ -301,6 +325,7 @@ def extract_pdf(file, use_vision: bool, vision_model: str, ocr_pages_limit: int 
 def extract_pptx(file, use_vision: bool, vision_model: str):
     """PPTX: tekst + obrazy (opcjonalnie Vision)."""
     try:
+        file.seek(0)
         prs = Presentation(file)
         slides_text = []
 
@@ -318,13 +343,13 @@ def extract_pptx(file, use_vision: bool, vision_model: str):
 
             if use_vision and vision_model:
                 for shape in slide.shapes:
-                    if shape.shape_type == 13:
+                    if getattr(shape, "shape_type", None) == 13:  # PICTURE
                         try:
                             img_stream = shape.image.blob
                             img_b64 = base64.b64encode(img_stream).decode()
                             response = query_ollama_vision(VISION_DESCRIBE_PROMPT, img_b64, vision_model)
                             parts.append(f"[Obraz] {response}")
-                        except:
+                        except Exception:
                             pass
 
             slides_text.append("\n".join(parts))
@@ -337,6 +362,7 @@ def extract_pptx(file, use_vision: bool, vision_model: str):
 def extract_docx(file):
     """DOCX: tekst + tabele."""
     try:
+        file.seek(0)
         doc = Document(file)
         paras = [p.text for p in doc.paragraphs if p.text]
 
@@ -372,8 +398,8 @@ def extract_image(file, use_vision: bool, vision_model: str, image_mode: str):
             else:
                 results.append("[Vision niedostępne]")
 
-        text = "\n\n".join(results).strip()
-        return text, 1, meta
+        txt = "\n\n".join(results).strip()
+        return txt, 1, meta
     except Exception as e:
         logger.error(f"Image error: {e}")
         return f"[BŁĄD IMG: {e}]", 0, {"type": "image", "error": str(e)}
@@ -397,7 +423,7 @@ def process_file(file, use_vision: bool, vision_model: str, ocr_limit: int, imag
             r = requests.get(f"{pyannote_url}/health", timeout=2)
             if r.ok and r.json().get("model_loaded"):
                 return extract_audio_with_speakers(file)
-        except:
+        except Exception:
             pass
         # Fallback: tylko Whisper
         return extract_audio_whisper(file)
@@ -428,8 +454,180 @@ def send_to_anythingllm(text: str, filename: str):
     except Exception as e:
         return False, f"Błąd AnythingLLM: {e}"
 
-# === UI ===
+# --- PROMPTY DO PODSUMOWAŃ AUDIO ---
+MAP_PROMPT_TEMPLATE = """
+Jesteś asystentem ds. spotkań (PL). Otrzymasz fragment transkrypcji rozmowy z klientem (możliwe znaczniki SPEAKER_1, SPEAKER_2 i znaczniki czasu).
+Zrób skrót tego fragmentu i wylistuj najważniejsze informacje.
 
+WYMAGANY JSON:
+{
+  "summary": "1-2 akapity skrótu (PL)",
+  "key_points": ["punkt 1", "punkt 2", "..."],
+  "decisions": ["decyzja 1", "decyzja 2"],
+  "action_items": [{"owner":"", "task":"", "due":"", "notes":""}],
+  "risks": [{"risk":"", "impact":"niski/średni/wysoki", "mitigation":""}],
+  "open_questions": ["pytanie 1", "pytanie 2"]
+}
+
+ZASADY:
+- Nie wymyślaj informacji. Jeśli czegoś brak, zostaw puste pola lub wpisz [].
+- Zostaw język polski.
+- Jeśli są mówcy (SPEAKER_x) – staraj się zmapować właścicieli zadań (owner).
+- Nie dodawaj komentarzy poza JSON.
+Fragment:
+{fragment}
+"""
+
+REDUCE_PROMPT_TEMPLATE = """
+Jesteś asystentem ds. spotkań (PL). Otrzymasz listę częściowych podsumowań w JSON (z pól: summary, key_points, decisions, action_items, risks, open_questions).
+Scal je i zwróć jeden końcowy JSON w tym samym formacie. Usuń duplikaty, uczyść i pogrupuj logicznie.
+
+WYMAGANY JSON:
+{
+  "summary": "skondensowany skrót całości",
+  "key_points": [...],
+  "decisions": [...],
+  "action_items": [...],
+  "risks": [...],
+  "open_questions": [...]
+}
+
+Wejście (lista JSON fragmentów):
+{partials}
+
+Nie dodawaj komentarzy poza JSON.
+"""
+
+def chunk_text(text: str, max_chars: int = 6000, overlap: int = 500) -> List[str]:
+    """Dzielenie długiego tekstu na fragmenty do map-reduce (proste, po znakach)."""
+    if not text:
+        return []
+    chunks = []
+    start = 0
+    n = len(text)
+    while start < n:
+        end = min(start + max_chars, n)
+        chunks.append(text[start:end])
+        if end >= n:
+            break
+        start = max(0, end - overlap)
+    return chunks
+
+def try_parse_json(s: str) -> Dict[str, Any]:
+    """Próba parsowania JSON z opcją oczyszczenia code fence."""
+    if not s:
+        return {}
+    clean = s.strip()
+    if clean.startswith("```json"):
+        clean = clean[7:]
+    if clean.startswith("```"):
+        clean = clean[3:]
+    if clean.endswith("```"):
+        clean = clean[:-3]
+    try:
+        return json.loads(clean)
+    except Exception:
+        return {}
+
+def merge_summary_dicts(items: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Sklejanie listy słowników w formacie summary JSON (na wszelki wypadek, gdyby REDUCE nie zadziałał)."""
+    out = {"summary": "", "key_points": [], "decisions": [], "action_items": [], "risks": [], "open_questions": []}
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        if it.get("summary"):
+            out["summary"] += (("\n" if out["summary"] else "") + it["summary"])
+        for k in ["key_points", "decisions", "open_questions"]:
+            out[k].extend(it.get(k, []))
+        for ai in it.get("action_items", []):
+            if isinstance(ai, dict):
+                out["action_items"].append(ai)
+        for r in it.get("risks", []):
+            if isinstance(r, dict):
+                out["risks"].append(r)
+    # deduplikacja prosta
+    out["key_points"] = list(dict.fromkeys(out["key_points"]))
+    out["decisions"] = list(dict.fromkeys(out["decisions"]))
+    out["open_questions"] = list(dict.fromkeys(out["open_questions"]))
+    return out
+
+def build_meeting_summary_markdown(data: Dict[str, Any]) -> str:
+    """Ładne formatowanie Markdown z danych JSON podsumowania."""
+    if not data:
+        return "_Brak danych do podsumowania_"
+    md = []
+    md.append("# Podsumowanie rozmowy")
+    if data.get("summary"):
+        md.append(data["summary"])
+    sections = [
+        ("## Kluczowe punkty", "key_points"),
+        ("## Decyzje", "decisions"),
+        ("## Zadania (Action Items)", "action_items"),
+        ("## Ryzyka", "risks"),
+        ("## Pytania do klienta (otwarte kwestie)", "open_questions"),
+    ]
+    for title, key in sections:
+        md.append("\n" + title)
+        items = data.get(key, [])
+        if not items:
+            md.append("- brak")
+            continue
+        if key == "action_items":
+            for ai in items:
+                owner = ai.get("owner", "") or "N/A"
+                task = ai.get("task", "") or "N/A"
+                due = ai.get("due", "") or "-"
+                notes = ai.get("notes", "") or ""
+                md.append(f"- [ ] {task} (owner: {owner}, termin: {due}) {('- ' + notes) if notes else ''}")
+        elif key == "risks":
+            for r in items:
+                risk = r.get("risk", "")
+                impact = r.get("impact", "")
+                mit = r.get("mitigation", "")
+                md.append(f"- {risk} (wpływ: {impact}) → mitygacja: {mit}")
+        else:
+            for x in items:
+                md.append(f"- {x}")
+    return "\n".join(md)
+
+def summarize_meeting_transcript(transcript: str, model: str = "llama3:latest", max_chars: int = 6000, diarized: bool = False) -> Dict[str, Any]:
+    """
+    Map-Reduce: dzieli transkrypcję na fragmenty, robi częściowe JSON-y, a następnie scali w jeden JSON.
+    diarized: jeśli True, model zostanie poinformowany, że są SPEAKER_x (w prompt'cie już zaznaczone jako możliwe).
+    """
+    if not transcript or len(transcript.strip()) < 20:
+        return {}
+
+    # MAP
+    parts = chunk_text(transcript, max_chars=max_chars, overlap=500)
+    partials: List[Dict[str, Any]] = []
+    for p in parts:
+        prompt = MAP_PROMPT_TEMPLATE.format(fragment=p)
+        resp = query_ollama_text(prompt, model=model, json_mode=True, timeout=180)
+        data = try_parse_json(resp)
+        if not data:
+            # fallback: spróbuj bez format json
+            resp2 = query_ollama_text(prompt, model=model, json_mode=False, timeout=180)
+            data = try_parse_json(resp2)
+        if data:
+            partials.append(data)
+
+    if not partials:
+        # jeśli nie udało się uzyskać żadnego JSON - zwróć prymityw
+        return {"summary": transcript[:1200] + ("..." if len(transcript) > 1200 else "")}
+
+    # REDUCE
+    partials_str = json.dumps(partials, ensure_ascii=False, indent=2)
+    reduce_prompt = REDUCE_PROMPT_TEMPLATE.format(partials=partials_str)
+    reduce_resp = query_ollama_text(reduce_prompt, model=model, json_mode=True, timeout=240)
+    final_data = try_parse_json(reduce_resp)
+    if not final_data:
+        # fallback: proste merge lokalnie
+        final_data = merge_summary_dicts(partials)
+
+    return final_data
+
+# === UI ===
 st.title("📄 Document Converter Pro")
 st.caption("Konwersja PDF/DOCX/PPTX/IMG/AUDIO → TXT z OCR, Vision lub Whisper")
 
@@ -473,6 +671,15 @@ with st.sidebar:
     has_anythingllm = bool(ANYTHINGLLM_URL and ANYTHINGLLM_API_KEY)
     st.caption(f"Status: {'✅ Skonfigurowane' if has_anythingllm else '❌ Brak config'}")
 
+    st.subheader("🧠 Podsumowanie audio (AI)")
+    summarize_audio_enabled = st.checkbox("Włącz podsumowanie rozmów audio", value=True)
+    summarize_model_candidates = [
+        m for m in list_ollama_models()
+        if not any(m.startswith(p) for p in ("llava", "bakllava", "moondream", "llava-phi", "nomic-embed"))
+    ]
+    summarize_model = st.selectbox("Model do podsumowania", options=summarize_model_candidates or ["llama3:latest"])
+    chunk_chars = st.slider("Rozmiar chunku (znaki)", min_value=2000, max_value=8000, value=6000, step=500)
+
 uploaded_files = st.file_uploader(
     "Wgraj dokumenty",
     type=['pdf', 'docx', 'pptx', 'ppt', 'jpg', 'jpeg', 'png', 'txt', 'mp3', 'wav', 'm4a', 'ogg', 'flac'],
@@ -492,31 +699,33 @@ if uploaded_files:
             st.info(f"💾 Wyniki będą zapisane w: {run_dir}")
 
         progress = st.progress(0)
+        audio_items = []  # [(name, text, meta)]
+
         for idx, file in enumerate(uploaded_files):
             progress.progress((idx + 1) / len(uploaded_files), text=f"Przetwarzam: {file.name}")
 
             st.subheader(f"📄 {file.name}")
 
             try:
-                text, pages, meta = process_file(file, use_vision, selected_vision, ocr_pages_limit, image_mode)
+                extracted_text, pages, meta = process_file(file, use_vision, selected_vision, ocr_pages_limit, image_mode)
 
                 all_texts.append(f"\n{'='*80}\n")
                 all_texts.append(f"PLIK: {file.name}\n")
-                all_texts.append(f"Typ: {file.type}, Rozmiar: {file.size/1024:.1f} KB\n")
+                all_texts.append(f"Typ: {getattr(file, 'type', 'unknown')}, Rozmiar: {getattr(file, 'size', 0)/1024:.1f} KB\n")
                 all_texts.append(f"{'='*80}\n")
-                all_texts.append(text)
+                all_texts.append(extracted_text)
                 all_texts.append(f"\n[Stron/sekcji: {pages}]\n")
 
                 stats['processed'] += 1
                 stats['pages'] += pages
 
                 with st.expander(f"Preview: {file.name}"):
-                    st.text(text[:2000] + ("..." if len(text) > 2000 else ""))
+                    st.text(extracted_text[:2000] + ("..." if len(extracted_text) > 2000 else ""))
 
                 if enable_local_save and per_file_save and run_dir:
                     fname_base = os.path.splitext(safe_filename(file.name))[0]
                     out_txt = os.path.join(run_dir, f"{fname_base}.txt")
-                    save_text(out_txt, text)
+                    save_text(out_txt, extracted_text)
                     st.caption(f"💾 Zapisano: {out_txt}")
 
                     if isinstance(meta, dict) and meta.get("type") == "audio":
@@ -525,6 +734,10 @@ if uploaded_files:
                             srt_path = os.path.join(run_dir, f"{fname_base}.srt")
                             save_text(srt_path, segments_to_srt(segments))
                             st.caption(f"💾 Zapisano SRT: {srt_path}")
+
+                # Zbieraj audio do podsumowania
+                if isinstance(meta, dict) and meta.get("type") == "audio":
+                    audio_items.append((file.name, extracted_text, meta))
 
             except Exception as e:
                 st.error(f"❌ Błąd: {e}")
@@ -557,3 +770,35 @@ if uploaded_files:
                     st.success(msg)
                 else:
                     st.error(msg)
+
+        # === PODSUMOWANIE AUDIO ===
+        if summarize_audio_enabled and audio_items:
+            st.subheader("🧠 Podsumowania rozmów audio")
+            for (aname, atext, ameta) in audio_items:
+                st.markdown(f"### 🎧 {aname}")
+                diarized = bool(ameta.get("has_speakers"))
+                with st.spinner(f"Tworzę podsumowanie dla {aname}..."):
+                    summary_json = summarize_meeting_transcript(
+                        transcript=atext,
+                        model=summarize_model if summarize_model_candidates else "llama3:latest",
+                        max_chars=chunk_chars,
+                        diarized=diarized
+                    )
+                    summary_md = build_meeting_summary_markdown(summary_json)
+                    st.markdown(summary_md)
+
+                    # Zapis podsumowania
+                    if enable_local_save and run_dir:
+                        fname_base = os.path.splitext(safe_filename(aname))[0]
+                        out_summary = os.path.join(run_dir, f"{fname_base}.summary.md")
+                        save_text(out_summary, summary_md)
+                        st.caption(f"💾 Zapisano podsumowanie: {out_summary}")
+
+                    # Pobierz jako plik
+                    st.download_button(
+                        "⬇️ Pobierz podsumowanie (MD)",
+                        summary_md.encode("utf-8"),
+                        file_name=f"{os.path.splitext(safe_filename(aname))[0]}_summary.md",
+                        mime="text/markdown",
+                        key=f"dl_{aname}"
+                    )
