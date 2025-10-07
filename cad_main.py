@@ -1,4 +1,4 @@
-
+#07.10.2025 ostatni z lm arena
 import streamlit as st
 import pandas as pd
 import psycopg2
@@ -15,30 +15,27 @@ import logging
 from contextlib import contextmanager
 import time
 from functools import lru_cache
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import io
-
 from io import BytesIO
 import plotly.express as px
 from PyPDF2 import PdfReader
 from rapidfuzz import fuzz, process
-import unicodedata
-#import numpy as np
 
 # === KONFIGURACJA i LOGGING ===
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("cad-estimator")
 
 st.set_page_config(page_title="CAD Estimator Pro", layout="wide", page_icon="🚀")
-OLLAMA_URL = os.getenv('OLLAMA_URL', 'https://ollama.polmicai.pl')
+
+# === ENV ===
+OLLAMA_URL = os.getenv('OLLAMA_URL', 'http://ollama:11434')
 DB_HOST = os.getenv('DB_HOST', 'cad-postgres')
 DB_NAME = os.getenv('DB_NAME', 'cad_estimator')
 DB_USER = os.getenv('DB_USER', 'cad_user')
 DB_PASSWORD = os.getenv('DB_PASSWORD', 'cad_password_2024')
 EMBED_MODEL = os.getenv('EMBED_MODEL', 'nomic-embed-text')
 EMBED_DIM = int(os.getenv('EMBED_DIM', '768'))
-
-
 
 # === DZIAŁY ===
 DEPARTMENTS = {
@@ -48,28 +45,6 @@ DEPARTMENTS = {
     '134': 'Heavy Equipment',
     '135': 'Special Purpose Machinery'
 }
-DEPARTMENT_META = {
-'131': {
-'name': 'Automotive',
-'norms': ['IATF 16949', 'ISO 12100', 'ISO 13849-1', 'ISO 2768-mK', 'ISO 5817 B'],
-'phase_shares': {'layout': 0.15, 'detail': 0.55, 'doc': 0.30},
-'checklist': [
-'Tolerancje ISO 2768 na rysunkach',
-'Spoiny wg ISO 5817 klasa B',
-'Dokumentacja PPAP dostępna'
-]
-},
-'132': {
-'name': 'Industrial Machinery',
-'norms': ['ISO 12100', 'EN 60204-1', 'ISO 13849-1', 'EN ISO 14120'],
-'phase_shares': {'layout': 0.20, 'detail': 0.50, 'doc': 0.30},
-'checklist': ['Ocena ryzyka ISO 12100', 'Osłony wg EN ISO 14120']
-},
-'133': {'name': 'Transportation', 'norms': ['EN 1090','ISO 3834-2'], 'phase_shares': {'layout': 0.18, 'detail': 0.52, 'doc': 0.30}},
-'134': {'name': 'Heavy Equipment', 'norms': ['EN 1090','ISO 3834-2'], 'phase_shares': {'layout': 0.20, 'detail': 0.50, 'doc': 0.30}},
-'135': {'name': 'Special Purpose Machinery', 'norms': ['ISO 12100','EN 60204-1'], 'phase_shares': {'layout': 0.22, 'detail': 0.48, 'doc': 0.30}},
-}
-
 DEPARTMENT_CONTEXT = {
     '131': """Branża: AUTOMOTIVE (Faurecia, VW, Merit, Sitech, Joyson)
 Specyfika: Komponenty samochodowe, wysokie wymagania jakościowe, spawanie precyzyjne, duże serie produkcyjne, normy automotive (IATF 16949).""",
@@ -83,468 +58,51 @@ Specyfika: Maszyny budowlane, koparki, ładowarki, ekstremalne obciążenia, odp
 Specyfika: Maszyny specjalne, niestandardowe rozwiązania, prototypy, unikalne wymagania klienta."""
 }
 
-# === SŁOWNIK NORMALIZACJI KOMPONENTÓW ===
+# === SŁOWNIK NORMALIZACJI KOMPONENTÓW (PL/DE/EN -> EN) ===
 COMPONENT_ALIASES = {
     # Wsporniki
-    'wspornik': 'bracket',
-    'halterung': 'bracket',
-    'halter': 'bracket',
-    'träger': 'bracket',
-    'support': 'bracket',
-    'konsole': 'bracket',
-    
+    'wspornik': 'bracket', 'halterung': 'bracket', 'halter': 'bracket', 'träger': 'bracket',
+    'support': 'bracket', 'konsole': 'bracket',
+
     # Ramy
-    'rama': 'frame',
-    'rahmen': 'frame',
-    'gestell': 'frame',
-    'chassis': 'frame',
-    
+    'rama': 'frame', 'rahmen': 'frame', 'gestell': 'frame', 'chassis': 'frame',
+
     # Przenośniki
-    'przenośnik': 'conveyor',
-    'förderband': 'conveyor',
-    'förderer': 'conveyor',
-    'transport': 'conveyor',
-    
+    'przenośnik': 'conveyor', 'förderband': 'conveyor', 'förderer': 'conveyor', 'transport': 'conveyor',
+
     # Płyty
-    'płyta': 'plate',
-    'platte': 'plate',
-    'sheet': 'plate',
-    'panel': 'plate',
-    
+    'płyta': 'plate', 'platte': 'plate', 'sheet': 'plate', 'panel': 'plate',
+
     # Pokrywy
-    'pokrywa': 'cover',
-    'deckel': 'cover',
-    'abdeckung': 'cover',
-    
+    'pokrywa': 'cover', 'deckel': 'cover', 'abdeckung': 'cover',
+
     # Obudowy
-    'obudowa': 'housing',
-    'gehäuse': 'housing',
-    'casing': 'housing',
-    
-    # Napędy
-    'napęd': 'drive',
-    'antrieb': 'drive',
-    'actuator': 'drive',
-    
-    # Cylindry
-    'siłownik': 'cylinder',
-    'cylinder': 'cylinder',
-    'zylinder': 'cylinder',
-    
+    'obudowa': 'housing', 'gehäuse': 'housing', 'casing': 'housing',
+
+    # Napędy / siłowniki
+    'napęd': 'drive', 'antrieb': 'drive', 'actuator': 'drive',
+    'siłownik': 'cylinder', 'cylinder': 'cylinder', 'zylinder': 'cylinder',
+
     # Prowadnice
-    'prowadnica': 'guide',
-    'führung': 'guide',
-    'rail': 'guide',
-    
+    'prowadnica': 'guide', 'führung': 'guide', 'rail': 'guide',
+
     # Osłony
-    'osłona': 'shield',
-    'schutz': 'shield',
-    'guard': 'shield',
-    
+    'osłona': 'shield', 'schutz': 'shield', 'guard': 'shield',
+
     # Podstawy
-    'podstawa': 'base',
-    'basis': 'base',
-    'fundament': 'base',
-    'sockel': 'base',
-    
+    'podstawa': 'base', 'basis': 'base', 'fundament': 'base', 'sockel': 'base',
+
     # Wały
-    'wał': 'shaft',
-    'welle': 'shaft',
-    'axle': 'shaft',
-    
+    'wał': 'shaft', 'welle': 'shaft', 'axle': 'shaft',
+
     # Łożyska
-    'łożysko': 'bearing',
-    'lager': 'bearing',
-    
-    # Śruby
-    'śruba': 'screw',
-    'schraube': 'screw',
-    'bolt': 'bolt',
+    'łożysko': 'bearing', 'lager': 'bearing',
+
+    # Śruby / bolty
+    'śruba': 'screw', 'schraube': 'screw', 'bolt': 'bolt',
 }
 
-def extract_component_features(name):
-    """Wyciąga cechy charakterystyczne z nazwy."""
-    features = []
-    
-    # 1. Wymiary (liczby + jednostki)
-    dimensions = re.findall(r'\d+(?:\.\d+)?\s*(?:mm|cm|m|inch|")', name, re.IGNORECASE)
-    features.extend(dimensions)
-    
-    # 2. Materiał
-    materials = ['stal', 'steel', 'stahl', 'aluminium', 'alu', 'plastic', 'tworzywo']
-    for mat in materials:
-        if mat in name.lower():
-            features.append(mat)
-            break
-    
-    # 3. Kształt/typ
-    shapes = ['l-shape', 'l-kształt', 'u-shape', 't-shape', 'flat', 'płaski']
-    for shape in shapes:
-        if shape in name.lower():
-            features.append(shape)
-    
-    # 4. Strona (left/right/center)
-    sides = ['left', 'right', 'center', 'lewy', 'prawy', 'środkowy', 'links', 'rechts']
-    for side in sides:
-        if side in name.lower():
-            features.append(side)
-    
-    # 5. Złożoność (spawany, prosty, etc)
-    complexity = ['spawany', 'welded', 'geschweißt', 'simple', 'prosty', 'complex', 'złożony']
-    for comp in complexity:
-        if comp in name.lower():
-            features.append(comp)
-    
-    return features
-
-def normalize_component_name(name):
-    """Normalizuje nazwę ZACHOWUJĄC kluczowe cechy."""
-    if not name or not isinstance(name, str):
-        return name
-    
-    # 1. Cleanup
-    name = ' '.join(name.split())
-    name = name.strip('.,;:-_')
-    
-    # 2. Wyciągnij cechy PRZED tłumaczeniem
-    features = extract_component_features(name)
-    
-    # 3. Tłumacz bazową nazwę
-    name_lower = name.lower()
-    normalized_parts = []
-    
-    for word in name.split():
-        word_lower = word.lower()
-        
-        # Pomiń liczby i jednostki - będą w features
-        if re.match(r'\d+(?:\.\d+)?', word) or word_lower in ['mm', 'cm', 'm', 'inch']:
-            continue
-            
-        if word_lower in COMPONENT_ALIASES:
-            normalized_parts.append(COMPONENT_ALIASES[word_lower])
-        else:
-            found = False
-            for alias, canonical in COMPONENT_ALIASES.items():
-                if alias in word_lower:
-                    normalized_parts.append(canonical)
-                    found = True
-                    break
-            if not found and word_lower not in ['i', 'a', 'the', 'der', 'die', 'das']:
-                normalized_parts.append(word_lower)
-    
-    # 4. Zbuduj finalną nazwę: base_name + features
-    base = ' '.join(normalized_parts)
-    
-    if features:
-        result = f"{base} {' '.join(features)}"
-    else:
-        result = base
-    
-    return result.strip()
-
-def find_best_match(name, existing_names, threshold=85):
-    """Znajduje najbardziej podobną nazwę używając fuzzy matching."""
-    if not existing_names:
-        return None, 0
-    
-    result = process.extractOne(
-        name,
-        existing_names,
-        scorer=fuzz.token_sort_ratio,
-        score_cutoff=threshold
-    )
-    
-    if result:
-        return result[0], result[1]
-    return None, 0
-# === EMBEDDINGI I WEKTORY ===
-def to_pgvector(vec):
-    """Konwertuje listę na format pgvector."""
-    if not vec:
-        return None
-    return '[' + ','.join(f'{float(x):.6f}' for x in vec) + ']'
-    
-_session = None
-def get_session():
-    """Zwraca globalną sesję requests z mechanizmem ponawiania."""
-    global _session
-    if _session is None:
-        s = requests.Session()
-        retries = Retry(total=3, backoff_factor=0.5, status_forcelist=[429, 500, 502, 503, 504])
-        s.mount('http://', HTTPAdapter(max_retries=retries))
-        s.mount('https://', HTTPAdapter(max_retries=retries))
-        _session = s
-    return _session
-    
-# Zamień całą funkcję `get_embedding_ollama` na tę wersję
-@st.cache_data(ttl=86400, show_spinner=False)
-def get_embedding_ollama(text: str, model: str = EMBED_MODEL) -> list:
-    """Pobiera embedding z Ollama (z retry)."""
-    try:
-        s = get_session()
-        r = s.post(f"{OLLAMA_URL}/api/embeddings",
-                   json={"model": model, "prompt": text}, timeout=30)
-        r.raise_for_status()
-        return r.json().get("embedding", [])
-    except Exception as e:
-        logger.error(f"Embeddings error: {e}")
-        return []
-
-def ensure_project_embedding(cur, project_id: int, description: str):
-    """Dodaje embedding do projektu."""
-    if not description or len(description.strip()) < 10:
-        return
-    emb = get_embedding_ollama(description)
-    if emb and len(emb) == EMBED_DIM:
-        try:
-            cur.execute("UPDATE projects SET description_embedding = %s::vector WHERE id=%s",
-                       (to_pgvector(emb), project_id))
-        except Exception as e:
-            logger.warning(f"Embedding failed for project {project_id}: {e}")
-
-def ensure_pattern_embedding(cur, pattern_key: str, dept: str, text_for_embed: str):
-    """Dodaje embedding do wzorca."""
-    if not text_for_embed or len(text_for_embed.strip()) < 3:
-        return
-    emb = get_embedding_ollama(text_for_embed)
-    if emb and len(emb) == EMBED_DIM:
-        try:
-            cur.execute("""
-                UPDATE component_patterns
-                SET name_embedding = %s::vector
-                WHERE pattern_key=%s AND department=%s
-            """, (to_pgvector(emb), pattern_key, dept))
-        except Exception as e:
-            logger.warning(f"Embedding failed for pattern {pattern_key}: {e}")
-
-
-def canonicalize_name(name: str) -> str:
-    """Normalizuje nazwę komponentu do porównań i uczenia."""
-    if not name:
-        return ""
-        
-    n = name.lower()
-    
-    # Usuń wymiary z jednostkami
-    n = re.sub(r'\b\d+[.,]?\d*\s*(mm|cm|m|kg|t|ton|szt|sztuk|pcs)\b', '', n)
-    
-    # Usuń samodzielne liczby
-    n = re.sub(r'\b\d+[.,]?\d*\b', '', n)
-    
-    # Mapowanie synonimów
-    synonyms = {
-        'conveyor': 'przenośnik', 'frame': 'rama', 'jig': 'przyrząd',
-        'fixture': 'przyrząd', 'weld': 'spawanie', 'welding': 'spawanie',
-        'robotic': 'robot', 'robot': 'robot', 'gripper': 'chwytak',
-        'transporter': 'przenośnik', 'carrier': 'nośnik', 'pallet': 'paleta',
-        'station': 'stanowisko', 'cell': 'gniazdo', 'assembly': 'montaż',
-        'base': 'podstawa'
-    }
-    
-    for eng, pl in synonyms.items():
-        n = n.replace(eng, pl)
-    
-    # Usuń znaki specjalne
-    n = re.sub(r'[^a-ząćęłńóśźż\s]', ' ', n)
-    n = re.sub(r'\s+', ' ', n).strip()
-    
-    return n
-def parse_subcomponents_from_comment(comment):
-    """
-    Parsuje komentarz do listy pod-komponentów z ilościami.
-    Obsługuje mieszane wpisy, np.:
-    "2x - docisk śrubowy odrzucany; śruba trapezowa; konsola docisku"
-    → [{'quantity': 2, 'name': 'docisk śrubowy odrzucany'},
-       {'quantity': 1, 'name': 'śruba trapezowa'},
-       {'quantity': 1, 'name': 'konsola docisku'}]
-    """
-    if not comment or not isinstance(comment, str):
-        return []
-
-    def clean_name(s: str) -> str:
-        # usuń wiodące myślniki/spacje
-        s = re.sub(r'^\s*[-–—]\s*', '', s.strip())
-        return s
-
-    subcomponents = []
-    qty_re = re.compile(r'(\d+)\s*(?:x|szt\.?|sztuk|pcs)?\s*[-–—]?\s*([^,;\n]+?)(?=[,;\n]|$)', re.IGNORECASE)
-
-    # 1) Złap wpisy z ilością
-    consumed_spans = []
-    for m in qty_re.finditer(comment):
-        try:
-            qty = int(m.group(1))
-            name = clean_name(m.group(2))
-            if len(name) >= 3 and not re.match(r'^\d+\s*(mm|cm|m|kg|ton|h)$', name, re.IGNORECASE):
-                subcomponents.append({'quantity': qty, 'name': name})
-                consumed_spans.append(m.span())
-        except Exception:
-            continue
-
-    # 2) Remainder: usuń dopasowane fragmenty i podziel resztę po ; lub ,
-    if consumed_spans:
-        remainder_parts = []
-        last = 0
-        for a, b in consumed_spans:
-            remainder_parts.append(comment[last:a])
-            last = b
-        remainder_parts.append(comment[last:])
-        remainder = ';'.join(remainder_parts)
-    else:
-        remainder = comment
-
-    # 3) Wpisy bez liczby traktuj jako 1x
-    for part in re.split(r'[;,]', remainder):
-        name = clean_name(part)
-        if not name or len(name) < 3:
-            continue
-        # pomiń fragmenty, które wyglądają jak czyste liczby/jednostki
-        if re.match(r'^\d+(\.\d+)?\s*(mm|cm|m|kg|ton|h)?$', name, re.IGNORECASE):
-            continue
-        # nie dubluj elementów już znalezionych z ilościami
-        if qty_re.search(name):
-            continue
-        subcomponents.append({'quantity': 1, 'name': name})
-
-    logger.info(f"Parsed {len(subcomponents)} subcomponents from: {comment[:80]}...")
-    return subcomponents
-def _welford_step(mean, m2, n, x):
-    """Algorytm Welforda - aktualizacja średniej i wariancji."""
-    if n and n >= 5:
-        std = (m2 / max(n - 1, 1)) ** 0.5
-        if mean and abs(x - mean) > 2.5 * std:
-            return mean, m2, n  # outlier - odrzuć
-    n_new = (n or 0) + 1
-    delta = x - (mean or 0)
-    mean_new = (mean or 0) + delta / n_new
-    delta2 = x - mean_new
-    m2_new = (m2 or 0) + delta * delta2
-    return mean_new, m2_new, n_new
-
-def best_pattern_key(cur, dept: str, key: str, threshold: int = 88) -> str:
-    """Fuzzy matching dla pattern_key."""
-    cur.execute("SELECT pattern_key FROM component_patterns WHERE pattern_key=%s AND department=%s", (key, dept))
-    if cur.fetchone():
-        return key
-    cur.execute("SELECT DISTINCT pattern_key FROM component_patterns WHERE department=%s AND pattern_key IS NOT NULL", (dept,))
-    keys = [r[0] for r in cur.fetchall()]
-    if not keys:
-        return key
-    match, score, _ = process.extractOne(key, keys, scorer=fuzz.token_sort_ratio)
-    return match if score >= threshold else key
-
-# Zamień całą funkcję `update_pattern_smart`
-def update_pattern_smart(cur, name, dept, layout_h, detail_h, doc_h, total_h, source='actual'):
-    """Welford + outlier + confidence + fuzzy + embedding (naprawione n++)."""
-    key = best_pattern_key(cur, dept, canonicalize_name(name))
-    total = float(layout_h) + float(detail_h) + float(doc_h)
-
-    cur.execute("""
-        SELECT avg_hours_3d_layout, avg_hours_3d_detail, avg_hours_2d, avg_hours_total,
-               m2_layout, m2_detail, m2_doc, m2_total, occurrences
-        FROM component_patterns
-        WHERE pattern_key=%s AND department=%s
-    """, (key, dept))
-    row = cur.fetchone()
-    
-    if row:
-        ml, md, mc, mt, m2l, m2d, m2c, m2t, n0 = row
-        ml, m2l, _ = _welford_step(ml, m2l, n0, float(layout_h))
-        md, m2d, _ = _welford_step(md, m2d, n0, float(detail_h))
-        mc, m2c, _ = _welford_step(mc, m2c, n0, float(doc_h))
-        mt, m2t, _ = _welford_step(mt, m2t, n0, float(total))
-        
-        n1 = (n0 or 0) + 1
-        std_total = (m2t / max(n1 - 1, 1)) ** 0.5 if n1 > 1 else 0.0
-        confidence = min(1.0, n1 / 10.0) * (1.0 / (1.0 + (std_total / (mt or 1e-6))))
-        
-        cur.execute("""
-            UPDATE component_patterns
-            SET avg_hours_3d_layout=%s, avg_hours_3d_detail=%s, avg_hours_2d=%s, avg_hours_total=%s,
-                m2_layout=%s, m2_detail=%s, m2_doc=%s, m2_total=%s,
-                occurrences=%s, confidence=%s, source=%s,
-                last_updated=NOW(),
-                last_actual_sample_at=CASE WHEN %s='actual' THEN NOW() ELSE last_actual_sample_at END,
-                pattern_key=%s
-            WHERE pattern_key=%s AND department=%s
-        """, (ml, md, mc, mt, m2l, m2d, m2c, m2t, n1, confidence, source, source, key, key, dept))
-    else:
-        cur.execute("""
-            INSERT INTO component_patterns (
-                name, pattern_key, department,
-                avg_hours_3d_layout, avg_hours_3d_detail, avg_hours_2d, avg_hours_total,
-                m2_layout, m2_detail, m2_doc, m2_total,
-                occurrences, confidence, source, last_actual_sample_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, 0, 0, 0, 0, 1, 0.1, %s,
-                      CASE WHEN %s='actual' THEN NOW() ELSE NULL END)
-        """, (name, key, dept, layout_h, detail_h, doc_h, total, source, source))
-    
-    ensure_pattern_embedding(cur, key, dept, name)
-    return True
-def update_category_baseline(cur, dept, category, layout_h, detail_h, doc_h):
-    """Aktualizuje baseline dla kategorii (naprawione n++)."""
-    cur.execute("""
-        SELECT mean_layout, mean_detail, mean_doc, m2_layout, m2_detail, m2_doc, occurrences
-        FROM category_baselines WHERE department=%s AND category=%s
-    """, (dept, category))
-    row = cur.fetchone()
-    
-    if row:
-        ml, md, mc, m2l, m2d, m2c, n0 = row
-        ml, m2l, _ = _welford_step(ml, m2l, n0, float(layout_h))
-        md, m2d, _ = _welford_step(md, m2d, n0, float(detail_h))
-        mc, m2c, _ = _welford_step(mc, m2c, n0, float(doc_h))
-        n1 = (n0 or 0) + 1
-        conf = min(1.0, n1 / 10.0)
-        
-        cur.execute("""
-            UPDATE category_baselines
-            SET mean_layout=%s, mean_detail=%s, mean_doc=%s,
-                m2_layout=%s, m2_detail=%s, m2_doc=%s,
-                occurrences=%s, confidence=%s, last_updated=NOW()
-            WHERE department=%s AND category=%s
-        """, (ml, md, mc, m2l, m2d, m2c, n1, conf, dept, category))
-    else:
-        cur.execute("""
-            INSERT INTO category_baselines (department, category, mean_layout, mean_detail, mean_doc, occurrences, confidence)
-            VALUES (%s, %s, %s, %s, %s, 1, 0.1)
-        """, (dept, category, layout_h, detail_h, doc_h))
-
-def find_similar_projects_semantic(conn, description, department, limit=5):
-    """Semantyczne wyszukiwanie podobnych projektów."""
-    if not description:
-        return []
-    emb = get_embedding_ollama(description)
-    if not emb:
-        return []
-    with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute("""
-            SELECT id, name, client, department, estimated_hours, actual_hours,
-            1 - (description_embedding <-> %s::vector) AS similarity
-            FROM projects
-            WHERE department = %s AND description_embedding IS NOT NULL
-            ORDER BY description_embedding <-> %s::vector
-            LIMIT %s
-        """, (to_pgvector(emb), department, to_pgvector(emb), limit))
-        return cur.fetchall()
-
-def find_similar_components(conn, name, department, limit=5):
-    """Semantyczne wyszukiwanie podobnych komponentów."""
-    key = canonicalize_name(name)
-    emb = get_embedding_ollama(key)
-    if not emb:
-        return []
-    with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute("""
-            SELECT name, avg_hours_total, confidence, occurrences,
-            1 - (name_embedding <-> %s::vector) AS similarity
-            FROM component_patterns
-            WHERE department=%s AND name_embedding IS NOT NULL
-            ORDER BY name_embedding <-> %s::vector
-            LIMIT %s
-        """, (to_pgvector(emb), department, to_pgvector(emb), limit))
-        return cur.fetchall()
-        # === MASTER PROMPT ===
+# === PROMPTY ===
 MASTER_PROMPT = """Jesteś senior konstruktorem CAD z 20-letnim doświadczeniem w:
 - Projektowaniu ram spawalniczych i konstrukcji stalowych
 - Automatyce przemysłowej (PLC, robotyka, pozycjonery)
@@ -554,56 +112,48 @@ MASTER_PROMPT = """Jesteś senior konstruktorem CAD z 20-letnim doświadczeniem 
 Odpowiadaj ZAWSZE w języku polskim.
 
 METODYKA SZACOWANIA:
-1. ANALIZA WYMAGAŃ (10-15% czasu):
-   - Przegląd specyfikacji klienta
-   - Analiza norm (ISO, EN, PN)
-   - Spotkania techniczne
-
-2. KONCEPCJA I MODELOWANIE (40-50% czasu):
-   - Szkice wstępne (3D Layout)
-   - Modelowanie 3D głównych podzespołów (3D Detail)
-   - Analiza kinematyczna (jeśli ruchome części)
-   - Dobór komponentów standardowych
-
-3. OBLICZENIA I WERYFIKACJA (20-30% czasu):
-   - Analiza MES/wytrzymałość
-   - Sprawdzenie kolizji
-   - Optymalizacja masy/kosztów
-
-4. DOKUMENTACJA (15-20% czasu):
-   - Rysunki wykonawcze (2D Documentation)
-   - Specyfikacja materiałowa (BOM)
-   - Instrukcje montażu
-   - Dokumentacja techniczna
-5. RYZYKA - każde MUSI mieć:
-   - "risk": opis
-   - "impact": niski/średni/wysoki
-   - "mitigation": jak minimalizować
+1. ANALIZA WYMAGAŃ (10-15% czasu)
+2. KONCEPCJA I MODELOWANIE (40-50% czasu)
+3. OBLICZENIA I WERYFIKACJA (20-30% czasu)
+4. DOKUMENTACJA (15-20% czasu)
+5. RYZYKA - każde MUSI mieć: "risk", "impact", "mitigation"
 
 CZYNNIKI KOMPLIKUJĄCE (dodaj czas):
 - Spawanie precyzyjne: +20%
 - Części ruchome/kinematyka: +30%
 - Automatyzacja/PLC: +25%
-- Specjalne normy (np. ciśnieniowe): +15%
+- Specjalne normy: +15%
 - Niestandardowe materiały: +10%
 - Duże wymiary (>10m): +25%
 
-TWOJA ODPOWIEDŹ MUSI ZAWIERAĆ:
-- Lista zadań z czasem każdego (w godzinach)
-- Breakdown per faza: Layout / Detail / 2D Documentation
-- SUMA dla każdej fazy
-- SUMA TOTAL
-- Główne założenia
-- Potencjalne ryzyka czasowe
+WYMAGANY FORMAT ODPOWIEDZI - ZWRÓĆ TYLKO CZYSTY JSON:
+{
+  "components": [
+    {"name": "Nazwa", "layout_h": 12.5, "detail_h": 42.0, "doc_h": 28.0}
+  ],
+  "sums": {"layout": 12.5, "detail": 42.0, "doc": 28.0, "total": 82.5},
+  "assumptions": ["Założenie 1"],
+  "risks": [
+    {"risk": "Opis ryzyka", "impact": "wysoki/średni/niski", "mitigation": "Jak zminimalizować"}
+  ],
+  "adjustments": [
+    {
+      "parent": "Nazwa komponentu z głównej listy",
+      "adds": [
+        {"name": "nazwa sub-komponentu", "qty": 2, "layout_add": 0.5, "detail_add": 3.0, "doc_add": 1.0, "reason": "dlaczego"}
+      ]
+    }
+  ]
+}
+
+WAŻNE: Zwróć WYŁĄCZNIE JSON bez tekstu.
 """
 
 def build_analysis_prompt(description, components_excel, learned_patterns, pdf_text, department):
     sections = []
     sections.append(MASTER_PROMPT)
-
     if department and department in DEPARTMENT_CONTEXT:
         sections.append(f"\n{DEPARTMENT_CONTEXT[department]}\n")
-
     sections.append(f"\nOPIS KLIENTA:\n{description or '(brak)'}\n")
 
     if components_excel:
@@ -613,19 +163,23 @@ def build_analysis_prompt(description, components_excel, learned_patterns, pdf_t
         total_2d = sum(c.get('hours_2d', 0) for c in components_excel if not c.get('is_summary'))
 
         sections.append(f"\nKOMPONENTY Z EXCEL ({len(limited)} z {len(components_excel)} pozycji):")
-        sections.append(f"Breakdown z poprzednich projektów:")
         sections.append(f"- 3D Layout: {total_layout:.1f}h")
         sections.append(f"- 3D Detail: {total_detail:.1f}h")
         sections.append(f"- 2D Documentation: {total_2d:.1f}h")
-        sections.append(f"\nPrzykładowe komponenty:")
-
+        sections.append("\nPrzykładowe komponenty:")
         for comp in limited[:15]:
             if not comp.get('is_summary'):
                 sections.append(f"- {comp['name']}: Layout {comp.get('hours_3d_layout',0):.1f}h + Detail {comp.get('hours_3d_detail',0):.1f}h + 2D {comp.get('hours_2d',0):.1f}h")
-                
-                # Informacja o pod-komponentach
                 if comp.get('comment'):
                     sections.append(f"  Uwagi: {comp['comment'][:100]}")
+
+        # SUBKOMPONENTY Z KOMENTARZY
+        sections.append("\nSUBKOMPONENTY Z KOMENTARZY (nazwa + ilość):")
+        for comp in limited[:15]:
+            subs = comp.get('subcomponents', [])
+            if subs:
+                subs_txt = ", ".join([f"{s.get('quantity',1)}x {s.get('name')}" for s in subs])
+                sections.append(f"- {comp['name']}: {subs_txt}")
 
     if pdf_text:
         sections.append("\nTREŚĆ Z DOKUMENTÓW PDF (skrót):\n")
@@ -639,155 +193,66 @@ def build_analysis_prompt(description, components_excel, learned_patterns, pdf_t
             detail_h = p.get('avg_hours_3d_detail', 0)
             doc_h = p.get('avg_hours_2d', 0)
             total_h = p.get('avg_hours_total', layout_h + detail_h + doc_h)
-            prop_l = p.get('proportion_layout', 0.33)
-            prop_d = p.get('proportion_detail', 0.33)
-            prop_doc = p.get('proportion_doc', 0.33)
+            sections.append(f"{mark} '{p['name']}': Total {total_h:.1f}h (Layout {layout_h:.1f}h, Detail {detail_h:.1f}h, 2D {doc_h:.1f}h) - {p['occurrences']}x")
 
-            sections.append(f"{mark} '{p['name']}': Total {total_h:.1f}h (Layout {layout_h:.1f}h/{prop_l:.0%}, Detail {detail_h:.1f}h/{prop_d:.0%}, 2D {doc_h:.1f}h/{prop_doc:.0%}) - {p['occurrences']}x")
-
-    sections.append("""
-
-WYMAGANY FORMAT ODPOWIEDZI - ZWRÓĆ TYLKO CZYSTY JSON:
-{
-  "components": [
-    {"name": "Nazwa", "layout_h": 12.5, "detail_h": 42.0, "doc_h": 28.0}
-  ],
-  "sums": {"layout": 12.5, "detail": 42.0, "doc": 28.0, "total": 82.5},
-  "assumptions": ["Założenie 1"],
-  "risks": [
-    {
-      "risk": "Opis ryzyka",
-      "impact": "wysoki/średni/niski",
-      "mitigation": "Jak zminimalizować"
-    }
-  ]
-}
-
-WAŻNE: Zwróć WYŁĄCZNIE JSON bez tekstu.""")
-
+    sections.append("\nWAŻNE: Zwróć WYŁĄCZNIE JSON bez tekstu.")
     return "\n".join(sections)
 
-# === POMOCNICY BAZY DANYCH ===
-@contextmanager
-def get_db_connection():
-    conn = None
+# === REQUESTS z retry ===
+_session = None
+def get_session():
+    global _session
+    if _session is None:
+        s = requests.Session()
+        retries = Retry(total=3, backoff_factor=0.5, status_forcelist=[429, 500, 502, 503, 504])
+        s.mount('http://', HTTPAdapter(max_retries=retries))
+        s.mount('https://', HTTPAdapter(max_retries=retries))
+        _session = s
+    return _session
+
+# === WEKTORY ===
+def to_pgvector(vec):
+    if not vec:
+        return None
+    return '[' + ','.join(f'{float(x):.6f}' for x in vec) + ']'
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_embedding_ollama(text: str, model: str = EMBED_MODEL) -> list:
     try:
-        conn = psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASSWORD, port=5432)
-        yield conn
-    except psycopg2.OperationalError as e:
-        logger.error(f"Błąd połączenia: {e}")
-        st.error("Błąd połączenia z bazą.")
-        st.stop()
+        s = get_session()
+        r = s.post(f"{OLLAMA_URL}/api/embeddings", json={"model": model, "prompt": text}, timeout=30)
+        r.raise_for_status()
+        return r.json().get("embedding", [])
     except Exception as e:
-        logger.error(f"Błąd: {e}")
-        if conn:
-            conn.rollback()
-        raise
-    finally:
-        if conn:
-            conn.close()
+        logger.error(f"Embeddings error: {e}")
+        return []
 
-@st.cache_resource
-def init_db():
-    try:
-        with get_db_connection() as conn, conn.cursor() as cur:
-            cur.execute('''              
-                CREATE TABLE IF NOT EXISTS project_versions (
-                    id SERIAL PRIMARY KEY,
-                    project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
-                    version VARCHAR(20) NOT NULL,
-                    components JSONB,
-                    estimated_hours FLOAT,
-                    estimated_hours_3d_layout FLOAT DEFAULT 0,
-                    estimated_hours_3d_detail FLOAT DEFAULT 0,
-                    estimated_hours_2d FLOAT DEFAULT 0,
-                    change_description TEXT,
-                    changed_by VARCHAR(100),
-                    is_approved BOOLEAN DEFAULT FALSE,
-                    created_at TIMESTAMP DEFAULT NOW()
-                )
-            ''')
-            
-            cur.execute('''
-                ALTER TABLE component_patterns
-                ADD COLUMN IF NOT EXISTS proportion_layout FLOAT DEFAULT 0.33,
-                ADD COLUMN IF NOT EXISTS proportion_detail FLOAT DEFAULT 0.33,
-                ADD COLUMN IF NOT EXISTS proportion_doc FLOAT DEFAULT 0.33,
-                ADD COLUMN IF NOT EXISTS std_dev_hours FLOAT DEFAULT 0,
-                ADD COLUMN IF NOT EXISTS department VARCHAR(10)
-            ''')
-            
-            cur.execute('CREATE INDEX IF NOT EXISTS idx_projects_created_at ON projects(created_at DESC)')
-            cur.execute('CREATE INDEX IF NOT EXISTS idx_projects_department ON projects(department)')
-            cur.execute('CREATE INDEX IF NOT EXISTS idx_patterns_department ON component_patterns(department)')
-            cur.execute('CREATE INDEX IF NOT EXISTS idx_component_patterns_name ON component_patterns(name, department)')
-            cur.execute('CREATE INDEX IF NOT EXISTS idx_versions_project ON project_versions(project_id, created_at DESC)')
-            # Wstaw ten kod w funkcji `init_db` tuż przed `conn.commit()`
-            # === POCZĄTEK MIGRACJI BAZY DANYCH ===
-            
-            # 1. Włącz rozszerzenie pgvector
-            cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
-            
-            # 2. Dodaj kolumny wektorowe i indeksy do tabel
-            cur.execute(f"ALTER TABLE projects ADD COLUMN IF NOT EXISTS description_embedding vector({EMBED_DIM});")
-            cur.execute("""
-                CREATE INDEX IF NOT EXISTS idx_projects_desc_embed_hnsw
-                ON projects USING hnsw (description_embedding vector_l2_ops);
-            """)
-            
-            cur.execute(f"""
-                ALTER TABLE component_patterns
-                ADD COLUMN IF NOT EXISTS pattern_key TEXT,
-                ADD COLUMN IF NOT EXISTS name_embedding vector({EMBED_DIM}),
-                ADD COLUMN IF NOT EXISTS avg_hours_total DOUBLE PRECISION DEFAULT 0,
-                ADD COLUMN IF NOT EXISTS m2_layout DOUBLE PRECISION DEFAULT 0,
-                ADD COLUMN IF NOT EXISTS m2_detail DOUBLE PRECISION DEFAULT 0,
-                ADD COLUMN IF NOT EXISTS m2_doc DOUBLE PRECISION DEFAULT 0,
-                ADD COLUMN IF NOT EXISTS m2_total DOUBLE PRECISION DEFAULT 0,
-                ADD COLUMN IF NOT EXISTS confidence DOUBLE PRECISION DEFAULT 0,
-                ADD COLUMN IF NOT EXISTS source TEXT,
-                ADD COLUMN IF NOT EXISTS last_actual_sample_at TIMESTAMP;
-            """)
-            cur.execute("""
-                CREATE INDEX IF NOT EXISTS idx_component_patterns_name_embed_hnsw
-                ON component_patterns USING hnsw (name_embedding vector_l2_ops);
-            """)
-            cur.execute("""
-                CREATE INDEX IF NOT EXISTS idx_component_patterns_pattern_key_dept
-                ON component_patterns(pattern_key, department);
-            """)
-            
-            # 3. Utwórz brakującą tabelę `category_baselines`
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS category_baselines (
-                  id SERIAL PRIMARY KEY,
-                  department VARCHAR(10),
-                  category TEXT,
-                  mean_layout DOUBLE PRECISION DEFAULT 0,
-                  mean_detail DOUBLE PRECISION DEFAULT 0,
-                  mean_doc DOUBLE PRECISION DEFAULT 0,
-                  m2_layout DOUBLE PRECISION DEFAULT 0,
-                  m2_detail DOUBLE PRECISION DEFAULT 0,
-                  m2_doc DOUBLE PRECISION DEFAULT 0,
-                  occurrences INTEGER DEFAULT 0,
-                  confidence DOUBLE PRECISION DEFAULT 0,
-                  last_updated TIMESTAMP DEFAULT NOW(),
-                  UNIQUE(department, category)
-                );
-            """)
-            
-            # === KONIEC MIGRACJI ===
-            conn.commit()
-            logger.info("Baza zainicjalizowana")
-            return True
+def ensure_project_embedding(cur, project_id: int, description: str):
+    if not description or len(description.strip()) < 10:
+        return
+    emb = get_embedding_ollama(description)
+    if emb and len(emb) == EMBED_DIM:
+        try:
+            cur.execute("UPDATE projects SET description_embedding = %s::vector WHERE id=%s",
+                        (to_pgvector(emb), project_id))
+        except Exception as e:
+            logger.warning(f"Embedding failed for project {project_id}: {e}")
 
-    
-    except Exception as e:
-        logger.error(f"Błąd inicjalizacji: {e}")
-        st.error(f"Błąd inicjalizacji: {e}")
-        return False
+def ensure_pattern_embedding(cur, pattern_key: str, dept: str, text_for_embed: str):
+    if not text_for_embed or len(text_for_embed.strip()) < 3:
+        return
+    emb = get_embedding_ollama(text_for_embed)
+    if emb and len(emb) == EMBED_DIM:
+        try:
+            cur.execute("""
+                UPDATE component_patterns
+                SET name_embedding = %s::vector
+                WHERE pattern_key=%s AND department=%s
+            """, (to_pgvector(emb), pattern_key, dept))
+        except Exception as e:
+            logger.warning(f"Embedding failed for pattern {pattern_key}: {e}")
 
-# === POMOCNICY AI ===
+# === AI API ===
 @lru_cache(maxsize=1)
 def list_local_models():
     try:
@@ -798,22 +263,20 @@ def list_local_models():
         pass
     return []
 
-def model_available(name_prefix: str) -> bool:
-    return any(m.startswith(name_prefix) for m in list_local_models())
+def model_available(prefix: str) -> bool:
+    return any(m.startswith(prefix) for m in list_local_models())
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def query_ollama_cached(_payload_str: str) -> str:
-    """Wykonuje zapytanie do Ollama z cache'owaniem (z retry)."""
     payload = json.loads(_payload_str)
     try:
         s = get_session()
-        r = s.post(f"{OLLAMA_URL}/api/generate", json=payload, timeout=60)
+        r = s.post(f"{OLLAMA_URL}/api/generate", json=payload, timeout=90)
         r.raise_for_status()
         return r.json().get('response', 'Brak odpowiedzi.')
     except Exception as e:
         logger.error(f"Błąd AI: {e}")
         return f"Błąd Ollama: {e}"
-
 
 def query_ollama(prompt: str, model: str = "llama3:latest", images_b64=None, format_json=False) -> str:
     payload = {"model": model, "prompt": prompt, "stream": False}
@@ -834,8 +297,88 @@ def encode_image_b64(file, max_px=1280, quality=85):
         logger.warning(f"Błąd kompresji: {e}")
         return base64.b64encode(file.getvalue()).decode("utf-8")
 
+# === NORMALIZACJA NAZW ===
+def canonicalize_name(name: str) -> str:
+    """Normalizuje nazwę komponentu do porównań i uczenia (z aliasami PL/DE/EN)."""
+    if not name:
+        return ""
+    n = name.lower()
+    # Usuń wymiary i liczby
+    n = re.sub(r'\b\d+[.,]?\d*\s*(mm|cm|m|kg|t|ton|szt|pcs|inch|")\b', ' ', n)
+    n = re.sub(r'\b\d+[.,]?\d*\b', ' ', n)
+    # Tokenizacja i mapowanie aliasów
+    tokens = re.split(r'[\s\-_.,;/]+', n)
+    norm_tokens = []
+    stoplist = {'i', 'a', 'the', 'and', 'or', 'der', 'die', 'das', 'und', 'ein', 'eine', 'of', 'for'}
+    for tok in tokens:
+        if not tok or tok in stoplist:
+            continue
+        mapped = COMPONENT_ALIASES.get(tok)
+        if not mapped:
+            for alias, canonical in COMPONENT_ALIASES.items():
+                if alias in tok:
+                    mapped = canonical
+                    break
+        norm_tokens.append(mapped or tok)
+    seen, out = set(), []
+    for t in norm_tokens:
+        if t not in seen:
+            seen.add(t)
+            out.append(t)
+    return ' '.join(out).strip()
+
+# === PARSERY ===
+def parse_subcomponents_from_comment(comment):
+    """
+    Ulepszony parser: obsługuje mieszane wpisy z i bez ilości oraz usuwa myślnik po liczbie (np. '2x - docisk').
+    """
+    if not comment or not isinstance(comment, str):
+        return []
+
+    def clean_name(s: str) -> str:
+        s = re.sub(r'^\s*[-–—]\s*', '', s.strip())
+        return s
+
+    subcomponents = []
+    qty_re = re.compile(r'(\d+)\s*(?:x|szt\.?|sztuk|pcs)?\s*[-–—]?\s*([^,;\n]+?)(?=[,;\n]|$)', re.IGNORECASE)
+
+    consumed_spans = []
+    for m in qty_re.finditer(comment):
+        try:
+            qty = int(m.group(1))
+            name = clean_name(m.group(2))
+            if len(name) >= 3 and not re.match(r'^\d+\s*(mm|cm|m|kg|ton|h)$', name, re.IGNORECASE):
+                subcomponents.append({'quantity': qty, 'name': name})
+                consumed_spans.append(m.span())
+        except Exception:
+            continue
+
+    if consumed_spans:
+        remainder_parts = []
+        last = 0
+        for a, b in consumed_spans:
+            remainder_parts.append(comment[last:a])
+            last = b
+        remainder_parts.append(comment[last:])
+        remainder = ';'.join(remainder_parts)
+    else:
+        remainder = comment
+
+    for part in re.split(r'[;,]', remainder):
+        name = clean_name(part)
+        if not name or len(name) < 3:
+            continue
+        if re.match(r'^\d+(\.\d+)?\s*(mm|cm|m|kg|ton|h)?$', name, re.IGNORECASE):
+            continue
+        if qty_re.search(name):
+            continue
+        subcomponents.append({'quantity': 1, 'name': name})
+
+    logger.info(f"Parsed {len(subcomponents)} subcomponents from: {comment[:80]}...")
+    return subcomponents
+
 def parse_ai_response(text: str, components_from_excel=None):
-    """Parsing z priorytetem JSON, fallback na regex (uproszczone, bez duplikacji)."""
+    """Parsing z priorytetem JSON, fallback do regex i Excel. Wyciąga też 'adjustments'."""
     warnings = []
     parsed_components = []
     total_layout = total_detail = total_2d = 0.0
@@ -847,10 +390,9 @@ def parse_ai_response(text: str, components_from_excel=None):
             "total_hours": 0.0, "total_layout": 0.0, "total_detail": 0.0, "total_2d": 0.0,
             "components": components_from_excel or [], "raw_text": "", "warnings": warnings,
             "analysis": {}, "missing_info": [], "phases": {},
-            "risks_detailed": [], "recommendations": []
+            "risks_detailed": [], "recommendations": [], "ai_adjustments": []
         }
 
-    # Oczyść code-fence
     clean = text.strip()
     if clean.startswith("```json"):
         clean = clean[7:]
@@ -859,7 +401,6 @@ def parse_ai_response(text: str, components_from_excel=None):
     if clean.endswith("```"):
         clean = clean[:-3]
 
-    # Spróbuj JSON
     try:
         data = json.loads(clean)
 
@@ -876,6 +417,7 @@ def parse_ai_response(text: str, components_from_excel=None):
                 })
         data["risks"] = risks
 
+        # Components
         for c in data.get("components", []):
             item = {
                 "name": c.get("name", "bez nazwy"),
@@ -891,8 +433,25 @@ def parse_ai_response(text: str, components_from_excel=None):
         total_detail = float(sums.get("detail", 0) or sum(x["hours_3d_detail"] for x in parsed_components))
         total_2d = float(sums.get("doc", 0) or sum(x["hours_2d"] for x in parsed_components))
 
+        # Adjustments (AI)
+        ai_adj = []
+        for ad in data.get("adjustments", []):
+            parent = ad.get("parent")
+            adds = ad.get("adds", [])
+            norm_adds = []
+            for a in adds:
+                norm_adds.append({
+                    "name": a.get("name", "sub"),
+                    "qty": int(a.get("qty", 1) or 1),
+                    "layout_add": float(a.get("layout_add", 0) or 0),
+                    "detail_add": float(a.get("detail_add", 0) or 0),
+                    "doc_add": float(a.get("doc_add", 0) or 0),
+                    "reason": a.get("reason", "")
+                })
+            ai_adj.append({"parent": parent, "adds": norm_adds})
+        data["ai_adjustments"] = ai_adj
+
     except json.JSONDecodeError:
-        logger.warning("JSON failed, fallback to regex")
         warnings.append("Fallback do regex")
         pattern = r"-\s*([^\n]+?)\s+Layout:\s*(\d+[.,]?\d*)\s*h?,?\s*Detail:\s*(\d+[.,]?\d*)\s*h?,?\s*2D:\s*(\d+[.,]?\d*)\s*h?"
         for m in re.finditer(pattern, text, re.IGNORECASE):
@@ -906,8 +465,9 @@ def parse_ai_response(text: str, components_from_excel=None):
                 })
             except:
                 pass
-    
-    # fallback do Excela gdy AI zwróciło za mało
+        data["ai_adjustments"] = []
+
+    # fallback do Excela
     excel_parts = [c for c in (components_from_excel or []) if not c.get('is_summary', False)]
     if not parsed_components and excel_parts:
         warnings.append("Użyto danych z Excel - AI nie zwróciło komponentów")
@@ -922,7 +482,7 @@ def parse_ai_response(text: str, components_from_excel=None):
         total_detail = sum(c.get('hours_3d_detail', 0) for c in parsed_components)
     if total_2d == 0 and parsed_components:
         total_2d = sum(c.get('hours_2d', 0) for c in parsed_components)
-    
+
     return {
         "total_hours": max(0.0, total_layout + total_detail + total_2d),
         "total_layout": total_layout,
@@ -935,233 +495,80 @@ def parse_ai_response(text: str, components_from_excel=None):
         "missing_info": data.get("missing_info", []),
         "phases": data.get("phases", {}),
         "risks_detailed": data.get("risks", []),
-        "recommendations": data.get("recommendations", [])
-    }
-
-    # JSON parsing
-    try:
-        clean_text = text.strip()
-        if clean_text.startswith("```json"):
-            clean_text = clean_text[7:]
-        if clean_text.startswith("```"):
-            clean_text = clean_text[3:]
-        if clean_text.endswith("```"):
-            clean_text = clean_text[:-3]
-        
-        data = json.loads(clean_text)
-        
-        for c in data.get("components", []):
-            item = {
-                "name": c.get("name", "bez nazwy"),
-                "hours_3d_layout": float(c.get("layout_h", 0) or 0),
-                "hours_3d_detail": float(c.get("detail_h", 0) or 0),
-                "hours_2d": float(c.get("doc_h", 0) or 0),
-            }
-            item["hours"] = item["hours_3d_layout"] + item["hours_3d_detail"] + item["hours_2d"]
-            parsed_components.append(item)
-        
-        sums = data.get("sums", {})
-        total_layout = float(sums.get("layout", 0) or sum(x["hours_3d_layout"] for x in parsed_components))
-        total_detail = float(sums.get("detail", 0) or sum(x["hours_3d_detail"] for x in parsed_components))
-        total_2d = float(sums.get("doc", 0) or sum(x["hours_2d"] for x in parsed_components))
-        
-        logger.info("✅ JSON parsing success")
-        
-    except json.JSONDecodeError:
-        logger.warning("JSON failed, fallback to regex")
-        warnings.append("Fallback do regex")
-        
-        # Regex fallback
-        pattern = r"-\s*([^\n]+?)\s+Layout:\s*(\d+[.,]?\d*)\s*h?,?\s*Detail:\s*(\d+[.,]?\d*)\s*h?,?\s*2D:\s*(\d+[.,]?\d*)\s*h?"
-        for match in re.finditer(pattern, text, re.IGNORECASE):
-            try:
-                parsed_components.append({
-                    "name": match.group(1).strip(),
-                    "hours_3d_layout": float(match.group(2).replace(',', '.')),
-                    "hours_3d_detail": float(match.group(3).replace(',', '.')),
-                    "hours_2d": float(match.group(4).replace(',', '.')),
-                    "hours": sum([float(match.group(i).replace(',', '.')) for i in [2,3,4]])
-                })
-            except:
-                pass
-    
-    if not parsed_components and components_from_excel:
-        warnings.append("Użyto danych z Excel")
-        parsed_components = [c for c in components_from_excel if not c.get('is_summary', False)]
-    
-    if total_layout == 0 and parsed_components:
-        total_layout = sum(c.get('hours_3d_layout', 0) for c in parsed_components)
-    if total_detail == 0 and parsed_components:
-        total_detail = sum(c.get('hours_3d_detail', 0) for c in parsed_components)
-    if total_2d == 0 and parsed_components:
-        total_2d = sum(c.get('hours_2d', 0) for c in parsed_components)
-    
-    return {
-        "total_hours": max(0.0, total_layout + total_detail + total_2d),
-        "total_layout": total_layout, "total_detail": total_detail, "total_2d": total_2d,
-        "components": parsed_components, "raw_text": text, "warnings": warnings
+        "recommendations": data.get("recommendations", []),
+        "ai_adjustments": data.get("ai_adjustments", [])
     }
 
 def parse_cad_project_structured(file_stream):
-    """Parser Excel z hierarchią i komentarzami."""
-    result = {'project_info': {}, 'multipliers': {}, 'components': [], 'totals': {}, 'statistics': {}}
+    """Parser Excel z hierarchią, komentarzami i godzinami."""
+    result = {'components': [], 'multipliers': {}, 'totals': {}, 'statistics': {}}
     df = pd.read_excel(file_stream, header=None)
-    
-    try:
-        result['project_info']['name'] = str(df.iloc[0, 1]) if pd.notna(df.iloc[0, 1]) else ""
-        result['project_info']['customer'] = str(df.iloc[2, 1]) if pd.notna(df.iloc[2, 1]) else ""
-        result['project_info']['cad'] = str(df.iloc[5, 1]) if pd.notna(df.iloc[5, 1]) else ""
-    except:
-        pass
-    
-    multipliers_row = 9
-    try:
-        result['multipliers']['layout'] = float(df.iloc[multipliers_row, 7]) if pd.notna(df.iloc[multipliers_row, 7]) else 1.0
-        result['multipliers']['detail'] = float(df.iloc[multipliers_row, 9]) if pd.notna(df.iloc[multipliers_row, 9]) else 1.0
-        result['multipliers']['documentation'] = float(df.iloc[multipliers_row, 11]) if pd.notna(df.iloc[multipliers_row, 11]) else 1.0
-    except:
-        result['multipliers'] = {'layout': 1.0, 'detail': 1.0, 'documentation': 1.0}
-    
-    data_start_row = 11
+
+    # Kolumny
     COL_POS, COL_DESC, COL_COMMENT = 0, 1, 2
     COL_STD_PARTS, COL_SPEC_PARTS = 3, 4
     COL_HOURS_LAYOUT, COL_HOURS_DETAIL, COL_HOURS_DOC = 7, 9, 11
-    
-    missing_pos_counter = 1
-    
+
+    # Multipliers
+    try:
+        result['multipliers']['layout'] = float(df.iloc[9, COL_HOURS_LAYOUT]) if pd.notna(df.iloc[9, COL_HOURS_LAYOUT]) else 1.0
+        result['multipliers']['detail'] = float(df.iloc[9, COL_HOURS_DETAIL]) if pd.notna(df.iloc[9, COL_HOURS_DETAIL]) else 1.0
+        result['multipliers']['documentation'] = float(df.iloc[9, COL_HOURS_DOC]) if pd.notna(df.iloc[9, COL_HOURS_DOC]) else 1.0
+    except:
+        result['multipliers'] = {'layout': 1.0, 'detail': 1.0, 'documentation': 1.0}
+
+    data_start_row = 11
     for row_idx in range(data_start_row, df.shape[0]):
         try:
-            row_data = df.iloc[row_idx, [COL_POS, COL_DESC, COL_HOURS_LAYOUT, COL_HOURS_DETAIL, COL_HOURS_DOC]]
-            if all(pd.isna(row_data)):
-                continue
-            
             pos = str(df.iloc[row_idx, COL_POS]).strip() if pd.notna(df.iloc[row_idx, COL_POS]) else ""
             name = str(df.iloc[row_idx, COL_DESC]).strip() if pd.notna(df.iloc[row_idx, COL_DESC]) else ""
-            
-            if not pos or pos in ['nan', 'None', '']:
-                has_hours = any([pd.notna(df.iloc[row_idx, col]) for col in [COL_HOURS_LAYOUT, COL_HOURS_DETAIL, COL_HOURS_DOC]])
-                if has_hours:
-                    pos = f"X.{missing_pos_counter}"
-                    missing_pos_counter += 1
-                    if not name or name in ['nan', 'None', '']:
-                        name = f"[Komponent wiersz {row_idx + 1}]"
-                else:
-                    continue
-            
-        
-            if name in ['nan', 'None']:
-                name = f"[Pozycja {pos}]"
-            
+            if not pos or pos in ['nan', 'None', '']: continue
+            if not name or name in ['nan', 'None']: name = f"[Pozycja {pos}]"
             comment = str(df.iloc[row_idx, COL_COMMENT]).strip() if pd.notna(df.iloc[row_idx, COL_COMMENT]) else ""
-            if comment in ['nan', 'None']:
-                comment = ''
-            
-            # Parsuj pod-komponenty z komentarza
+
+            hours_layout = float(df.iloc[row_idx, COL_HOURS_LAYOUT]) if pd.notna(df.iloc[row_idx, COL_HOURS_LAYOUT]) else 0.0
+            hours_detail = float(df.iloc[row_idx, COL_HOURS_DETAIL]) if pd.notna(df.iloc[row_idx, COL_HOURS_DETAIL]) else 0.0
+            hours_doc = float(df.iloc[row_idx, COL_HOURS_DOC]) if pd.notna(df.iloc[row_idx, COL_HOURS_DOC]) else 0.0
+
+            is_summary = bool(re.match(r'^\d+,0$', pos) or pos.isdigit())
+
             subcomponents = parse_subcomponents_from_comment(comment)
-            
-            std_parts = spec_parts = 0
-            try:
-                if pd.notna(df.iloc[row_idx, COL_STD_PARTS]):
-                    std_parts = int(float(df.iloc[row_idx, COL_STD_PARTS]))
-            except:
-                pass
-            try:
-                if pd.notna(df.iloc[row_idx, COL_SPEC_PARTS]):
-                    spec_parts = int(float(df.iloc[row_idx, COL_SPEC_PARTS]))
-            except:
-                pass
-            
-            hours_layout = hours_detail = hours_doc = 0.0
-            try:
-                if pd.notna(df.iloc[row_idx, COL_HOURS_LAYOUT]):
-                    hours_layout = float(df.iloc[row_idx, COL_HOURS_LAYOUT])
-            except:
-                pass
-            try:
-                if pd.notna(df.iloc[row_idx, COL_HOURS_DETAIL]):
-                    hours_detail = float(df.iloc[row_idx, COL_HOURS_DETAIL])
-            except:
-                pass
-            try:
-                if pd.notna(df.iloc[row_idx, COL_HOURS_DOC]):
-                    hours_doc = float(df.iloc[row_idx, COL_HOURS_DOC])
-            except:
-                pass
-            
-            total_hours = hours_layout + hours_detail + hours_doc
-
-            # LOGIKA DLA PRZECINKA: 0,0 / 1,0 / 2,0 / 1,1 / 1,2
-            # is_summary = True dla: 0,0 / 1,0 / 2,0 / 3,0 (główne złożenia - POMIJANE)
-            # is_summary = False dla: 1,1 / 1,2 / 1,3 (części składowe - ZLICZONE)
-
-            is_summary = False
-
-            # Wykryj pozycje typu X,0 (np. 0,0, 1,0, 2,0, 3,0)
-            if re.match(r'^\d+,0$', pos):
-                is_summary = True
-            # LUB same cyfry bez separatora (0, 1, 2, 3)
-            elif pos.isdigit():
-                is_summary = True
-
-            # Level bazuje na ilości przecinków
-            level = pos.count(',')
 
             component = {
                 'id': pos, 'name': name, 'comment': comment,
                 'type': 'assembly' if is_summary else 'part',
-                'level': level,  # Zmienione z pos.count('.')
-                'parts': {'standard': std_parts, 'special': spec_parts, 'total': std_parts + spec_parts},
-                'hours_3d_layout': hours_layout, 'hours_3d_detail': hours_detail,
-                'hours_2d': hours_doc, 'hours': total_hours, 'is_summary': is_summary,
-                'subcomponents': subcomponents  # Jeśli parsowałeś wcześniej
+                'level': pos.count(','),
+                'parts': {'standard': int(float(df.iloc[row_idx, COL_STD_PARTS])) if pd.notna(df.iloc[row_idx, COL_STD_PARTS]) else 0,
+                          'special': int(float(df.iloc[row_idx, COL_SPEC_PARTS])) if pd.notna(df.iloc[row_idx, COL_SPEC_PARTS]) else 0},
+                'hours_3d_layout': hours_layout, 'hours_3d_detail': hours_detail, 'hours_2d': hours_doc,
+                'hours': hours_layout + hours_detail + hours_doc,
+                'is_summary': is_summary,
+                'subcomponents': subcomponents
             }
-            
             result['components'].append(component)
-            
         except Exception as e:
             logger.warning(f"Błąd wiersz {row_idx + 1}: {e}")
             continue
-    
-    # Pomiń komponenty bez godzin (0.0h) I bez nazwy
+
     parts_only = [
         c for c in result['components']
-        if not c.get('is_summary', False)
-        and c.get('hours', 0) > 0
-        and c.get('name') not in ['[part]', '[assembly]', '', ' ']
+        if not c.get('is_summary', False) and c.get('hours', 0) > 0 and c.get('name') not in ['[part]', '[assembly]', '', ' ']
     ]
-
-    # DEBUG
-    logger.info(f"=== PARSER DEBUG ===")
-    logger.info(f"Total components parsed: {len(result['components'])}")
-    logger.info(f"Parts with hours > 0: {len(parts_only)}")
-    for c in parts_only:
-        logger.info(f"  {c['id']} | {c['name']} | hours={c['hours']:.1f}h")
-
     result['totals']['layout'] = sum(c['hours_3d_layout'] for c in parts_only)
     result['totals']['detail'] = sum(c['hours_3d_detail'] for c in parts_only)
     result['totals']['documentation'] = sum(c['hours_2d'] for c in parts_only)
     result['totals']['total'] = sum(c['hours'] for c in parts_only)
-    result['statistics']['total_standard_parts'] = sum(c['parts']['standard'] for c in parts_only)
-    result['statistics']['total_special_parts'] = sum(c['parts']['special'] for c in parts_only)
-    result['statistics']['assemblies_count'] = sum(1 for c in result['components'] if c.get('is_summary', False))
     result['statistics']['parts_count'] = len(parts_only)
-    
-    logger.info(f"Parser: {len(result['components'])} komponentów ({len(parts_only)} części)")
+    result['statistics']['assemblies_count'] = sum(1 for c in result['components'] if c.get('is_summary', False))
     return result
 
 def process_excel(file):
     try:
         result = parse_cad_project_structured(file)
         if result['components']:
-            st.success(f"✅ {len(result['components'])} komponentów: "
-                      f"Layout {result['totals']['layout']:.1f}h + "
-                      f"Detail {result['totals']['detail']:.1f}h + "
-                      f"2D {result['totals']['documentation']:.1f}h = "
-                      f"{result['totals']['total']:.1f}h")
+            st.success(f"✅ {len(result['components'])} komponentów: Layout {result['totals']['layout']:.1f}h + Detail {result['totals']['detail']:.1f}h + 2D {result['totals']['documentation']:.1f}h = {result['totals']['total']:.1f}h")
             if result['multipliers']:
-                st.info(f"Współczynniki: Layout={result['multipliers']['layout']}, "
-                       f"Detail={result['multipliers']['detail']}, "
-                       f"Doc={result['multipliers']['documentation']}")
+                st.info(f"Współczynniki: Layout={result['multipliers']['layout']}, Detail={result['multipliers']['detail']}, Doc={result['multipliers']['documentation']}")
                 st.session_state["excel_multipliers"] = result['multipliers']
         return result['components']
     except Exception as e:
@@ -1199,20 +606,17 @@ def categorize_component(name: str) -> str:
         if any(k in n for k in keys):
             return cat
     return "inne"
+
 def show_project_timeline(components):
     if not components:
         st.info("Brak komponentów do wyświetlenia")
         return
-
     parts = [c for c in components if not c.get('is_summary', False) and c.get('hours', 0) > 0]
     if not parts:
         st.info("Brak komponentów z godzinami")
         return
-
-    #累積 godziny → timeline
     timeline_data = []
     cumulative = 0
-
     for comp in parts:
         hours = comp.get('hours', 0)
         timeline_data.append({
@@ -1222,20 +626,10 @@ def show_project_timeline(components):
             'Hours': hours
         })
         cumulative += hours
-
     df = pd.DataFrame(timeline_data)
-
-    fig = px.bar(
-        df,
-        x='Hours',
-        y='Task',
-        orientation='h',
-        title="Harmonogram realizacji (sekwencyjnie)",
-        labels={'Hours': 'Godziny', 'Task': 'Komponent'}
-    )
+    fig = px.bar(df, x='Hours', y='Task', orientation='h', title="Harmonogram realizacji (sekwencyjnie)", labels={'Hours': 'Godziny', 'Task': 'Komponent'})
     fig.update_layout(yaxis={'categoryorder':'total ascending'})
     st.plotly_chart(fig, use_container_width=True)
-
 
 def export_quotation_to_excel(project_data):
     output = BytesIO()
@@ -1246,7 +640,6 @@ def export_quotation_to_excel(project_data):
             df_components.to_excel(writer, sheet_name='Wycena', index=False)
         else:
             pd.DataFrame([{"info": "Brak"}]).to_excel(writer, sheet_name='Wycena', index=False)
-        
         summary = pd.DataFrame({
             'Parametr': ['Nazwa', 'Klient', 'Dział', 'Suma', 'Data'],
             'Wartość': [
@@ -1283,9 +676,7 @@ def get_project_versions(conn, project_id):
         """, (project_id,))
         return cur.fetchall()
 
-# Zamień całą funkcję `find_similar_projects`
 def find_similar_projects(conn, description, department, limit=3):
-    """Wyszukiwanie projektów za pomocą websearch_to_tsquery."""
     if not description:
         return []
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -1298,87 +689,1113 @@ def find_similar_projects(conn, description, department, limit=3):
         """, (department, description, limit))
         return cur.fetchall()
 
-def validate_project_input(name, estimated_hours):
-    errors = []
-    if not name or not name.strip():
-        errors.append("Nazwa nie może być pusta")
-    if len(name) > 255:
-        errors.append("Nazwa zbyt długa")
-    if estimated_hours < 0:
-        errors.append("Godziny < 0")
-    if estimated_hours > 10000:
-        errors.append("Godziny > 10000")
-    return errors
+def find_similar_projects_semantic(conn, description, department, limit=5):
+    if not description:
+        return []
+    emb = get_embedding_ollama(description)
+    if not emb:
+        return []
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute("""
+            SELECT id, name, client, department, estimated_hours, actual_hours,
+                   1 - (description_embedding <-> %s::vector) AS similarity
+            FROM projects
+            WHERE department = %s AND description_embedding IS NOT NULL
+            ORDER BY description_embedding <-> %s::vector
+            LIMIT %s
+        """, (to_pgvector(emb), department, to_pgvector(emb), limit))
+        return cur.fetchall()
 
-def clear_project_session():
-    for k in ['ai_analysis', 'project_name', 'client', 'description', 'department']:
-        if k in st.session_state:
-            del st.session_state[k]
+def find_similar_components(conn, name, department, limit=5):
+    key = canonicalize_name(name)
+    emb = get_embedding_ollama(key)
+    if not emb:
+        return []
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute("""
+            SELECT name, avg_hours_total, avg_hours_3d_layout, avg_hours_3d_detail, avg_hours_2d,
+                   confidence, occurrences, 1 - (name_embedding <-> %s::vector) AS similarity
+            FROM component_patterns
+            WHERE department=%s AND name_embedding IS NOT NULL
+            ORDER BY name_embedding <-> %s::vector
+            LIMIT %s
+        """, (to_pgvector(emb), department, to_pgvector(emb), limit))
+        return cur.fetchall()
 
-def batch_import_excels(files, department):
-    results = []
-    progress_bar = st.progress(0)
-    total = len(files)
-    
-    for i, file in enumerate(files):
-        try:
-            progress_bar.progress(int((i + 1) / total * 100), text=f"Przetwarzanie {file.name} ({i+1}/{total})...")
-            
-            components = process_excel(file)
-            
-            if not components:
-                results.append({'file': file.name, 'status': 'error', 'message': 'Brak komponentów'})
+# === DB ===
+@contextmanager
+def get_db_connection():
+    conn = None
+    try:
+        conn = psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASSWORD, port=5432)
+        yield conn
+    except psycopg2.OperationalError as e:
+        logger.error(f"Błąd połączenia: {e}")
+        st.error("Błąd połączenia z bazą.")
+        st.stop()
+    except Exception as e:
+        logger.error(f"Błąd: {e}")
+        if conn:
+            conn.rollback()
+        raise
+    finally:
+        if conn:
+            conn.close()
+
+@st.cache_resource
+def init_db():
+    try:
+        with get_db_connection() as conn, conn.cursor() as cur:
+            # Podstawowe tabele
+            cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS projects (
+                    id SERIAL PRIMARY KEY,
+                    name VARCHAR(255) NOT NULL,
+                    client VARCHAR(255),
+                    department VARCHAR(10),
+                    cad_system VARCHAR(50),
+                    components JSONB,
+                    estimated_hours_3d_layout FLOAT DEFAULT 0,
+                    estimated_hours_3d_detail FLOAT DEFAULT 0,
+                    estimated_hours_2d FLOAT DEFAULT 0,
+                    estimated_hours FLOAT,
+                    actual_hours FLOAT,
+                    complexity_score INTEGER,
+                    accuracy FLOAT,
+                    description TEXT,
+                    ai_analysis TEXT,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    updated_at TIMESTAMP DEFAULT NOW(),
+                    description_embedding vector(%s)
+                )
+            ''', (EMBED_DIM,))
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS component_patterns (
+                    id SERIAL PRIMARY KEY,
+                    name VARCHAR(255) NOT NULL,
+                    department VARCHAR(10),
+                    avg_hours_3d_layout FLOAT DEFAULT 0,
+                    avg_hours_3d_detail FLOAT DEFAULT 0,
+                    avg_hours_2d FLOAT DEFAULT 0,
+                    avg_hours_total FLOAT DEFAULT 0,
+                    proportion_layout FLOAT DEFAULT 0.33,
+                    proportion_detail FLOAT DEFAULT 0.33,
+                    proportion_doc FLOAT DEFAULT 0.33,
+                    std_dev_hours FLOAT DEFAULT 0,
+                    occurrences INTEGER DEFAULT 0,
+                    min_hours FLOAT,
+                    max_hours FLOAT,
+                    typical_complexity FLOAT DEFAULT 1.0,
+                    cad_systems JSONB,
+                    last_updated TIMESTAMP DEFAULT NOW(),
+                    pattern_key TEXT,
+                    name_embedding vector(%s),
+                    m2_layout DOUBLE PRECISION DEFAULT 0,
+                    m2_detail DOUBLE PRECISION DEFAULT 0,
+                    m2_doc DOUBLE PRECISION DEFAULT 0,
+                    m2_total DOUBLE PRECISION DEFAULT 0,
+                    confidence DOUBLE PRECISION DEFAULT 0,
+                    source TEXT,
+                    last_actual_sample_at TIMESTAMP,
+                    UNIQUE(name, department)
+                )
+            ''', (EMBED_DIM,))
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS project_versions (
+                    id SERIAL PRIMARY KEY,
+                    project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+                    version VARCHAR(20) NOT NULL,
+                    components JSONB,
+                    estimated_hours FLOAT,
+                    estimated_hours_3d_layout FLOAT DEFAULT 0,
+                    estimated_hours_3d_detail FLOAT DEFAULT 0,
+                    estimated_hours_2d FLOAT DEFAULT 0,
+                    change_description TEXT,
+                    changed_by VARCHAR(100),
+                    is_approved BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT NOW()
+                )
+            ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS category_baselines (
+                  id SERIAL PRIMARY KEY,
+                  department VARCHAR(10),
+                  category TEXT,
+                  mean_layout DOUBLE PRECISION DEFAULT 0,
+                  mean_detail DOUBLE PRECISION DEFAULT 0,
+                  mean_doc DOUBLE PRECISION DEFAULT 0,
+                  m2_layout DOUBLE PRECISION DEFAULT 0,
+                  m2_detail DOUBLE PRECISION DEFAULT 0,
+                  m2_doc DOUBLE PRECISION DEFAULT 0,
+                  occurrences INTEGER DEFAULT 0,
+                  confidence DOUBLE PRECISION DEFAULT 0,
+                  last_updated TIMESTAMP DEFAULT NOW(),
+                  UNIQUE(department, category)
+                )
+            ''')
+            # Indeksy
+            cur.execute('CREATE INDEX IF NOT EXISTS idx_projects_created_at ON projects(created_at DESC)')
+            cur.execute('CREATE INDEX IF NOT EXISTS idx_projects_department ON projects(department)')
+            cur.execute('CREATE INDEX IF NOT EXISTS idx_patterns_department ON component_patterns(department)')
+            cur.execute('CREATE INDEX IF NOT EXISTS idx_component_patterns_name ON component_patterns(name, department)')
+            cur.execute('CREATE INDEX IF NOT EXISTS idx_versions_project ON project_versions(project_id, created_at DESC)')
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_projects_desc_embed_hnsw ON projects USING hnsw (description_embedding vector_l2_ops);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_component_patterns_name_embed_hnsw ON component_patterns USING hnsw (name_embedding vector_l2_ops);")
+            conn.commit()
+            logger.info("Baza zainicjalizowana")
+            return True
+    except Exception as e:
+        logger.error(f"Błąd inicjalizacji: {e}")
+        st.error(f"Błąd inicjalizacji: {e}")
+        return False
+
+# === STATYSTYKA (WELFORD) ===
+def _welford_step(mean, m2, n, x):
+    """Algorytm Welforda - aktualizacja średniej i wariancji + odrzucanie outlierów po min prób."""
+    if n and n >= 5:
+        std = (m2 / max(n - 1, 1)) ** 0.5
+        if mean and abs(x - mean) > 2.5 * std:
+            return mean, m2, n  # outlier - odrzuć
+    n_new = (n or 0) + 1
+    delta = x - (mean or 0)
+    mean_new = (mean or 0) + delta / n_new
+    delta2 = x - mean_new
+    m2_new = (m2 or 0) + delta * delta2
+    return mean_new, m2_new, n_new
+
+def best_pattern_key(cur, dept: str, key: str, threshold: int = 88) -> str:
+    cur.execute("SELECT pattern_key FROM component_patterns WHERE pattern_key=%s AND department=%s", (key, dept))
+    if cur.fetchone():
+        return key
+    cur.execute("SELECT DISTINCT pattern_key FROM component_patterns WHERE department=%s AND pattern_key IS NOT NULL", (dept,))
+    keys = [r[0] for r in cur.fetchall()]
+    if not keys:
+        return key
+    match, score, _ = process.extractOne(key, keys, scorer=fuzz.token_sort_ratio)
+    return match if score >= threshold else key
+
+def update_pattern_smart(cur, name, dept, layout_h, detail_h, doc_h, source='actual'):
+    """Welford + outlier + confidence + fuzzy + embedding (n++ tylko raz)."""
+    key = best_pattern_key(cur, dept, canonicalize_name(name))
+    total = float(layout_h) + float(detail_h) + float(doc_h)
+
+    cur.execute("""
+        SELECT avg_hours_3d_layout, avg_hours_3d_detail, avg_hours_2d, avg_hours_total,
+               m2_layout, m2_detail, m2_doc, m2_total, occurrences
+        FROM component_patterns
+        WHERE pattern_key=%s AND department=%s
+    """, (key, dept))
+    row = cur.fetchone()
+
+    if row:
+        ml, md, mc, mt, m2l, m2d, m2c, m2t, n0 = row
+        ml, m2l, _ = _welford_step(ml, m2l, n0, float(layout_h))
+        md, m2d, _ = _welford_step(md, m2d, n0, float(detail_h))
+        mc, m2c, _ = _welford_step(mc, m2c, n0, float(doc_h))
+        mt, m2t, _ = _welford_step(mt, m2t, n0, float(total))
+
+        n1 = (n0 or 0) + 1
+        std_total = (m2t / max(n1 - 1, 1)) ** 0.5 if n1 > 1 else 0.0
+        confidence = min(1.0, n1 / 10.0) * (1.0 / (1.0 + (std_total / (mt or 1e-6))))
+
+        cur.execute("""
+            UPDATE component_patterns
+            SET avg_hours_3d_layout=%s, avg_hours_3d_detail=%s, avg_hours_2d=%s, avg_hours_total=%s,
+                m2_layout=%s, m2_detail=%s, m2_doc=%s, m2_total=%s,
+                occurrences=%s, confidence=%s, source=%s,
+                last_updated=NOW(),
+                last_actual_sample_at=CASE WHEN %s='actual' THEN NOW() ELSE last_actual_sample_at END,
+                pattern_key=%s
+            WHERE pattern_key=%s AND department=%s
+        """, (ml, md, mc, mt, m2l, m2d, m2c, m2t, n1, confidence, source, source, key, key, dept))
+    else:
+        cur.execute("""
+            INSERT INTO component_patterns (
+                name, pattern_key, department,
+                avg_hours_3d_layout, avg_hours_3d_detail, avg_hours_2d, avg_hours_total,
+                m2_layout, m2_detail, m2_doc, m2_total,
+                occurrences, confidence, source, last_actual_sample_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, 0, 0, 0, 0, 1, 0.1, %s,
+                      CASE WHEN %s='actual' THEN NOW() ELSE NULL END)
+        """, (name, key, dept, layout_h, detail_h, doc_h, total, source, source))
+
+    ensure_pattern_embedding(cur, key, dept, name)
+    return True
+
+def update_category_baseline(cur, dept, category, layout_h, detail_h, doc_h):
+    """Aktualizuje baseline dla kategorii (n++ 1x)."""
+    cur.execute("""
+        SELECT mean_layout, mean_detail, mean_doc, m2_layout, m2_detail, m2_doc, occurrences
+        FROM category_baselines WHERE department=%s AND category=%s
+    """, (dept, category))
+    row = cur.fetchone()
+
+    if row:
+        ml, md, mc, m2l, m2d, m2c, n0 = row
+        ml, m2l, _ = _welford_step(ml, m2l, n0, float(layout_h))
+        md, m2d, _ = _welford_step(md, m2d, n0, float(detail_h))
+        mc, m2c, _ = _welford_step(mc, m2c, n0, float(doc_h))
+        n1 = (n0 or 0) + 1
+        conf = min(1.0, n1 / 10.0)
+
+        cur.execute("""
+            UPDATE category_baselines
+            SET mean_layout=%s, mean_detail=%s, mean_doc=%s,
+                m2_layout=%s, m2_detail=%s, m2_doc=%s,
+                occurrences=%s, confidence=%s, last_updated=NOW()
+            WHERE department=%s AND category=%s
+        """, (ml, md, mc, m2l, m2d, m2c, n1, conf, dept, category))
+    else:
+        cur.execute("""
+            INSERT INTO category_baselines (department, category, mean_layout, mean_detail, mean_doc, occurrences, confidence)
+            VALUES (%s, %s, %s, %s, %s, 1, 0.1)
+        """, (dept, category, layout_h, detail_h, doc_h))
+
+# === HEURYSTYKI I PROPOZYCJE Z KOMENTARZY ===
+HEURISTIC_LIBRARY = [
+    # keywords, per-piece hours L/D/2D
+    (['docisk', 'clamp'],            0.5, 1.5, 0.5),
+    (['śruba trapezowa', 'trapez'],  0.2, 0.8, 0.3),
+    (['konsola', 'bracket'],         0.3, 1.0, 0.4),
+    (['płyta', 'plate'],             0.2, 0.7, 0.4),
+]
+
+def heuristic_estimate_for_name(name: str):
+    n = name.lower()
+    for keys, l, d, doc in HEURISTIC_LIBRARY:
+        if any(k in n for k in keys):
+            return l, d, doc, f"Heurystyka: {', '.join(keys)}"
+    return 0.0, 0.0, 0.0, ""
+
+def propose_adjustments_for_components(conn, components, department, conservativeness=1.0, sim_threshold=0.6):
+    """
+    Dla każdego komponentu z sub-komponentami proponuje dodatki godzin:
+    - najpierw wzorce (embedding),
+    - jeśli brak, heurystyki,
+    - zwraca listę {"parent": name, "adds": [{name, qty, layout_add, detail_add, doc_add, reason, source, confidence}]}
+    """
+    proposals = []
+    for comp in components:
+        subs = comp.get('subcomponents', [])
+        if not subs:
+            continue
+
+        # Agregacja
+        agg = {}
+        for s in subs:
+            qty = int(s.get('quantity', 1) or 1)
+            nm = s.get('name', '').strip()
+            if not nm:
                 continue
-            
-            project_name = file.name.replace('.xlsx', '').replace('.xls', '')
-            parts_only = [c for c in components if not c.get('is_summary', False)]
-            
-            if not parts_only:
-                results.append({'file': file.name, 'status': 'error', 'message': 'Brak części'})
-                continue
-            
-            total_layout = sum(c.get('hours_3d_layout', 0) for c in parts_only)
-            total_detail = sum(c.get('hours_3d_detail', 0) for c in parts_only)
-            total_2d = sum(c.get('hours_2d', 0) for c in parts_only)
-            total_hours = total_layout + total_detail + total_2d
-            
-            with get_db_connection() as conn, conn.cursor() as cur:
+            key = canonicalize_name(nm)
+            if key not in agg:
+                agg[key] = {'display_name': nm, 'qty': 0}
+            agg[key]['qty'] += qty
+
+        adds = []
+        for key_name, info in agg.items():
+            display_name = info['display_name']
+            qty = info['qty']
+
+            # 1) wzorzec
+            similar = find_similar_components(conn, display_name, department, limit=1)
+            used = False
+            if similar:
+                s0 = similar[0]
+                sim = float(s0.get('similarity') or 0.0)
+                if sim >= sim_threshold:
+                    l = float(s0.get('avg_hours_3d_layout') or 0.0)
+                    d = float(s0.get('avg_hours_3d_detail') or 0.0)
+                    doc = float(s0.get('avg_hours_2d') or 0.0)
+                    tot = float(s0.get('avg_hours_total') or (l + d + doc))
+                    if tot > 0 and (l + d + doc) == 0:
+                        l = tot * 0.3
+                        d = tot * 0.5
+                        doc = tot * 0.2
+                    adds.append({
+                        "name": display_name, "qty": qty,
+                        "layout_add": l * qty * conservativeness,
+                        "detail_add": d * qty * conservativeness,
+                        "doc_add": doc * qty * conservativeness,
+                        "reason": f"Wzorzec: {s0.get('name')} (sim={sim*100:.0f}%)",
+                        "source": "pattern",
+                        "confidence": float(s0.get('confidence') or 0.5)
+                    })
+                    used = True
+
+            # 2) heurystyka
+            if not used:
+                l, d, doc, why = heuristic_estimate_for_name(display_name)
+                if l + d + doc > 0:
+                    adds.append({
+                        "name": display_name, "qty": qty,
+                        "layout_add": l * qty * conservativeness,
+                        "detail_add": d * qty * conservativeness,
+                        "doc_add": doc * qty * conservativeness,
+                        "reason": why or "Heurystyka ogólna",
+                        "source": "heuristic",
+                        "confidence": 0.4
+                    })
+        if adds:
+            proposals.append({"parent": comp.get('name', 'bez nazwy'), "adds": adds})
+    return proposals
+
+# === DEMO / PRÓBNE DANE ===
+def generate_sample_excel() -> bytes:
+    """
+    Generuje przykładowy Excel pasujący do parsera:
+    - Multipliers w wierszu 10 (index 9): kolumny H, J, L (7,9,11)
+    - Dane od wiersza 12 (index 11)
+    """
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        # utwórz pusty arkusz
+        pd.DataFrame().to_excel(writer, sheet_name='Dane', index=False)
+        ws = writer.sheets['Dane']
+
+        # Multipliers (wiersz 9 zero-based -> index 9)
+        ws.write(9, 7, 1.0)   # Layout
+        ws.write(9, 9, 1.0)   # Detail
+        ws.write(9, 11, 1.0)  # Doc
+
+        # Nagłówki (opcjonalnie)
+        headers = ["Pozycja", "Opis", "Komentarz", "Części std", "Części spec", "", "", "Layout [h]", "", "Detail [h]", "", "Doc [h]"]
+        for col, h in enumerate(headers):
+            ws.write(10, col, h)  # wiersz 11 (index 10)
+
+        # Dane od wiersza 12 (index 11)
+        row = 11
+        # Złożenie główne (sumaryczne)
+        ws.write(row, 0, "1,0"); ws.write(row, 1, "Stacja dociskania omega (złożenie)"); row += 1
+
+        # Komponent 1: z komentarzem z sub-komponentami
+        ws.write(row, 0, "1,1")
+        ws.write(row, 1, "Dociski omega boczna; blachy")
+        ws.write(row, 2, "2x - docisk śrubowy odrzucany; śruba trapezowa; konsola docisku")
+        ws.write(row, 7, 2.0)  # Layout
+        ws.write(row, 9, 6.0)  # Detail
+        ws.write(row, 11, 3.0) # Doc
+        row += 1
+
+        # Komponent 2
+        ws.write(row, 0, "1,2")
+        ws.write(row, 1, "Konsola główna")
+        ws.write(row, 2, "płyta montażowa; 4x wspornik; osłona boczna")
+        ws.write(row, 7, 1.0); ws.write(row, 9, 4.0); ws.write(row, 11, 2.0)
+        row += 1
+
+        # Komponent 3
+        ws.write(row, 0, "1,3")
+        ws.write(row, 1, "Płyta bazowa z otworami")
+        ws.write(row, 2, "8x otwór M12; fazowanie")
+        ws.write(row, 7, 0.5); ws.write(row, 9, 2.5); ws.write(row, 11, 1.0)
+        row += 1
+
+    output.seek(0)
+    return output.getvalue()
+
+def generate_sample_pdf() -> bytes:
+    """
+    Generuje prosty PDF (wymaga reportlab). Jeśli brak, zwraca None.
+    """
+    try:
+        from reportlab.pdfgen import canvas
+        from reportlab.lib.pagesizes import A4
+        buf = BytesIO()
+        c = canvas.Canvas(buf, pagesize=A4)
+        textobject = c.beginText(40, 800)
+        lines = [
+            "Specyfikacja: Stacja dociskania omega (boczna)",
+            "- Wymagane dociski śrubowe z mechanizmem odrzucania",
+            "- Konsola docisku i płyta bazowa",
+            "- Śruby trapezowe w mechanizmie odrzutu",
+            "Normy: ISO 12100, EN 1090",
+            "Uwagi: kinematyka docisku, docisk boczny, kontrola luzu"
+        ]
+        for l in lines:
+            textobject.textLine(l)
+        c.drawText(textobject)
+        c.showPage()
+        c.save()
+        buf.seek(0)
+        return buf.getvalue()
+    except Exception as e:
+        logger.warning(f"Nie można wygenerować PDF (brak reportlab?): {e}")
+        return None
+
+def generate_sample_image() -> bytes:
+    """
+    Generuje prosty obraz PNG (schemat blokowy) dla testu multimodalnego.
+    """
+    w, h = 800, 400
+    img = Image.new("RGB", (w, h), (245, 245, 245))
+    draw = ImageDraw.Draw(img)
+    # Ramka
+    draw.rectangle([20, 20, w-20, h-20], outline=(50, 50, 50), width=3)
+    # Elementy
+    draw.rectangle([60, 150, 220, 250], outline="navy", width=3)   # baza
+    draw.text((70, 260), "Płyta bazowa", fill="navy")
+    draw.rectangle([300, 120, 520, 180], outline="darkgreen", width=3)  # docisk
+    draw.text((310, 185), "Docisk śrubowy", fill="darkgreen")
+    draw.line([520, 150, 700, 150], fill="black", width=3)  # odrzut
+    draw.text((600, 160), "Odrzut", fill="black")
+    # Tekst tytułu
+    draw.text((30, 30), "Stacja dociskania omega (schemat poglądowy)", fill=(0, 0, 0))
+    buf = BytesIO()
+    img.save(buf, format='PNG')
+    buf.seek(0)
+    return buf.getvalue()
+
+def fill_demo_fields():
+    """
+    Wypełnia formularz przykładowymi danymi w sesji.
+    """
+    st.session_state['project_name'] = "Stacja dociskania omega - DEMO"
+    st.session_state['client'] = "Klient Demo sp. z o.o."
+    st.session_state['description'] = (
+        "Stacja dociskania detalu typu omega z dociskami bocznymi. "
+        "Wymagania: mechanizm odrzutu docisku śrubowego, konsola docisku, płyta bazowa. "
+        "Normy: ISO 12100, EN 1090. Złożoność średnia, kinematyka docisków."
+    )
+    st.success("Wypełniono formularz przykładowymi danymi.")
+
+# === UI: Dashboard, Nowy projekt, Historia ===
+def render_dashboard_page():
+    st.header("📊 Dashboard")
+    with get_db_connection() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute("SELECT COUNT(*) as count FROM projects")
+        project_count = cur.fetchone()['count']
+        cur.execute("SELECT AVG(accuracy) as avg FROM projects WHERE accuracy IS NOT NULL")
+        avg_accuracy = (cur.fetchone() or {}).get('avg') or 0
+        cur.execute("""
+            SELECT department, COUNT(*) as count
+            FROM projects WHERE department IS NOT NULL
+            GROUP BY department ORDER BY department
+        """)
+        dept_stats = cur.fetchall()
+
+    col1, col2 = st.columns(2)
+    col1.metric("Projekty", project_count)
+    col2.metric("Średnia dokładność", f"{avg_accuracy*100:.1f}%")
+
+    if dept_stats:
+        st.subheader("Projekty wg działów")
+        df_dept = pd.DataFrame(dept_stats)
+        df_dept['department_name'] = df_dept['department'].map(DEPARTMENTS)
+        st.bar_chart(df_dept.set_index('department_name')['count'])
+
+    st.header("🔍 Wyszukaj projekty")
+    search_dept = st.selectbox("Dział", options=[''] + list(DEPARTMENTS.keys()),
+                               format_func=lambda x: 'Wszystkie' if x == '' else f"{x} - {DEPARTMENTS[x]}")
+    search_query = st.text_input("Słowa kluczowe")
+    if search_query:
+        with get_db_connection() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if search_dept:
                 cur.execute("""
-                    INSERT INTO projects (name, department, components,
-                    estimated_hours_3d_layout, estimated_hours_3d_detail,
-                    estimated_hours_2d, estimated_hours)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
-                """, (project_name, department, json.dumps(parts_only, ensure_ascii=False),
-                      total_layout, total_detail, total_2d, total_hours))
-                project_id = cur.fetchone()[0]
-                
-                                
-                save_project_version(conn, project_id, "v1.0", parts_only,
-                                    total_hours, total_layout, total_detail, total_2d,
-                                    "Import historyczny", "Batch Import")
-                conn.commit()
-            
-            results.append({
-                'file': file.name, 'status': 'success',
-                'project_id': project_id, 'hours': total_hours
+                    SELECT id, name, client, department, estimated_hours, description
+                    FROM projects WHERE department = %s
+                    AND to_tsvector('simple', coalesce(name,'') || ' ' || coalesce(client,'') || ' ' || coalesce(description,'')) @@ websearch_to_tsquery('simple', %s)
+                    ORDER BY created_at DESC LIMIT 10
+                """, (search_dept, search_query))
+            else:
+                cur.execute("""
+                    SELECT id, name, client, department, estimated_hours, description
+                    FROM projects
+                    WHERE to_tsvector('simple', coalesce(name,'') || ' ' || coalesce(client,'') || ' ' || coalesce(description,'')) @@ websearch_to_tsquery('simple', %s)
+                    ORDER BY created_at DESC LIMIT 10
+                """, (search_query,))
+            results = cur.fetchall()
+        if results:
+            st.write(f"Znaleziono {len(results)} projektów:")
+            df_results = pd.DataFrame(results)
+            df_results['department_name'] = df_results['department'].map(DEPARTMENTS)
+            st.dataframe(df_results, use_container_width=True)
+
+            selected_project = st.selectbox(
+                "Historia wersji",
+                options=results,
+                format_func=lambda p: f"{p['name']} ({p['department']})"
+            )
+            if selected_project:
+                with get_db_connection() as conn:
+                    versions = get_project_versions(conn, selected_project['id'])
+                if versions:
+                    st.subheader(f"📜 Historia: {selected_project['name']}")
+                    for v in versions:
+                        with st.expander(f"{v['version']} - {v['created_at'].strftime('%Y-%m-%d %H:%M')} {'✅' if v['is_approved'] else ''}", expanded=(v == versions[0])):
+                            col1, col2, col3 = st.columns(3)
+                            col1.metric("Layout", f"{v['estimated_hours_3d_layout']:.1f}h")
+                            col2.metric("Detail", f"{v['estimated_hours_3d_detail']:.1f}h")
+                            col3.metric("2D", f"{v['estimated_hours_2d']:.1f}h")
+                            st.metric("TOTAL", f"{v['estimated_hours']:.1f}h")
+                            if v['change_description']:
+                                st.text_area("Opis", v['change_description'], height=100, disabled=True, key=f"d_{v['id']}")
+                            st.caption(f"Autor: {v['changed_by']}")
+        else:
+            st.info("Nie znaleziono")
+
+def render_new_project_page(selected_model):
+    st.header("🆕 Nowy Projekt")
+
+    department = st.selectbox(
+        "Wybierz dział*",
+        options=list(DEPARTMENTS.keys()),
+        format_func=lambda x: f"{x} - {DEPARTMENTS[x]}",
+        key="department"
+    )
+
+    st.info(f"📋 {DEPARTMENT_CONTEXT[department]}")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.text_input("Nazwa projektu*", key="project_name")
+        st.text_input("Klient", key="client")
+        st.text_area("Opis", height=200, key="description")
+    with col2:
+        excel_file = st.file_uploader("Excel", type=['xlsx', 'xls'])
+        image_files = st.file_uploader("Zdjęcia/Rysunki", type=['jpg', 'png'], accept_multiple_files=True)
+        pdf_files = st.file_uploader("PDF", type=['pdf'], accept_multiple_files=True)
+
+    # Parametry sugestii
+    st.subheader("⚙️ Uwzględnianie komentarzy")
+    use_comments = st.checkbox("Uwzględnij sub-komponenty z komentarzy w estymacji", value=True)
+    conserv = st.slider("Konserwatywność proponowanych dodatków", min_value=0.5, max_value=1.5, value=1.0, step=0.1)
+
+    if st.button("🤖 Analizuj z AI", use_container_width=True):
+        if not st.session_state.get("description") and not excel_file and not image_files and not pdf_files:
+            st.warning("Podaj opis lub wgraj pliki")
+        else:
+            progress_bar = st.progress(0, text="Startuję...")
+            try:
+                components_from_excel = []
+                if excel_file:
+                    progress_bar.progress(15, text="Wczytuję Excel...")
+                    components_from_excel = process_excel(excel_file)
+
+                images_b64 = []
+                if image_files:
+                    progress_bar.progress(25, text="Analizuję obrazy...")
+                    for img in image_files:
+                        images_b64.append(encode_image_b64(img))
+
+                pdf_text = ""
+                if pdf_files:
+                    progress_bar.progress(30, text="PDF...")
+                    pdf_text = "\n".join([extract_text_from_pdf(pf) for pf in pdf_files])
+
+                # Wzorce
+                with get_db_connection() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute("""
+                        SELECT name, avg_hours_total, avg_hours_3d_layout,
+                               avg_hours_3d_detail, avg_hours_2d,
+                               proportion_layout, proportion_detail, proportion_doc, occurrences
+                        FROM component_patterns
+                        WHERE department = %s AND occurrences > 2
+                        ORDER BY occurrences DESC LIMIT 20
+                    """, (department,))
+                    learned_patterns = cur.fetchall()
+
+                st.write(f"🧠 {len(learned_patterns)} wzorców z działu {department}")
+
+                prompt = build_analysis_prompt(st.session_state.get("description", ""), components_from_excel, learned_patterns, pdf_text, department)
+
+                if images_b64 and model_available("llava"):
+                    ai_model = "llava:13b" if model_available("llava:13b") else "llava:latest"
+                else:
+                    ai_model = selected_model or "llama3:latest"
+
+                progress_bar.progress(60, text=f"AI ({ai_model})...")
+                ai_text = query_ollama(prompt, model=ai_model, images_b64=images_b64, format_json=True)
+
+                progress_bar.progress(80, text="Parsuję...")
+                parsed = parse_ai_response(ai_text, components_from_excel=components_from_excel)
+
+                # Kategoryzacja
+                if parsed.get('components'):
+                    for c in parsed['components']:
+                        if not c.get('is_summary', False):
+                            c['category'] = categorize_component(c.get('name', ''))
+
+                st.session_state["ai_analysis"] = parsed
+                st.session_state["base_components"] = parsed.get('components', [])
+                st.session_state["ai_adjustments"] = parsed.get('ai_adjustments', [])
+
+                # Propozycje wzorce/heurystyki (zależnie od checkboxa i suwaka)
+                if use_comments:
+                    with get_db_connection() as conn:
+                        proposals = propose_adjustments_for_components(conn, st.session_state["base_components"], department, conserv)
+                    st.session_state["rule_adjustments"] = proposals
+                else:
+                    st.session_state["rule_adjustments"] = []
+
+                progress_bar.progress(100, text="Gotowe ✅")
+                time.sleep(0.6)
+                progress_bar.empty()
+
+            except Exception as e:
+                logger.exception("Analiza failed")
+                st.error(f"Błąd: {e}")
+
+    if "ai_analysis" in st.session_state:
+        analysis = st.session_state["ai_analysis"]
+        base_components = st.session_state.get("base_components", [])
+        ai_adjustments = st.session_state.get("ai_adjustments", [])
+        rule_adjustments = st.session_state.get("rule_adjustments", [])
+
+        st.subheader("Wynik analizy")
+        for w in analysis.get("warnings", []):
+            st.warning(w)
+
+        layout_h = analysis.get("total_layout", 0.0)
+        detail_h = analysis.get("total_detail", 0.0)
+        doc_h = analysis.get("total_2d", 0.0)
+        estimated_hours = max(0.0, layout_h + detail_h + doc_h)
+
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Layout", f"{layout_h:.1f}h")
+        col2.metric("Detail", f"{detail_h:.1f}h")
+        col3.metric("2D", f"{doc_h:.1f}h")
+        hourly_rate = st.sidebar.number_input("Stawka PLN/h", min_value=1, max_value=1000, value=150, step=10)
+        col4.metric("TOTAL", f"{estimated_hours:.1f}h", delta=f"{(estimated_hours * hourly_rate):.0f} PLN")
+
+        # Proponowane dodatki (AI)
+        st.subheader("💡 Proponowane dodatki (AI z komentarzy)")
+        ai_selected = []
+        if ai_adjustments:
+            for i, adj in enumerate(ai_adjustments):
+                parent = adj.get("parent", "komponent")
+                with st.expander(f"AI: {parent}"):
+                    for j, add in enumerate(adj.get("adds", [])):
+                        key = f"ai_adj_{i}_{j}"
+                        default = True
+                        checked = st.checkbox(
+                            f"{add['qty']}x {add['name']} → +L {add['layout_add']:.1f}h, +D {add['detail_add']:.1f}h, +2D {add['doc_add']:.1f}h",
+                            value=default, key=key
+                        )
+                        st.caption(f"Powód: {add.get('reason','')}")
+                        if checked:
+                            ai_selected.append({"parent": parent, "add": add})
+        else:
+            st.caption("Brak propozycji AI lub model nie zwrócił 'adjustments'.")
+
+        # Proponowane dodatki (Wzorce/Heurystyki)
+        st.subheader("🧠 Proponowane dodatki (wzorce/heurystyki z komentarzy)")
+        rule_selected = []
+        if rule_adjustments:
+            for i, adj in enumerate(rule_adjustments):
+                parent = adj.get("parent", "komponent")
+                with st.expander(f"Wzorce/Heurystyki: {parent}"):
+                    for j, add in enumerate(adj.get("adds", [])):
+                        key = f"rule_adj_{i}_{j}"
+                        default = True if add.get("source") == "pattern" else False
+                        checked = st.checkbox(
+                            f"{add['qty']}x {add['name']} → +L {add['layout_add']:.1f}h, +D {add['detail_add']:.1f}h, +2D {add['doc_add']:.1f}h  ({add['source']}, conf={add.get('confidence',0):.2f})",
+                            value=default, key=key
+                        )
+                        st.caption(f"Powód: {add.get('reason','')}")
+                        if checked:
+                            rule_selected.append({"parent": parent, "add": add})
+        else:
+            st.caption("Brak propozycji z komentarzy lub uwzględnianie komentarzy wyłączone.")
+
+        # Zbuduj komponenty z zaakceptowanych dodatków (AI + reguły)
+        adjustment_components = []
+        for src, group in [("AI", ai_selected), ("RULE", rule_selected)]:
+            for item in group:
+                parent = item["parent"]
+                add = item["add"]
+                comp = {
+                    "name": f"ADJ: {add['name']} (x{add['qty']})",
+                    "hours_3d_layout": float(add["layout_add"]),
+                    "hours_3d_detail": float(add["detail_add"]),
+                    "hours_2d": float(add["doc_add"]),
+                    "hours": float(add["layout_add"] + add["detail_add"] + add["doc_add"]),
+                    "is_adjustment": True,
+                    "parent": parent,
+                    "source": src
+                }
+                adjustment_components.append(comp)
+
+        st.subheader("🔧 Edytuj wycenę (komponenty bazowe)")
+        final_components_base = []
+        if base_components:
+            parts_only = [
+                c for c in base_components
+                if not c.get('is_summary', False) and c.get('name') not in ['[part]', '[assembly]', '', ' ']
+            ]
+            st.caption(f"ℹ️ Pokazano {len(parts_only)} komponentów")
+            for i, comp in enumerate(parts_only):
+                display_name = comp['name'][:50] + "..." if len(comp['name']) > 50 else comp['name']
+                with st.expander(f"{display_name} - {comp.get('hours', 0):.1f}h"):
+                    st.markdown(f"**Pełna nazwa:** {comp['name']}")
+                    c1, c2, c3 = st.columns(3)
+                    new_layout = c1.number_input("Layout", value=float(comp.get('hours_3d_layout', 0)), key=f"l_{i}")
+                    new_detail = c2.number_input("Detail", value=float(comp.get('hours_3d_detail', 0)), key=f"d_{i}")
+                    new_doc = c3.number_input("2D", value=float(comp.get('hours_2d', 0)), key=f"doc_{i}")
+                    comp2 = dict(comp)
+                    comp2['hours_3d_layout'] = new_layout
+                    comp2['hours_3d_detail'] = new_detail
+                    comp2['hours_2d'] = new_doc
+                    comp2['hours'] = new_layout + new_detail + new_doc
+                    final_components_base.append(comp2)
+                    if comp.get('subcomponents'):
+                        st.markdown("**Zawiera:**")
+                        for sub in comp['subcomponents']:
+                            qty = sub.get('quantity', 1)
+                            st.text(f"  • {qty}x {sub['name']}" if qty > 1 else f"  • {sub['name']}")
+                    if comp.get('comment'):
+                        st.caption(f"💬 {comp['comment']}")
+
+        # Połączenie bazowych i dodatków
+        combined_components = final_components_base + adjustment_components
+
+        # Współczynniki z Excela
+        if "excel_multipliers" in st.session_state and combined_components:
+            st.subheader("📊 Współczynniki z Excela")
+            mult = st.session_state["excel_multipliers"]
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Layout", f"x{mult['layout']:.2f}")
+            c2.metric("Detail", f"x{mult['detail']:.2f}")
+            c3.metric("Doc", f"x{mult['documentation']:.2f}")
+            apply_mult = st.checkbox("Zastosuj współczynniki do wszystkich pozycji (w tym dodatków)", value=False, key="apply_mult")
+            if apply_mult:
+                combined_scaled = []
+                for c in combined_components:
+                    c2 = dict(c)
+                    c2['hours_3d_layout'] = c.get('hours_3d_layout', 0) * mult['layout']
+                    c2['hours_3d_detail'] = c.get('hours_3d_detail', 0) * mult['detail']
+                    c2['hours_2d'] = c.get('hours_2d', 0) * mult['documentation']
+                    c2['hours'] = c2['hours_3d_layout'] + c2['hours_3d_detail'] + c2['hours_2d']
+                    combined_scaled.append(c2)
+                combined_components = combined_scaled
+
+        # Podsumowanie końcowe
+        sum_layout = sum(c.get('hours_3d_layout', 0) for c in combined_components if not c.get('is_summary', False))
+        sum_detail = sum(c.get('hours_3d_detail', 0) for c in combined_components if not c.get('is_summary', False))
+        sum_doc = sum(c.get('hours_2d', 0) for c in combined_components if not c.get('is_summary', False))
+        sum_total = sum_layout + sum_detail + sum_doc
+
+        st.metric("🔢 Suma (po dodatkach i multipliers)", f"{sum_total:.1f}h")
+
+        st.subheader("🗂️ Harmonogram")
+        show_project_timeline(combined_components)
+
+        # Podobne projekty
+        with get_db_connection() as conn:
+            similar = find_similar_projects(conn, st.session_state.get("description"), department)
+        st.subheader(f"📊 Podobne projekty ({department})")
+        if similar:
+            for proj in similar:
+                cc1, cc2, cc3 = st.columns([3,1,1])
+                cc1.write(f"**{proj['name']}** ({proj['client'] or '-'})")
+                cc2.metric("Szacowano", f"{(proj['estimated_hours'] or 0):.1f}h")
+                if proj['actual_hours']:
+                    cc3.metric("Rzeczywiście", f"{proj['actual_hours']:.1f}h")
+        else:
+            st.info("Brak podobnych")
+
+        with get_db_connection() as conn:
+            similar_sem = find_similar_projects_semantic(conn, st.session_state.get("description"), department)
+        st.subheader(f"🧭 Semantycznie podobne projekty (pgvector)")
+        if similar_sem:
+            for sp in similar_sem:
+                sim_pct = sp['similarity'] * 100
+                st.write(f"- **{sp['name']}** (sim={sim_pct:.0f}%) — est: {(sp['estimated_hours'] or 0):.1f}h" + 
+                        (f", act: {sp['actual_hours']:.1f}h" if sp['actual_hours'] else ""))
+        else:
+            st.caption("Brak embeddingów — dodaj projekty i uruchom przeliczanie")
+
+        st.subheader("📤 Eksport")
+        if st.button("📥 Export do Excel"):
+            excel_data = export_quotation_to_excel({
+                'name': st.session_state.get("project_name"),
+                'client': st.session_state.get("client"),
+                'department': department,
+                'components': combined_components,
+                'total_hours': sum_total
             })
-            
-        except Exception as e:
-            results.append({'file': file.name, 'status': 'error', 'message': str(e)})
-            logger.error(f"Błąd {file.name}: {e}")
-    
-    progress_bar.empty()
-    return results
+            st.download_button("⬇️ Pobierz", excel_data,
+                               file_name=f"wycena_{st.session_state.get('project_name','p')}_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+        st.subheader("💾 Zapisz projekt")
+        c1, c2 = st.columns([3,1])
+        with c1:
+            change_desc = st.text_input("Opis zmian", placeholder="np. 'Pierwsza wycena'")
+        with c2:
+            is_approved = st.checkbox("Zatwierdzone", value=False)
+
+        if st.button("💾 Zapisz", type="primary", use_container_width=True):
+            errors = []
+            name = st.session_state.get("project_name")
+            if not name or not name.strip():
+                errors.append("Nazwa nie może być pusta")
+            if sum_total < 0:
+                errors.append("Godziny < 0")
+            if errors:
+                for e in errors:
+                    st.error(e)
+            else:
+                try:
+                    components_to_save = [c for c in combined_components if not c.get('is_summary', False)]
+                    with get_db_connection() as conn, conn.cursor() as cur:
+                        cur.execute("SELECT id FROM projects WHERE name = %s AND department = %s",
+                                    (name, department))
+                        existing = cur.fetchone()
+                        if existing:
+                            project_id = existing[0]
+                            cur.execute("SELECT COUNT(*) FROM project_versions WHERE project_id = %s", (project_id,))
+                            version_num = f"v1.{cur.fetchone()[0] + 1}"
+                            cur.execute("""
+                                UPDATE projects SET components = %s,
+                                estimated_hours_3d_layout = %s, estimated_hours_3d_detail = %s,
+                                estimated_hours_2d = %s, estimated_hours = %s,
+                                ai_analysis = %s, updated_at = NOW()
+                                WHERE id = %s
+                            """, (json.dumps(components_to_save, ensure_ascii=False),
+                                  float(sum_layout), float(sum_detail),
+                                  float(sum_doc), float(sum_total),
+                                  analysis["raw_text"], project_id))
+
+                            save_project_version(conn, project_id, version_num, components_to_save,
+                                                sum_total, sum_layout, sum_detail, sum_doc,
+                                                change_desc or "", "System")
+
+                            if is_approved:
+                                cur.execute("UPDATE project_versions SET is_approved = TRUE WHERE project_id = %s AND version = %s",
+                                          (project_id, version_num))
+                            conn.commit()
+                            st.success(f"✅ Zaktualizowano! {version_num}")
+                        else:
+                            cur.execute("""
+                                INSERT INTO projects (name, client, department, description, components,
+                                estimated_hours_3d_layout, estimated_hours_3d_detail, estimated_hours_2d,
+                                estimated_hours, ai_analysis)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+                            """, (
+                                (st.session_state.get("project_name") or "").strip(),
+                                (st.session_state.get("client") or "").strip(),
+                                department, (st.session_state.get("description") or "").strip(),
+                                json.dumps(components_to_save, ensure_ascii=False),
+                                float(sum_layout), float(sum_detail),
+                                float(sum_doc), float(sum_total),
+                                analysis["raw_text"]
+                            ))
+                            project_id = cur.fetchone()[0]
+                            ensure_project_embedding(cur, project_id, st.session_state.get("description", ""))
+
+                            save_project_version(conn, project_id, "v1.0", components_to_save,
+                                                sum_total, sum_layout, sum_detail, sum_doc,
+                                                change_desc or "Pierwsza wycena", "System")
+
+                            if is_approved:
+                                cur.execute("UPDATE project_versions SET is_approved = TRUE WHERE project_id = %s AND version = 'v1.0'",
+                                          (project_id,))
+                            conn.commit()
+                            st.success(f"✅ Zapisano! ID: {project_id}")
+
+                        logger.info(f"Zapisano: {project_id} - {st.session_state.get('project_name')}")
+                        st.balloons()
+                        time.sleep(1.2)
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"Błąd: {e}")
+                    logger.exception("Zapis failed")
+
+def render_history_page():
+    st.header("📚 Historia i Uczenie")
+    tab1, tab2, tab3 = st.tabs(["✏️ Feedback", "🧠 Wzorce", "📦 Batch Import"])
+
+    with tab1:
+        st.subheader("Dodaj feedback")
+        feedback_dept = st.selectbox("Dział", options=[''] + list(DEPARTMENTS.keys()),
+                                     format_func=lambda x: 'Wszystkie' if x == '' else f"{x} - {DEPARTMENTS[x]}")
+
+        with get_db_connection() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if feedback_dept:
+                cur.execute("""
+                    SELECT id, name, department, estimated_hours
+                    FROM projects WHERE actual_hours IS NULL AND department = %s
+                    ORDER BY created_at DESC
+                """, (feedback_dept,))
+            else:
+                cur.execute("SELECT id, name, department, estimated_hours FROM projects WHERE actual_hours IS NULL ORDER BY created_at DESC")
+            pending = cur.fetchall()
+
+        if pending:
+            proj = st.selectbox("Projekt", options=pending,
+                               format_func=lambda p: f"[{p['department']}] {p['name']} (ID: {p['id']}) | est: {p['estimated_hours']:.1f}h")
+            actual_hours = st.number_input("Rzeczywiste godziny", min_value=0.0, step=0.5, value=float(proj['estimated_hours']))
+
+            if st.button("💾 Zapisz feedback", type="primary"):
+                if actual_hours <= 0:
+                    st.error("Godziny > 0")
+                else:
+                    with get_db_connection() as conn, conn.cursor() as cur:
+                        estimated = float(proj['estimated_hours'])
+                        accuracy = 1 - abs(estimated - actual_hours) / estimated if estimated > 0 else 0
+
+                        cur.execute("UPDATE projects SET actual_hours = %s, accuracy = %s WHERE id = %s",
+                                  (actual_hours, accuracy, proj['id']))
+
+                        cur.execute("SELECT components FROM projects WHERE id = %s", (proj['id'],))
+                        components_data = (cur.fetchone() or [None])[0] or []
+
+                        if components_data:
+                            ratio = actual_hours / estimated if estimated > 0 else 1.0
+                            for comp in components_data:
+                                if comp.get('is_summary'):
+                                    continue
+
+                                layout_est = float(comp.get('hours_3d_layout', 0))
+                                detail_est = float(comp.get('hours_3d_detail', 0))
+                                doc_est = float(comp.get('hours_2d', 0))
+                                total_est = float(comp.get('hours', 0))
+
+                                if total_est > 0:
+                                    update_pattern_smart(
+                                        cur, comp.get('name', 'nieznany'), proj['department'],
+                                        layout_est * ratio, detail_est * ratio,
+                                        doc_est * ratio, source='actual'
+                                    )
+
+                                    subcomponents = comp.get('subcomponents', [])
+                                    if subcomponents:
+                                        total_qty = sum(s.get('quantity', 1) for s in subcomponents)
+                                        for sub in subcomponents:
+                                            qty = sub.get('quantity', 1)
+                                            weight = qty / total_qty if total_qty > 0 else 1.0 / len(subcomponents)
+                                            sub_layout = layout_est * ratio * weight
+                                            sub_detail = detail_est * ratio * weight
+                                            sub_doc = doc_est * ratio * weight
+                                            update_pattern_smart(cur, sub['name'], proj['department'], sub_layout, sub_detail, sub_doc, source='subcomponent')
+                                            logger.info(f"  └─ Sub: {qty}x {sub['name']}")
+
+                        # Aktualizuj baseline kategorii
+                        agg_cat = {}
+                        for comp in components_data:
+                            if comp.get('is_summary'):
+                                continue
+                            layout_act = float(comp.get('hours_3d_layout', 0)) * ratio
+                            detail_act = float(comp.get('hours_3d_detail', 0)) * ratio
+                            doc_act = float(comp.get('hours_2d', 0)) * ratio
+
+                            cat = comp.get('category') or categorize_component(comp.get('name',''))
+                            agg_cat.setdefault(cat, [0.0,0.0,0.0])
+                            agg_cat[cat][0] += layout_act
+                            agg_cat[cat][1] += detail_act
+                            agg_cat[cat][2] += doc_act
+
+                        for cat, (l,d,dc) in agg_cat.items():
+                            update_category_baseline(cur, proj['department'], cat, l, d, dc)
+
+                        conn.commit()
+                    st.success("Dziękuję! System zaktualizowany.")
+                    time.sleep(1)
+                    st.rerun()
+        else:
+            st.info("🎉 Wszystkie projekty mają feedback!")
+
+    with tab2:
+        st.subheader("Wzorce komponentów")
+        pattern_dept = st.selectbox("Filtruj", options=[''] + list(DEPARTMENTS.keys()),
+                                   format_func=lambda x: 'Wszystkie' if x == '' else f"{x} - {DEPARTMENTS[x]}")
+
+        with get_db_connection() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if pattern_dept:
+                cur.execute("""
+                    SELECT name, department, avg_hours_total, avg_hours_3d_layout,
+                           avg_hours_3d_detail, avg_hours_2d, proportion_layout,
+                           proportion_detail, proportion_doc, occurrences
+                    FROM component_patterns
+                    WHERE department = %s AND occurrences > 0 ORDER BY occurrences DESC
+                """, (pattern_dept,))
+            else:
+                cur.execute("""
+                    SELECT name, department, avg_hours_total, avg_hours_3d_layout,
+                           avg_hours_3d_detail, avg_hours_2d, proportion_layout,
+                           proportion_detail, proportion_doc, occurrences
+                    FROM component_patterns WHERE occurrences > 0
+                    ORDER BY department, occurrences DESC
+                """)
+            patterns = cur.fetchall()
+
+        if patterns:
+            df = pd.DataFrame(patterns)
+            df['department_name'] = df['department'].map(DEPARTMENTS)
+            df['proportion_layout'] = (df['proportion_layout'] * 100).round(1).astype(str) + '%'
+            df['proportion_detail'] = (df['proportion_detail'] * 100).round(1).astype(str) + '%'
+            df['proportion_doc'] = (df['proportion_doc'] * 100).round(1).astype(str) + '%'
+            st.dataframe(df, use_container_width=True)
+            st.info(f"{len(patterns)} wzorców")
+        else:
+            st.info("Brak wzorców")
+
+        with st.expander("🧰 Admin: przelicz embeddingi"):
+            if st.button("🔄 Przelicz embeddingi dla istniejących danych"):
+                with get_db_connection() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute("SELECT id, description FROM projects WHERE description IS NOT NULL")
+                    projects_to_embed = cur.fetchall()
+
+                    cur.execute("SELECT pattern_key, department, name FROM component_patterns WHERE pattern_key IS NOT NULL")
+                    patterns_to_embed = cur.fetchall()
+
+                    total_items = len(projects_to_embed) + len(patterns_to_embed)
+                    if total_items == 0:
+                        st.warning("Brak danych do przeliczenia")
+                    else:
+                        progress = st.progress(0, text="Przeliczam embeddingi...")
+                        for idx, p in enumerate(projects_to_embed):
+                            ensure_project_embedding(cur, p['id'], p['description'])
+                            progress.progress(int((idx + 1) / total_items * 100), text=f"Projekty: {idx+1}/{len(projects_to_embed)}")
+                        for idx, r in enumerate(patterns_to_embed):
+                            ensure_pattern_embedding(cur, r['pattern_key'], r['department'], r['name'])
+                            progress.progress(int((len(projects_to_embed) + idx + 1) / total_items * 100), text=f"Wzorce: {idx+1}/{len(patterns_to_embed)}")
+                        conn.commit()
+                        progress.empty()
+                        st.success(f"✅ Przeliczono {len(projects_to_embed)} projektów + {len(patterns_to_embed)} wzorców")
+
+    with tab3:
+        st.subheader("📦 Batch Import")
+        st.info("Import wielu plików Excel naraz")
+
+        batch_dept = st.selectbox("Dział dla importu", options=list(DEPARTMENTS.keys()),
+                                 format_func=lambda x: f"{x} - {DEPARTMENTS[x]}", key="batch_dept")
+
+        excel_files = st.file_uploader("Excel (wiele)", type=['xlsx', 'xls'], accept_multiple_files=True, key="batch")
+        if excel_files:
+            st.write(f"📁 {len(excel_files)} plików")
+            for f in excel_files[:10]:
+                st.write(f"• {f.name}")
+            if len(excel_files) > 10:
+                st.write(f"... +{len(excel_files) - 10}")
+
+            if st.button("🚀 Importuj", type="primary", use_container_width=True):
+                st.info(f"Import {len(excel_files)} do {batch_dept}...")
+                results = batch_import_excels(excel_files, batch_dept)
+                success = sum(1 for r in results if r['status'] == 'success')
+                errors = sum(1 for r in results if r['status'] == 'error')
+                c1, c2 = st.columns(2)
+                c1.metric("✅ Sukces", success)
+                c2.metric("❌ Błędy", errors)
+                st.subheader("Szczegóły")
+                df = pd.DataFrame(results)
+                st.dataframe(df, use_container_width=True)
+                if success > 0:
+                    st.success(f"🎉 {success} projektów!")
+                if errors > 0:
+                    st.warning(f"⚠️ {errors} błędów")
+
 def main():
     st.title("🚀 CAD Estimator Pro")
-    
+
     if not init_db():
         st.stop()
-    
-    # === SIDEBAR ===
+
     st.sidebar.title("Menu")
     page = st.sidebar.radio("Nawigacja", ["Dashboard", "Nowy projekt", "Historia i Uczenie"])
-    
+
     st.sidebar.subheader("Ustawienia AI")
     available_models = [m for m in list_local_models() if "embed" not in m]
     selected_model = st.sidebar.selectbox(
@@ -1386,726 +1803,38 @@ def main():
         options=available_models or ["llama3:latest"],
         index=(available_models.index("mistral:7b-instruct") if "mistral:7b-instruct" in available_models else 0) if available_models else 0
     )
-    
+
     st.sidebar.subheader("Status Systemu")
     st.sidebar.write(f"Ollama AI: {'✅ Połączony' if any(list_local_models()) else '❌ Brak połączenia'}")
-    
+
     with st.sidebar.expander("Dostępne modele"):
         models = list_local_models()
         if models:
             st.write("\n".join(f"- `{m}`" for m in models))
         else:
             st.write("Brak modeli")
-    
-    # === DASHBOARD ===
+
+    # DEMO / PRÓBNE DANE
+    with st.sidebar.expander("🧪 Demo / Próbne dane", expanded=False):
+        if st.button("Wypełnij formularz przykładowymi danymi"):
+            fill_demo_fields()
+        demo_excel = generate_sample_excel()
+        st.download_button("📥 Pobierz przykładowy Excel", demo_excel, file_name="demo_estymacja.xlsx",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        demo_pdf = generate_sample_pdf()
+        if demo_pdf:
+            st.download_button("📥 Pobierz przykładowy PDF", demo_pdf, file_name="demo_spec.pdf", mime="application/pdf")
+        else:
+            st.info("Aby generować PDF, zainstaluj: pip install reportlab")
+        demo_img = generate_sample_image()
+        st.download_button("📥 Pobierz przykładowy obraz (PNG)", demo_img, file_name="demo_schemat.png", mime="image/png")
+
     if page == "Dashboard":
-        st.header("📊 Dashboard")
-        
-        with get_db_connection() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT COUNT(*) as count FROM projects")
-            project_count = cur.fetchone()['count']
-            cur.execute("SELECT AVG(accuracy) as avg FROM projects WHERE accuracy IS NOT NULL")
-            avg_accuracy = (cur.fetchone() or {}).get('avg') or 0
-            
-            cur.execute("""
-                SELECT department, COUNT(*) as count
-                FROM projects WHERE department IS NOT NULL
-                GROUP BY department ORDER BY department
-            """)
-            dept_stats = cur.fetchall()
-        
-        col1, col2 = st.columns(2)
-        col1.metric("Projekty", project_count)
-        col2.metric("Średnia dokładność", f"{avg_accuracy*100:.1f}%")
-        
-        if dept_stats:
-            st.subheader("Projekty wg działów")
-            df_dept = pd.DataFrame(dept_stats)
-            df_dept['department_name'] = df_dept['department'].map(DEPARTMENTS)
-            st.bar_chart(df_dept.set_index('department_name')['count'])
-        
-        st.header("🔍 Wyszukaj projekty")
-        search_dept = st.selectbox("Dział", options=[''] + list(DEPARTMENTS.keys()),
-                                   format_func=lambda x: 'Wszystkie' if x == '' else f"{x} - {DEPARTMENTS[x]}")
-        search_query = st.text_input("Słowa kluczowe")
-        
-        if search_query:
-            with get_db_connection() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
-                if search_dept:
-                    cur.execute("""
-                        SELECT id, name, client, department, estimated_hours, description
-                        FROM projects WHERE department = %s
-                        AND to_tsvector('simple', coalesce(name,'') || ' ' || coalesce(client,'') || ' ' || coalesce(description,'')) @@ websearch_to_tsquery('simple', %s)
-                        ORDER BY created_at DESC LIMIT 10
-                    """, (search_dept, search_query))
-                else:
-                    cur.execute("""
-                        SELECT id, name, client, department, estimated_hours, description
-                        FROM projects
-                        WHERE to_tsvector('simple', coalesce(name,'') || ' ' || coalesce(client,'') || ' ' || coalesce(description,'')) @@ websearch_to_tsquery('simple', %s)
-                        ORDER BY created_at DESC LIMIT 10
-                    """, (search_query,))
-                results = cur.fetchall()
-            
-            if results:
-                st.write(f"Znaleziono {len(results)} projektów:")
-                df_results = pd.DataFrame(results)
-                df_results['department_name'] = df_results['department'].map(DEPARTMENTS)
-                st.dataframe(df_results, use_container_width=True)
-                
-                selected_project = st.selectbox(
-                    "Historia wersji",
-                    options=results,
-                    format_func=lambda p: f"{p['name']} ({p['department']})"
-                )
-                
-                if selected_project:
-                    with get_db_connection() as conn:
-                        versions = get_project_versions(conn, selected_project['id'])
-                    
-                    if versions:
-                        st.subheader(f"📜 Historia: {selected_project['name']}")
-                        for v in versions:
-                            with st.expander(f"{v['version']} - {v['created_at'].strftime('%Y-%m-%d %H:%M')} {'✅' if v['is_approved'] else ''}", expanded=(v == versions[0])):
-                                col1, col2, col3 = st.columns(3)
-                                col1.metric("Layout", f"{v['estimated_hours_3d_layout']:.1f}h")
-                                col2.metric("Detail", f"{v['estimated_hours_3d_detail']:.1f}h")
-                                col3.metric("2D", f"{v['estimated_hours_2d']:.1f}h")
-                                st.metric("TOTAL", f"{v['estimated_hours']:.1f}h")
-                                if v['change_description']:
-                                    st.text_area("Opis", v['change_description'], height=100, disabled=True, key=f"d_{v['id']}")
-                                st.caption(f"Autor: {v['changed_by']}")
-            else:
-                st.info("Nie znaleziono")
-    
-    # === NOWY PROJEKT ===
+        render_dashboard_page()
     elif page == "Nowy projekt":
-        st.header("🆕 Nowy Projekt")
-        
-        department = st.selectbox(
-            "Wybierz dział*",
-            options=list(DEPARTMENTS.keys()),
-            format_func=lambda x: f"{x} - {DEPARTMENTS[x]}",
-            key="department"
-        )
-        
-        st.info(f"📋 {DEPARTMENT_CONTEXT[department]}")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            project_name = st.text_input("Nazwa projektu*", key="project_name")
-            client = st.text_input("Klient", key="client")
-            description = st.text_area("Opis", height=200, key="description")
-        with col2:
-            excel_file = st.file_uploader("Excel", type=['xlsx', 'xls'])
-            image_files = st.file_uploader("Zdjęcia/Rysunki", type=['jpg', 'png'], accept_multiple_files=True)
-            pdf_files = st.file_uploader("PDF", type=['pdf'], accept_multiple_files=True)
-        
-        if st.button("🤖 Analizuj z AI", use_container_width=True):
-            if not description and not excel_file and not image_files and not pdf_files:
-                st.warning("Podaj opis lub wgraj pliki")
-            else:
-                progress_bar = st.progress(0, text="Startuję...")
-                try:
-                    # Excel
-                    components_from_excel = []
-                    if excel_file:
-                        progress_bar.progress(15, text="Wczytuję Excel...")
-                        components_from_excel = process_excel(excel_file)
-                    
-                    # Obrazy
-                    images_b64 = []
-                    if image_files:
-                        progress_bar.progress(25, text="Analizuję obrazy...")
-                        for img in image_files:
-                            images_b64.append(encode_image_b64(img))
-                    
-                    # PDF
-                    pdf_text = ""
-                    if pdf_files:
-                        progress_bar.progress(30, text="PDF...")
-                        pdf_text = "\n".join([extract_text_from_pdf(pf) for pf in pdf_files])
-                    
-                    # Wzorce
-                    with get_db_connection() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
-                        cur.execute("""
-                            SELECT name, avg_hours_total, avg_hours_3d_layout,
-                                   avg_hours_3d_detail, avg_hours_2d,
-                                   proportion_layout, proportion_detail, proportion_doc, occurrences
-                            FROM component_patterns
-                            WHERE department = %s AND occurrences > 2
-                            ORDER BY occurrences DESC LIMIT 20
-                        """, (department,))
-                        learned_patterns = cur.fetchall()
-                    
-                    st.write(f"🧠 {len(learned_patterns)} wzorców z działu {department}")
-                    
-                    # Prompt
-                    prompt = build_analysis_prompt(description, components_from_excel, learned_patterns, pdf_text, department)
-                    
-                    # Model
-                    if images_b64 and model_available("llava"):
-                        ai_model = "llava:13b" if model_available("llava:13b") else "llava:latest"
-                    else:
-                        ai_model = selected_model
-                    
-                    progress_bar.progress(60, text=f"AI ({ai_model})...")
-                    ai_text = query_ollama(prompt, model=ai_model, images_b64=images_b64, format_json=True)
-                    
-                    progress_bar.progress(80, text="Parsuję...")
-                    parsed = parse_ai_response(ai_text, components_from_excel=components_from_excel)
-                    
-                    # Kategoryzacja
-                    if parsed.get('components'):
-                        for c in parsed['components']:
-                            if not c.get('is_summary', False):
-                                c['category'] = categorize_component(c.get('name', ''))
-                    
-                    st.session_state["ai_analysis"] = parsed
-                    progress_bar.progress(100, text="Gotowe ✅")
-                    time.sleep(1)
-                    progress_bar.empty()
-                    
-                except Exception as e:
-                    logger.exception("Analiza failed")
-                    st.error(f"Błąd: {e}")
-        
-        if "ai_analysis" in st.session_state:
-            analysis = st.session_state["ai_analysis"]
-            st.subheader("Wynik analizy")
-            
-            # with st.expander("Odpowiedź AI", expanded=False):
-            #  st.markdown(analysis["raw_text"])
-            # === NOWE EXPANDERY ===
-            if analysis.get("analysis"):
-                with st.expander("📊 Analiza projektu", expanded=True):
-                    anal = analysis["analysis"]
-                    col1, col2, col3 = st.columns(3)
-                    col1.metric("Typ", anal.get("project_type", "N/A"))
-                    col2.metric("Złożoność", anal.get("complexity", "N/A"))
-                    if anal.get("estimated_accuracy"):
-                        col3.metric("Dokładność", anal["estimated_accuracy"])
-
-            if analysis.get("missing_info"):
-                st.warning("⚠️ AI wykryło braki w opisie - uzupełnij dla lepszej wyceny:")
-                for info in analysis["missing_info"]:
-                    st.write(f"❓ {info}")
-
-                if st.button("📝 Edytuj opis i analizuj ponownie"):
-                    st.session_state["reanalyze_mode"] = True
-
-            if st.session_state.get("reanalyze_mode"):
-                new_description = st.text_area(
-                    "Uzupełnij opis projektu",
-                    value=st.session_state.get("description", ""),
-                    height=200,
-                    key="new_description"
-                )
-                if st.button("🔄 Analizuj z nowym opisem", type="primary"):
-                    st.session_state["description"] = new_description
-                    st.session_state["reanalyze_mode"] = False
-                    st.rerun()
-
-            if analysis.get("phases"):
-                with st.expander("🔧 Szczegóły faz projektu"):
-                    for phase_name, phase_data in analysis["phases"].items():
-                        st.markdown(f"**{phase_name.upper()} - {phase_data.get('hours', 0):.1f}h**")
-                        tasks = phase_data.get("tasks", [])
-                        if tasks:
-                            for task in tasks:
-                                st.write(f"  • {task}")
-                        st.divider()
-            if analysis.get("risks_detailed"):
-                with st.expander("⚠️ Ryzyka i mitygacje"):
-                    for risk in analysis["risks_detailed"]:
-                        if isinstance(risk, str):
-                            # Fallback - nie powinno się zdarzyć po normalizacji
-                            st.write(f"⚠️ {risk}")
-                            logger.warning(f"Risk jest stringiem: {risk}")
-                        else:
-                            impact = risk.get("impact", "nieznany")
-                            icon = {"niski": "🟢", "średni": "🟡", "wysoki": "🔴"}.get(impact, "⚪")
-                            st.markdown(f"{icon} **{risk.get('risk', 'Ryzyko')}** (wpływ: {impact})")
-                            st.write(f"  → Mitygacja: {risk.get('mitigation', 'Brak')}")
-                        st.divider()
-
-
-
-            if analysis.get("recommendations"):
-                with st.expander("💡 Rekomendacje"):
-                    for rec in analysis["recommendations"]:
-                        st.write(f"✓ {rec}")
-
-
-            with st.expander("🤖 Odpowiedź AI (raw)", expanded=False):
-                try:
-                    parsed_json = json.loads(analysis["raw_text"])
-
-                    st.markdown("### 📋 Komponenty")
-                    for comp in parsed_json.get("components", []):
-                        st.write(f"**{comp.get('name')}**: Layout {comp.get('layout_h', 0):.1f}h + Detail {comp.get('detail_h', 0):.1f}h + 2D {comp.get('doc_h', 0):.1f}h")
-
-                    st.markdown("### 📊 Podsumowanie")
-                    sums = parsed_json.get("sums", {})
-                    st.write(f"- Layout: {sums.get('layout', 0):.1f}h")
-                    st.write(f"- Detail: {sums.get('detail', 0):.1f}h")
-                    st.write(f"- 2D: {sums.get('doc', 0):.1f}h")
-                    st.write(f"- **TOTAL: {sums.get('total', 0):.1f}h**")
-
-                    st.markdown("### 📝 Założenia")
-                    for ass in parsed_json.get("assumptions", []):
-                        st.write(f"- {ass}")
-
-                    st.markdown("### ⚠️ Ryzyka")
-                    for risk in parsed_json.get("risks", []):
-                        if isinstance(risk, dict):
-                            st.write(f"- {risk.get('risk', risk)}")
-                        else:
-                            st.write(f"- {risk}")
-
-                except:
-                    # Fallback jeśli JSON niepoprawny
-                    st.text(analysis["raw_text"])
-            for w in analysis.get("warnings", []):
-                st.warning(w)
-            
-            estimated_hours = analysis.get("total_hours", 0.0)
-            layout_h = analysis.get("total_layout", 0.0)
-            detail_h = analysis.get("total_detail", 0.0)
-            doc_h = analysis.get("total_2d", 0.0)
-            
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Layout", f"{layout_h:.1f}h")
-            col2.metric("Detail", f"{detail_h:.1f}h")
-            col3.metric("2D", f"{doc_h:.1f}h")
-            col4.metric("TOTAL", f"{max(0.0, estimated_hours):.1f}h", delta=f"{(estimated_hours * 150):.0f} PLN")
-            
-            st.subheader("🔧 Edytuj wycenę")
-            final_estimated_hours = estimated_hours
-            final_components = analysis.get('components', [])
-            
-            # Edytor komponentów
-            # Edytor komponentów
-            if final_components:
-                # Filtruj komponenty z godzinami > 0
-                parts_only = [
-                    c for c in final_components
-                    if not c.get('is_summary', False)
-                    and c.get('hours', 0) > 0
-                    and c.get('name') not in ['[part]', '[assembly]', '', ' ']
-                ]
-
-                st.subheader("📝 Komponenty")
-                st.caption(f"ℹ️ Pokazano {len(parts_only)} komponentów (z {len(final_components)} z Excela, pominięto sumy)")
-                with st.expander("🐛 DEBUG - wszystkie komponenty"):
-                    for c in final_components:
-                        st.write(f"{c.get('id')} | {c.get('name')} | is_summary={c.get('is_summary')} | hours={c.get('hours', 0):.1f}h")
-
-                for i, comp in enumerate(parts_only):
-
-
-                    # Skróć nazwę w tytule expandera
-                    display_name = comp['name'][:50] + "..." if len(comp['name']) > 50 else comp['name']
-
-                    with st.expander(f"{display_name} - {comp.get('hours', 0):.1f}h"):
-                        # Pełna nazwa wewnątrz
-                        st.markdown(f"**Pełna nazwa:** {comp['name']}")
-
-                        col1, col2, col3 = st.columns(3)
-                        new_layout = col1.number_input("Layout", value=float(comp.get('hours_3d_layout', 0)), key=f"l_{i}")
-                        new_detail = col2.number_input("Detail", value=float(comp.get('hours_3d_detail', 0)), key=f"d_{i}")
-                        new_doc = col3.number_input("2D", value=float(comp.get('hours_2d', 0)), key=f"doc_{i}")
-                        
-                        comp['hours_3d_layout'] = new_layout
-                        comp['hours_3d_detail'] = new_detail
-                        comp['hours_2d'] = new_doc
-                        comp['hours'] = new_layout + new_detail + new_doc
-                        
-                        # Pod-komponenty
-                        if comp.get('subcomponents'):
-                            st.markdown("**Zawiera:**")
-                            for sub in comp['subcomponents']:
-                                qty = sub.get('quantity', 1)
-                                if qty > 1:
-                                    st.text(f"  • {qty}x {sub['name']}")
-                                else:
-                                    st.text(f"  • {sub['name']}")
-                        
-                        if comp.get('comment'):
-                            st.caption(f"💬 {comp['comment']}")
-                
-                final_estimated_hours = sum(c['hours'] for c in parts_only)
-                st.metric("🔢 Suma", f"{final_estimated_hours:.1f}h")
-            
-            # Współczynniki
-            if "excel_multipliers" in st.session_state and final_components:
-                st.subheader("📊 Współczynniki z Excela")
-                mult = st.session_state["excel_multipliers"]
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Layout", f"x{mult['layout']:.2f}")
-                col2.metric("Detail", f"x{mult['detail']:.2f}")
-                col3.metric("Doc", f"x{mult['documentation']:.2f}")
-                
-                if st.checkbox("Zastosuj współczynniki", value=True, key="apply_mult"):
-                    for c in final_components:
-                        if not c.get('is_summary'):
-                            c['hours_3d_layout'] = c.get('hours_3d_layout', 0) * mult['layout']
-                            c['hours_3d_detail'] = c.get('hours_3d_detail', 0) * mult['detail']
-                            c['hours_2d'] = c.get('hours_2d', 0) * mult['documentation']
-                            c['hours'] = c['hours_3d_layout'] + c['hours_3d_detail'] + c['hours_2d']
-                    
-                    final_estimated_hours = sum(c.get('hours', 0) for c in final_components if not c.get('is_summary'))
-                    st.success(f"✅ Po korekcji: {final_estimated_hours:.1f}h")
-            
-            # Timeline
-            st.subheader("🗂️ Harmonogram")
-            show_project_timeline(final_components)
-            
-            # Podobne projekty
-            with get_db_connection() as conn:
-                similar = find_similar_projects(conn, st.session_state.get("description"), department)
-            
-            st.subheader(f"📊 Podobne projekty ({department})")
-            if similar:
-                for proj in similar:
-                    col1, col2, col3 = st.columns([3,1,1])
-                    col1.write(f"**{proj['name']}** ({proj['client'] or '-'})")
-                    col2.metric("Szacowano", f"{(proj['estimated_hours'] or 0):.1f}h")
-                    if proj['actual_hours']:
-                        col3.metric("Rzeczywiście", f"{proj['actual_hours']:.1f}h")
-            else:
-                st.info("Brak podobnych")
-            # Semantyczne podobne projekty
-            with get_db_connection() as conn:
-                similar_sem = find_similar_projects_semantic(conn, st.session_state.get("description"), department)
-            
-            st.subheader(f"🧭 Semantycznie podobne projekty (pgvector)")
-            if similar_sem:
-                for sp in similar_sem:
-                    sim_pct = sp['similarity'] * 100
-                    st.write(f"- **{sp['name']}** (sim={sim_pct:.0f}%) — est: {(sp['estimated_hours'] or 0):.1f}h" + 
-                            (f", act: {sp['actual_hours']:.1f}h" if sp['actual_hours'] else ""))
-            else:
-                st.caption("Brak embeddingów — dodaj projekty i uruchom przeliczanie")
-            
-            # Eksport
-            st.subheader("📤 Eksport")
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("📥 Excel", use_container_width=True):
-                    excel_data = export_quotation_to_excel({
-                        'name': st.session_state.get("project_name"),
-                        'client': st.session_state.get("client"),
-                        'department': department,
-                        'components': final_components,
-                        'total_hours': final_estimated_hours
-                    })
-                    st.download_button("⬇️ Pobierz", excel_data,
-                                      file_name=f"wycena_{st.session_state.get('project_name','p')}_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                                      mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-            
-            # Zapis
-            st.subheader("💾 Zapisz projekt")
-            col1, col2 = st.columns([3,1])
-            with col1:
-                change_desc = st.text_input("Opis zmian", placeholder="np. 'Pierwsza wycena'")
-            with col2:
-                is_approved = st.checkbox("Zatwierdzone", value=False)
-            
-            if st.button("💾 Zapisz", type="primary", use_container_width=True):
-                errors = validate_project_input(st.session_state.get("project_name"), final_estimated_hours)
-                if errors:
-                    for e in errors:
-                        st.error(e)
-                else:
-                    try:
-                        components_to_save = [c for c in final_components if not c.get('is_summary', False)]
-                        
-                        with get_db_connection() as conn, conn.cursor() as cur:
-                            cur.execute("SELECT id, components FROM projects WHERE name = %s AND department = %s",
-                                      (st.session_state.get("project_name"), department))
-                            existing = cur.fetchone()
-                            
-                            if existing:
-                                project_id = existing[0]
-                                cur.execute("SELECT COUNT(*) FROM project_versions WHERE project_id = %s", (project_id,))
-                                version_num = f"v1.{cur.fetchone()[0] + 1}"
-                                
-                                cur.execute("""
-                                    UPDATE projects SET components = %s,
-                                    estimated_hours_3d_layout = %s, estimated_hours_3d_detail = %s,
-                                    estimated_hours_2d = %s, estimated_hours = %s,
-                                    ai_analysis = %s, updated_at = NOW()
-                                    WHERE id = %s
-                                """, (json.dumps(components_to_save, ensure_ascii=False),
-                                      float(analysis.get("total_layout", 0)), float(analysis.get("total_detail", 0)),
-                                      float(analysis.get("total_2d", 0)), float(final_estimated_hours),
-                                      analysis["raw_text"], project_id))
-                                
-                                save_project_version(conn, project_id, version_num, components_to_save,
-                                                    final_estimated_hours, analysis.get("total_layout", 0),
-                                                    analysis.get("total_detail", 0), analysis.get("total_2d", 0),
-                                                    change_desc, "System")
-                                
-                                if is_approved:
-                                    cur.execute("UPDATE project_versions SET is_approved = TRUE WHERE project_id = %s AND version = %s",
-                                              (project_id, version_num))
-                                
-                                conn.commit()
-                                st.success(f"✅ Zaktualizowano! {version_num}")
-                            else:
-                                cur.execute("""
-                                    INSERT INTO projects (name, client, department, description, components,
-                                    estimated_hours_3d_layout, estimated_hours_3d_detail, estimated_hours_2d,
-                                    estimated_hours, ai_analysis)
-                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
-                                """, (
-                                    (st.session_state.get("project_name") or "").strip(),
-                                    (st.session_state.get("client") or "").strip(),
-                                    department, (st.session_state.get("description") or "").strip(),
-                                    json.dumps(components_to_save, ensure_ascii=False),
-                                    float(analysis.get("total_layout", 0)), float(analysis.get("total_detail", 0)),
-                                    float(analysis.get("total_2d", 0)), float(final_estimated_hours),
-                                    analysis["raw_text"]
-                                ))
-                                project_id = cur.fetchone()[0]
-                                
-                                # NOWE: Dodaj embedding
-                                ensure_project_embedding(cur, project_id, st.session_state.get("description", ""))
-                                
-                                save_project_version(conn, project_id, "v1.0", components_to_save,
-                                                    final_estimated_hours, analysis.get("total_layout", 0),
-                                                    analysis.get("total_detail", 0), analysis.get("total_2d", 0),
-                                                    change_desc or "Pierwsza wycena", "System")
-                                
-                                if is_approved:
-                                    cur.execute("UPDATE project_versions SET is_approved = TRUE WHERE project_id = %s AND version = 'v1.0'",
-                                              (project_id,))
-                                
-                                conn.commit()
-                                st.success(f"✅ Zapisano! ID: {project_id}")
-                            
-                            logger.info(f"Zapisano: {project_id} - {st.session_state.get('project_name')}")
-                            clear_project_session()
-                            st.balloons()
-                            time.sleep(1.5)
-                            st.rerun()
-                    except Exception as e:
-                        st.error(f"Błąd: {e}")
-                        logger.exception("Zapis failed")
-    
-    # === HISTORIA I UCZENIE ===
+        render_new_project_page(selected_model)
     elif page == "Historia i Uczenie":
-        st.header("📚 Historia i Uczenie")
-        
-        tab1, tab2, tab3 = st.tabs(["✏️ Feedback", "🧠 Wzorce", "📦 Batch Import"])
-        
-        with tab1:
-            st.subheader("Dodaj feedback")
-            
-            feedback_dept = st.selectbox("Dział", options=[''] + list(DEPARTMENTS.keys()),
-                                        format_func=lambda x: 'Wszystkie' if x == '' else f"{x} - {DEPARTMENTS[x]}")
-            
-            with get_db_connection() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
-                if feedback_dept:
-                    cur.execute("""
-                        SELECT id, name, department, estimated_hours
-                        FROM projects WHERE actual_hours IS NULL AND department = %s
-                        ORDER BY created_at DESC
-                    """, (feedback_dept,))
-                else:
-                    cur.execute("SELECT id, name, department, estimated_hours FROM projects WHERE actual_hours IS NULL ORDER BY created_at DESC")
-                pending = cur.fetchall()
-            
-            if pending:
-                proj = st.selectbox("Projekt", options=pending,
-                                   format_func=lambda p: f"[{p['department']}] {p['name']} (ID: {p['id']}) | est: {p['estimated_hours']:.1f}h")
-                actual_hours = st.number_input("Rzeczywiste godziny", min_value=0.0, step=0.5, value=float(proj['estimated_hours']))
-                
-                if st.button("💾 Zapisz feedback", type="primary"):
-                    if actual_hours <= 0:
-                        st.error("Godziny > 0")
-                    else:
-                        with get_db_connection() as conn, conn.cursor() as cur:
-                            estimated = float(proj['estimated_hours'])
-                            accuracy = 1 - abs(estimated - actual_hours) / estimated if estimated > 0 else 0
-                            
-                            cur.execute("UPDATE projects SET actual_hours = %s, accuracy = %s WHERE id = %s",
-                                      (actual_hours, accuracy, proj['id']))
-                            
-                            cur.execute("SELECT components FROM projects WHERE id = %s", (proj['id'],))
-                            components_data = (cur.fetchone() or [None])[0] or []
-                            
-                          
-                            if components_data:
-                                ratio = actual_hours / estimated if estimated > 0 else 1.0
-                                for comp in components_data:
-                                    if comp.get('is_summary'):
-                                        continue
-                                    
-                                    layout_est = float(comp.get('hours_3d_layout', 0))
-                                    detail_est = float(comp.get('hours_3d_detail', 0))
-                                    doc_est = float(comp.get('hours_2d', 0))
-                                    total_est = float(comp.get('hours', 0))
-                                    
-                                    if total_est > 0:
-                                        # Ucz się głównego komponentu
-                                        update_pattern_smart(
-                                            cur, comp.get('name', 'nieznany'), proj['department'],
-                                            layout_est * ratio, detail_est * ratio,
-                                            doc_est * ratio, total_est * ratio, source='actual'
-                                        )
-                                        
-                                        # Ucz się też pod-komponentów
-                                        subcomponents = comp.get('subcomponents', [])
-                                        if subcomponents:
-                                            total_qty = sum(s.get('quantity', 1) for s in subcomponents)
-                                            
-                                            for sub in subcomponents:
-                                                qty = sub.get('quantity', 1)
-                                                weight = qty / total_qty if total_qty > 0 else 1.0 / len(subcomponents)
-                                                
-                                                # Proporcjonalny czas dla pod-komponentu
-                                                sub_layout = layout_est * ratio * weight
-                                                sub_detail = detail_est * ratio * weight
-                                                sub_doc = doc_est * ratio * weight
-                                                sub_total = total_est * ratio * weight
-                                                
-                                                update_pattern_smart(
-                                                    cur, 
-                                                    sub['name'], 
-                                                    proj['department'],
-                                                    sub_layout, sub_detail, sub_doc, sub_total,
-                                                    source='subcomponent'
-                                                )
-                                                
-                                                logger.info(f"  └─ Sub: {qty}x {sub['name']} → {sub_total:.1f}h")
-                            # Aktualizuj baseline kategorii
-                            agg_cat = {}
-                            for comp in components_data:
-                                if comp.get('is_summary'):
-                                    continue
-                                layout_act = float(comp.get('hours_3d_layout', 0)) * ratio
-                                detail_act = float(comp.get('hours_3d_detail', 0)) * ratio
-                                doc_act = float(comp.get('hours_2d', 0)) * ratio
-                                
-                                cat = comp.get('category') or categorize_component(comp.get('name',''))
-                                agg_cat.setdefault(cat, [0.0,0.0,0.0])
-                                agg_cat[cat][0] += layout_act
-                                agg_cat[cat][1] += detail_act
-                                agg_cat[cat][2] += doc_act
-                            
-                            for cat, (l,d,dc) in agg_cat.items():
-                                update_category_baseline(cur, proj['department'], cat, l, d, dc)
-                                                        
-                            conn.commit()
-                        st.success("Dziękuję! System zaktualizowany.")
-                        time.sleep(1)
-                        st.rerun()
-            else:
-                st.info("🎉 Wszystkie projekty mają feedback!")
-        
-        with tab2:
-            st.subheader("Wzorce komponentów")
-            
-            pattern_dept = st.selectbox("Filtruj", options=[''] + list(DEPARTMENTS.keys()),
-                                       format_func=lambda x: 'Wszystkie' if x == '' else f"{x} - {DEPARTMENTS[x]}")
-            
-            with get_db_connection() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
-                if pattern_dept:
-                    cur.execute("""
-                        SELECT name, department, avg_hours_total, avg_hours_3d_layout,
-                               avg_hours_3d_detail, avg_hours_2d, proportion_layout,
-                               proportion_detail, proportion_doc, occurrences
-                        FROM component_patterns
-                        WHERE department = %s AND occurrences > 0 ORDER BY occurrences DESC
-                    """, (pattern_dept,))
-                else:
-                    cur.execute("""
-                        SELECT name, department, avg_hours_total, avg_hours_3d_layout,
-                               avg_hours_3d_detail, avg_hours_2d, proportion_layout,
-                               proportion_detail, proportion_doc, occurrences
-                        FROM component_patterns WHERE occurrences > 0
-                        ORDER BY department, occurrences DESC
-                    """)
-                patterns = cur.fetchall()
-            
-            if patterns:
-                df = pd.DataFrame(patterns)
-                df['department_name'] = df['department'].map(DEPARTMENTS)
-                df['proportion_layout'] = (df['proportion_layout'] * 100).round(1).astype(str) + '%'
-                df['proportion_detail'] = (df['proportion_detail'] * 100).round(1).astype(str) + '%'
-                df['proportion_doc'] = (df['proportion_doc'] * 100).round(1).astype(str) + '%'
-                st.dataframe(df, use_container_width=True)
-                st.info(f"{len(patterns)} wzorców")
-            else:
-                st.info("Brak wzorców")
-            # Admin: backfill embeddingów
-# Admin: backfill embeddingów
-            with st.expander("🧰 Admin: przelicz embeddingi"):
-                if st.button("🔄 Przelicz embeddingi dla istniejących danych"):
-                    with get_db_connection() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
-                        cur.execute("SELECT id, description FROM projects WHERE description IS NOT NULL")
-                        projects_to_embed = cur.fetchall()
-                        
-                        cur.execute("SELECT pattern_key, department, name FROM component_patterns WHERE pattern_key IS NOT NULL")
-                        patterns_to_embed = cur.fetchall()
-                        
-                        total_items = len(projects_to_embed) + len(patterns_to_embed)
-                        
-                        if total_items == 0:
-                            st.warning("Brak danych do przeliczenia")
-                        else:
-                            progress = st.progress(0, text="Przeliczam embeddingi...")
-                            
-                            for idx, p in enumerate(projects_to_embed):
-                                ensure_project_embedding(cur, p['id'], p['description'])
-                                progress.progress((idx + 1) / total_items, text=f"Projekty: {idx+1}/{len(projects_to_embed)}")
-                            
-                            for idx, r in enumerate(patterns_to_embed):
-                                ensure_pattern_embedding(cur, r['pattern_key'], r['department'], r['name'])
-                                progress.progress((len(projects_to_embed) + idx + 1) / total_items, text=f"Wzorce: {idx+1}/{len(patterns_to_embed)}")
-                            
-                            conn.commit()
-                            progress.empty()
-                            st.success(f"✅ Przeliczono {len(projects_to_embed)} projektów + {len(patterns_to_embed)} wzorców")
-        
-        with tab3:
-            st.subheader("📦 Batch Import")
-            st.info("Import wielu plików Excel naraz")
-            
-            batch_dept = st.selectbox("Dział dla importu", options=list(DEPARTMENTS.keys()),
-                                     format_func=lambda x: f"{x} - {DEPARTMENTS[x]}", key="batch_dept")
-            
-            excel_files = st.file_uploader("Excel (wiele)", type=['xlsx', 'xls'],
-                                          accept_multiple_files=True, key="batch")
-            
-            if excel_files:
-                st.write(f"📁 {len(excel_files)} plików")
-                for f in excel_files[:10]:
-                    st.write(f"• {f.name}")
-                if len(excel_files) > 10:
-                    st.write(f"... +{len(excel_files) - 10}")
-                
-                if st.button("🚀 Importuj", type="primary", use_container_width=True):
-                    st.info(f"Import {len(excel_files)} do {batch_dept}...")
-                    results = batch_import_excels(excel_files, batch_dept)
-                    
-                    success = sum(1 for r in results if r['status'] == 'success')
-                    errors = sum(1 for r in results if r['status'] == 'error')
-                    
-                    col1, col2 = st.columns(2)
-                    col1.metric("✅ Sukces", success)
-                    col2.metric("❌ Błędy", errors)
-                    
-                    st.subheader("Szczegóły")
-                    df = pd.DataFrame(results)
-                    st.dataframe(df, use_container_width=True)
-                    
-                    if success > 0:
-                        st.success(f"🎉 {success} projektów!")
-                    if errors > 0:
-                        st.warning(f"⚠️ {errors} błędów")
+        render_history_page()
 
 if __name__ == "__main__":
     main()
