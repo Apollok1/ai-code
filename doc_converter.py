@@ -460,7 +460,7 @@ Jesteś asystentem ds. spotkań (PL). Otrzymasz fragment transkrypcji rozmowy z 
 Zrób skrót tego fragmentu i wylistuj najważniejsze informacje.
 
 WYMAGANY JSON:
-{
+{{
   "summary": "1-2 akapity skrótu (PL)",
   "key_points": ["punkt 1", "punkt 2", "..."],
   "decisions": ["decyzja 1", "decyzja 2"],
@@ -468,7 +468,7 @@ WYMAGANY JSON:
   "action_items": [{"owner":"", "task":"", "due":"", "notes":""}],
   "risks": [{"risk":"", "impact":"niski/średni/wysoki", "mitigation":""}],
   "open_questions": ["pytanie 1", "pytanie 2"]
-}
+}}
 
 ZASADY:
 - Nie wymyślaj informacji. Jeśli czegoś brak, zostaw puste pola lub wpisz [].
@@ -485,7 +485,7 @@ Jesteś asystentem ds. spotkań (PL). Otrzymasz listę częściowych podsumowań
 Scal je i zwróć jeden końcowy JSON w tym samym formacie. Usuń duplikaty, uczyść i pogrupuj logicznie.
 
 WYMAGANY JSON:
-{
+{{
   "summary": "skondensowany skrót całości",
   "key_points": [...],
   "decisions": [...],
@@ -493,7 +493,7 @@ WYMAGANY JSON:
   "action_items": [...],
   "risks": [...],
   "open_questions": [...]
-}
+}}
 
 Wejście (lista JSON fragmentów):
 {partials}
