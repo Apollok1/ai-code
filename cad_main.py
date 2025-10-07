@@ -1,4 +1,4 @@
-#07.10.2025 ostatni z lm arena
+# main.py
 import streamlit as st
 import pandas as pd
 import psycopg2
@@ -21,14 +21,15 @@ from io import BytesIO
 import plotly.express as px
 from PyPDF2 import PdfReader
 from rapidfuzz import fuzz, process
+from openpyxl import load_workbook
 
-# === KONFIGURACJA i LOGGING ===
+=== KONFIGURACJA i LOGGING ===
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("cad-estimator")
 
 st.set_page_config(page_title="CAD Estimator Pro", layout="wide", page_icon="🚀")
 
-# === ENV ===
+=== ENV ===
 OLLAMA_URL = os.getenv('OLLAMA_URL', 'http://ollama:11434')
 DB_HOST = os.getenv('DB_HOST', 'cad-postgres')
 DB_NAME = os.getenv('DB_NAME', 'cad_estimator')
@@ -37,113 +38,113 @@ DB_PASSWORD = os.getenv('DB_PASSWORD', 'cad_password_2024')
 EMBED_MODEL = os.getenv('EMBED_MODEL', 'nomic-embed-text')
 EMBED_DIM = int(os.getenv('EMBED_DIM', '768'))
 
-# === DZIAŁY ===
+=== DZIAŁY ===
 DEPARTMENTS = {
-    '131': 'Automotive',
-    '132': 'Industrial Machinery',
-    '133': 'Transportation',
-    '134': 'Heavy Equipment',
-    '135': 'Special Purpose Machinery'
+'131': 'Automotive',
+'132': 'Industrial Machinery',
+'133': 'Transportation',
+'134': 'Heavy Equipment',
+'135': 'Special Purpose Machinery'
 }
 DEPARTMENT_CONTEXT = {
-    '131': """Branża: AUTOMOTIVE (Faurecia, VW, Merit, Sitech, Joyson)
+'131': """Branża: AUTOMOTIVE (Faurecia, VW, Merit, Sitech, Joyson)
 Specyfika: Komponenty samochodowe, wysokie wymagania jakościowe, spawanie precyzyjne, duże serie produkcyjne, normy automotive (IATF 16949).""",
-    '132': """Branża: INDUSTRIAL MACHINERY (PMP, ITM, Amazon)
+'132': """Branża: INDUSTRIAL MACHINERY (PMP, ITM, Amazon)
 Specyfika: Maszyny przemysłowe, automatyka, systemy pakowania, linie produkcyjne, robotyka przemysłowa, PLC.""",
-    '133': """Branża: TRANSPORTATION (Volvo, Scania)
+'133': """Branża: TRANSPORTATION (Volvo, Scania)
 Specyfika: Pojazdy ciężarowe, autobusy, systemy transportowe, wytrzymałość strukturalna, normy transportowe.""",
-    '134': """Branża: HEAVY EQUIPMENT (Volvo CE, Mine Master)
+'134': """Branża: HEAVY EQUIPMENT (Volvo CE, Mine Master)
 Specyfika: Maszyny budowlane, koparki, ładowarki, ekstremalne obciążenia, odporność na warunki terenowe.""",
-    '135': """Branża: SPECIAL PURPOSE MACHINERY (Bosch, Chassis Brakes, BWI, Besta)
+'135': """Branża: SPECIAL PURPOSE MACHINERY (Bosch, Chassis Brakes, BWI, Besta)
 Specyfika: Maszyny specjalne, niestandardowe rozwiązania, prototypy, unikalne wymagania klienta."""
 }
 
-# === SŁOWNIK NORMALIZACJI KOMPONENTÓW (PL/DE/EN -> EN) ===
+=== SŁOWNIK NORMALIZACJI KOMPONENTÓW (PL/DE/EN -> EN) ===
 COMPONENT_ALIASES = {
-    # Wsporniki
-    'wspornik': 'bracket', 'halterung': 'bracket', 'halter': 'bracket', 'träger': 'bracket',
-    'support': 'bracket', 'konsole': 'bracket',
+# Wsporniki
+'wspornik': 'bracket', 'halterung': 'bracket', 'halter': 'bracket', 'träger': 'bracket',
+'support': 'bracket', 'konsole': 'bracket',
 
-    # Ramy
-    'rama': 'frame', 'rahmen': 'frame', 'gestell': 'frame', 'chassis': 'frame',
+# Ramy
+'rama': 'frame', 'rahmen': 'frame', 'gestell': 'frame', 'chassis': 'frame',
 
-    # Przenośniki
-    'przenośnik': 'conveyor', 'förderband': 'conveyor', 'förderer': 'conveyor', 'transport': 'conveyor',
+# Przenośniki
+'przenośnik': 'conveyor', 'förderband': 'conveyor', 'förderer': 'conveyor', 'transport': 'conveyor',
 
-    # Płyty
-    'płyta': 'plate', 'platte': 'plate', 'sheet': 'plate', 'panel': 'plate',
+# Płyty
+'płyta': 'plate', 'platte': 'plate', 'sheet': 'plate', 'panel': 'plate',
 
-    # Pokrywy
-    'pokrywa': 'cover', 'deckel': 'cover', 'abdeckung': 'cover',
+# Pokrywy
+'pokrywa': 'cover', 'deckel': 'cover', 'abdeckung': 'cover',
 
-    # Obudowy
-    'obudowa': 'housing', 'gehäuse': 'housing', 'casing': 'housing',
+# Obudowy
+'obudowa': 'housing', 'gehäuse': 'housing', 'casing': 'housing',
 
-    # Napędy / siłowniki
-    'napęd': 'drive', 'antrieb': 'drive', 'actuator': 'drive',
-    'siłownik': 'cylinder', 'cylinder': 'cylinder', 'zylinder': 'cylinder',
+# Napędy / siłowniki
+'napęd': 'drive', 'antrieb': 'drive', 'actuator': 'drive',
+'siłownik': 'cylinder', 'cylinder': 'cylinder', 'zylinder': 'cylinder',
 
-    # Prowadnice
-    'prowadnica': 'guide', 'führung': 'guide', 'rail': 'guide',
+# Prowadnice
+'prowadnica': 'guide', 'führung': 'guide', 'rail': 'guide',
 
-    # Osłony
-    'osłona': 'shield', 'schutz': 'shield', 'guard': 'shield',
+# Osłony
+'osłona': 'shield', 'schutz': 'shield', 'guard': 'shield',
 
-    # Podstawy
-    'podstawa': 'base', 'basis': 'base', 'fundament': 'base', 'sockel': 'base',
+# Podstawy
+'podstawa': 'base', 'basis': 'base', 'fundament': 'base', 'sockel': 'base',
 
-    # Wały
-    'wał': 'shaft', 'welle': 'shaft', 'axle': 'shaft',
+# Wały
+'wał': 'shaft', 'welle': 'shaft', 'axle': 'shaft',
 
-    # Łożyska
-    'łożysko': 'bearing', 'lager': 'bearing',
+# Łożyska
+'łożysko': 'bearing', 'lager': 'bearing',
 
-    # Śruby / bolty
-    'śruba': 'screw', 'schraube': 'screw', 'bolt': 'bolt',
+# Śruby / bolty
+'śruba': 'screw', 'schraube': 'screw', 'bolt': 'bolt',
 }
 
-# === PROMPTY ===
+=== PROMPTY ===
 MASTER_PROMPT = """Jesteś senior konstruktorem CAD z 20-letnim doświadczeniem w:
-- Projektowaniu ram spawalniczych i konstrukcji stalowych
-- Automatyce przemysłowej (PLC, robotyka, pozycjonery)
-- Systemach wizyjnych i kontroli jakości
-- Narzędziach CAD: CATIA V5, SolidWorks, AutoCAD
 
+Projektowaniu ram spawalniczych i konstrukcji stalowych
+Automatyce przemysłowej (PLC, robotyka, pozycjonery)
+Systemach wizyjnych i kontroli jakości
+Narzędziach CAD: CATIA V5, SolidWorks, AutoCAD
 Odpowiadaj ZAWSZE w języku polskim.
 
 METODYKA SZACOWANIA:
-1. ANALIZA WYMAGAŃ (10-15% czasu)
-2. KONCEPCJA I MODELOWANIE (40-50% czasu)
-3. OBLICZENIA I WERYFIKACJA (20-30% czasu)
-4. DOKUMENTACJA (15-20% czasu)
-5. RYZYKA - każde MUSI mieć: "risk", "impact", "mitigation"
 
+ANALIZA WYMAGAŃ (10-15% czasu)
+KONCEPCJA I MODELOWANIE (40-50% czasu)
+OBLICZENIA I WERYFIKACJA (20-30% czasu)
+DOKUMENTACJA (15-20% czasu)
+RYZYKA - każde MUSI mieć: "risk", "impact", "mitigation"
 CZYNNIKI KOMPLIKUJĄCE (dodaj czas):
-- Spawanie precyzyjne: +20%
-- Części ruchome/kinematyka: +30%
-- Automatyzacja/PLC: +25%
-- Specjalne normy: +15%
-- Niestandardowe materiały: +10%
-- Duże wymiary (>10m): +25%
 
+Spawanie precyzyjne: +20%
+Części ruchome/kinematyka: +30%
+Automatyzacja/PLC: +25%
+Specjalne normy: +15%
+Niestandardowe materiały: +10%
+Duże wymiary (>10m): +25%
 WYMAGANY FORMAT ODPOWIEDZI - ZWRÓĆ TYLKO CZYSTY JSON:
 {
-  "components": [
-    {"name": "Nazwa", "layout_h": 12.5, "detail_h": 42.0, "doc_h": 28.0}
-  ],
-  "sums": {"layout": 12.5, "detail": 42.0, "doc": 28.0, "total": 82.5},
-  "assumptions": ["Założenie 1"],
-  "risks": [
-    {"risk": "Opis ryzyka", "impact": "wysoki/średni/niski", "mitigation": "Jak zminimalizować"}
-  ],
-  "adjustments": [
-    {
-      "parent": "Nazwa komponentu z głównej listy",
-      "adds": [
-        {"name": "nazwa sub-komponentu", "qty": 2, "layout_add": 0.5, "detail_add": 3.0, "doc_add": 1.0, "reason": "dlaczego"}
-      ]
-    }
-  ]
+"components": [
+{"name": "Nazwa", "layout_h": 12.5, "detail_h": 42.0, "doc_h": 28.0}
+],
+"sums": {"layout": 12.5, "detail": 42.0, "doc": 28.0, "total": 82.5},
+"assumptions": ["Założenie 1"],
+"risks": [
+{"risk": "Opis ryzyka", "impact": "wysoki/średni/niski", "mitigation": "Jak zminimalizować"}
+],
+"adjustments": [
+{
+"parent": "Nazwa komponentu z głównej listy",
+"adds": [
+{"name": "nazwa sub-komponentu", "qty": 2, "layout_add": 0.5, "detail_add": 3.0, "doc_add": 1.0, "reason": "dlaczego"}
+]
+}
+]
 }
 
 WAŻNE: Zwróć WYŁĄCZNIE JSON bez tekstu.
@@ -198,7 +199,7 @@ def build_analysis_prompt(description, components_excel, learned_patterns, pdf_t
     sections.append("\nWAŻNE: Zwróć WYŁĄCZNIE JSON bez tekstu.")
     return "\n".join(sections)
 
-# === REQUESTS z retry ===
+=== REQUESTS z retry ===
 _session = None
 def get_session():
     global _session
@@ -210,7 +211,7 @@ def get_session():
         _session = s
     return _session
 
-# === WEKTORY ===
+=== WEKTORY ===
 def to_pgvector(vec):
     if not vec:
         return None
@@ -245,14 +246,14 @@ def ensure_pattern_embedding(cur, pattern_key: str, dept: str, text_for_embed: s
     if emb and len(emb) == EMBED_DIM:
         try:
             cur.execute("""
-                UPDATE component_patterns
-                SET name_embedding = %s::vector
-                WHERE pattern_key=%s AND department=%s
+            UPDATE component_patterns
+            SET name_embedding = %s::vector
+            WHERE pattern_key=%s AND department=%s
             """, (to_pgvector(emb), pattern_key, dept))
         except Exception as e:
             logger.warning(f"Embedding failed for pattern {pattern_key}: {e}")
 
-# === AI API ===
+=== AI API ===
 @lru_cache(maxsize=1)
 def list_local_models():
     try:
@@ -297,7 +298,7 @@ def encode_image_b64(file, max_px=1280, quality=85):
         logger.warning(f"Błąd kompresji: {e}")
         return base64.b64encode(file.getvalue()).decode("utf-8")
 
-# === NORMALIZACJA NAZW ===
+=== NORMALIZACJA NAZW ===
 def canonicalize_name(name: str) -> str:
     """Normalizuje nazwę komponentu do porównań i uczenia (z aliasami PL/DE/EN)."""
     if not name:
@@ -307,7 +308,7 @@ def canonicalize_name(name: str) -> str:
     n = re.sub(r'\b\d+[.,]?\d*\s*(mm|cm|m|kg|t|ton|szt|pcs|inch|")\b', ' ', n)
     n = re.sub(r'\b\d+[.,]?\d*\b', ' ', n)
     # Tokenizacja i mapowanie aliasów
-    tokens = re.split(r'[\s\-_.,;/]+', n)
+    tokens = re.split(r'[\s-_.,;/]+', n)
     norm_tokens = []
     stoplist = {'i', 'a', 'the', 'and', 'or', 'der', 'die', 'das', 'und', 'ein', 'eine', 'of', 'for'}
     for tok in tokens:
@@ -327,7 +328,7 @@ def canonicalize_name(name: str) -> str:
             out.append(t)
     return ' '.join(out).strip()
 
-# === PARSERY ===
+=== PARSERY ===
 def parse_subcomponents_from_comment(comment):
     """
     Ulepszony parser: obsługuje mieszane wpisy z i bez ilości oraz usuwa myślnik po liczbie (np. '2x - docisk').
@@ -562,15 +563,155 @@ def parse_cad_project_structured(file_stream):
     result['statistics']['assemblies_count'] = sum(1 for c in result['components'] if c.get('is_summary', False))
     return result
 
+def parse_cad_project_structured_with_xlsx_comments(file_like):
+    """
+    Parser Excel z odczytem:
+    - wartości (pandas),
+    - komentarzy/note komórek (openpyxl),
+    - łączeniem komentarzy z całego wiersza.
+    Zwraca strukturę identyczną jak parse_cad_project_structured.
+    """
+    # Wczytaj bajty i utwórz dwa niezależne strumienie: dla pandas i openpyxl
+    if hasattr(file_like, "read"):
+        content = file_like.read()
+    elif isinstance(file_like, bytes):
+        content = file_like
+    else:
+        # zakładamy BytesIO
+        file_like.seek(0)
+        content = file_like.read()
+
+    bio_pd = BytesIO(content)
+    bio_xl = BytesIO(content)
+
+    # 1) Dane tabelaryczne
+    df = pd.read_excel(bio_pd, header=None)
+
+    # 2) Komentarze komórek (openpyxl)
+    comments_map = {}
+    try:
+        wb = load_workbook(bio_xl, data_only=True)
+        ws = wb.active
+        for r in ws.iter_rows():
+            for cell in r:
+                if cell.comment and cell.comment.text:
+                    comments_map[(cell.row - 1, cell.column - 1)] = cell.comment.text.strip()
+    except Exception as e:
+        logger.info(f"Brak lub nie udało się odczytać komentarzy z pliku xlsx: {e}")
+
+    result = {'components': [], 'multipliers': {}, 'totals': {}, 'statistics': {}}
+
+    # Kolumny (spójne z istniejącym parserem)
+    COL_POS, COL_DESC, COL_COMMENT = 0, 1, 2
+    COL_STD_PARTS, COL_SPEC_PARTS = 3, 4
+    COL_HOURS_LAYOUT, COL_HOURS_DETAIL, COL_HOURS_DOC = 7, 9, 11
+
+    # Multipliers
+    try:
+        result['multipliers']['layout'] = float(df.iloc[9, COL_HOURS_LAYOUT]) if pd.notna(df.iloc[9, COL_HOURS_LAYOUT]) else 1.0
+        result['multipliers']['detail'] = float(df.iloc[9, COL_HOURS_DETAIL]) if pd.notna(df.iloc[9, COL_HOURS_DETAIL]) else 1.0
+        result['multipliers']['documentation'] = float(df.iloc[9, COL_HOURS_DOC]) if pd.notna(df.iloc[9, COL_HOURS_DOC]) else 1.0
+    except Exception:
+        result['multipliers'] = {'layout': 1.0, 'detail': 1.0, 'documentation': 1.0}
+
+    data_start_row = 11
+    for row_idx in range(data_start_row, df.shape[0]):
+        try:
+            pos = str(df.iloc[row_idx, COL_POS]).strip() if pd.notna(df.iloc[row_idx, COL_POS]) else ""
+            name = str(df.iloc[row_idx, COL_DESC]).strip() if pd.notna(df.iloc[row_idx, COL_DESC]) else ""
+            if not pos or pos in ['nan', 'None', '']:
+                continue
+            if not name or name in ['nan', 'None']:
+                name = f"[Pozycja {pos}]"
+
+            # Tekst z kolumny "Komentarz"
+            txt_comment_col = str(df.iloc[row_idx, COL_COMMENT]).strip() if pd.notna(df.iloc[row_idx, COL_COMMENT]) else ""
+
+            # Zbierz komentarze z całego wiersza (wszystkie kolumny)
+            row_comments = []
+            # Używamy maksymalnej liczby kolumn z arkusza openpyxl jeśli dostępny
+            try:
+                max_cols = max(c for (_, c) in comments_map.keys() if _ == row_idx) + 1 if comments_map else df.shape[1]
+            except ValueError:
+                max_cols = df.shape[1]
+
+            for col in range(max_cols):
+                txt = comments_map.get((row_idx, col))
+                if txt:
+                    row_comments.append(txt)
+
+            joined_cell_comments = "; ".join([t for t in row_comments if t])
+            # Finalny komentarz = kolumna + wszystkie komentarze/note z wiersza
+            comment = "; ".join([t for t in [txt_comment_col, joined_cell_comments] if t])
+
+            hours_layout = float(df.iloc[row_idx, COL_HOURS_LAYOUT]) if pd.notna(df.iloc[row_idx, COL_HOURS_LAYOUT]) else 0.0
+            hours_detail = float(df.iloc[row_idx, COL_HOURS_DETAIL]) if pd.notna(df.iloc[row_idx, COL_HOURS_DETAIL]) else 0.0
+            hours_doc = float(df.iloc[row_idx, COL_HOURS_DOC]) if pd.notna(df.iloc[row_idx, COL_HOURS_DOC]) else 0.0
+
+            # Złożenia sumaryczne: "1,0" lub "1"
+            is_summary = bool(re.match(r'^\d+,0$', pos) or pos.isdigit())
+
+            # Sub‑komponenty z komentarza (Twoja funkcja)
+            subcomponents = parse_subcomponents_from_comment(comment)
+
+            component = {
+                'id': pos, 'name': name, 'comment': comment,
+                'type': 'assembly' if is_summary else 'part',
+                'level': pos.count(','),
+                'parts': {
+                    'standard': int(float(df.iloc[row_idx, COL_STD_PARTS])) if pd.notna(df.iloc[row_idx, COL_STD_PARTS]) else 0,
+                    'special': int(float(df.iloc[row_idx, COL_SPEC_PARTS])) if pd.notna(df.iloc[row_idx, COL_SPEC_PARTS]) else 0
+                },
+                'hours_3d_layout': hours_layout,
+                'hours_3d_detail': hours_detail,
+                'hours_2d': hours_doc,
+                'hours': hours_layout + hours_detail + hours_doc,
+                'is_summary': is_summary,
+                'subcomponents': subcomponents
+            }
+            result['components'].append(component)
+        except Exception as e:
+            logger.warning(f"Błąd wiersz {row_idx + 1}: {e}")
+            continue
+
+    # Podsumowania jak w oryginale
+    parts_only = [
+        c for c in result['components']
+        if not c.get('is_summary', False) and c.get('hours', 0) > 0 and c.get('name') not in ['[part]', '[assembly]', '', ' ']
+    ]
+    result['totals']['layout'] = sum(c['hours_3d_layout'] for c in parts_only)
+    result['totals']['detail'] = sum(c['hours_3d_detail'] for c in parts_only)
+    result['totals']['documentation'] = sum(c['hours_2d'] for c in parts_only)
+    result['totals']['total'] = sum(c['hours'] for c in parts_only)
+    result['statistics']['parts_count'] = len(parts_only)
+    result['statistics']['assemblies_count'] = sum(1 for c in result['components'] if c.get('is_summary', False))
+    return result
+
 def process_excel(file):
     try:
-        result = parse_cad_project_structured(file)
-        if result['components']:
-            st.success(f"✅ {len(result['components'])} komponentów: Layout {result['totals']['layout']:.1f}h + Detail {result['totals']['detail']:.1f}h + 2D {result['totals']['documentation']:.1f}h = {result['totals']['total']:.1f}h")
-            if result['multipliers']:
+        # Wczytaj bytes raz i użyj dla obu parserów
+        content = file.read()
+        bio1 = BytesIO(content)
+        bio2 = BytesIO(content)
+
+        try:
+            result = parse_cad_project_structured_with_xlsx_comments(bio1)
+            used_parser = "xlsx+comments"
+        except Exception as e:
+            logger.info(f"Parser z komentarzami nieudany, fallback: {e}")
+            result = parse_cad_project_structured(bio2)
+            used_parser = "basic"
+
+        if result and result.get('components'):
+            parts_only = [c for c in result['components'] if not c.get('is_summary', False)]
+            st.success(f"✅ {len(parts_only)} komponentów: Layout {result['totals']['layout']:.1f}h + Detail {result['totals']['detail']:.1f}h + 2D {result['totals']['documentation']:.1f}h (parser: {used_parser})")
+            if result.get('multipliers'):
                 st.info(f"Współczynniki: Layout={result['multipliers']['layout']}, Detail={result['multipliers']['detail']}, Doc={result['multipliers']['documentation']}")
                 st.session_state["excel_multipliers"] = result['multipliers']
-        return result['components']
+            return result['components']
+        else:
+            st.warning("Brak komponentów w pliku")
+            return []
     except Exception as e:
         st.error(f"Błąd parsowania: {e}")
         logger.exception("Błąd parsowania Excel")
@@ -655,24 +796,24 @@ def export_quotation_to_excel(project_data):
 def save_project_version(conn, project_id, version, components, estimated_hours, layout_h, detail_h, doc_h, change_desc, changed_by):
     with conn.cursor() as cur:
         cur.execute("""
-            INSERT INTO project_versions (
-                project_id, version, components, estimated_hours,
-                estimated_hours_3d_layout, estimated_hours_3d_detail, estimated_hours_2d,
-                change_description, changed_by
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+        INSERT INTO project_versions (
+            project_id, version, components, estimated_hours,
+            estimated_hours_3d_layout, estimated_hours_3d_detail, estimated_hours_2d,
+            change_description, changed_by
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
         """, (project_id, version, json.dumps(components, ensure_ascii=False),
               estimated_hours, layout_h, detail_h, doc_h, change_desc, changed_by))
         version_id = cur.fetchone()[0]
         conn.commit()
-    return version_id
+        return version_id
 
 def get_project_versions(conn, project_id):
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute("""
-            SELECT id, version, estimated_hours, estimated_hours_3d_layout,
-                   estimated_hours_3d_detail, estimated_hours_2d,
-                   change_description, changed_by, is_approved, created_at
-            FROM project_versions WHERE project_id = %s ORDER BY created_at DESC
+        SELECT id, version, estimated_hours, estimated_hours_3d_layout,
+               estimated_hours_3d_detail, estimated_hours_2d,
+               change_description, changed_by, is_approved, created_at
+        FROM project_versions WHERE project_id = %s ORDER BY created_at DESC
         """, (project_id,))
         return cur.fetchall()
 
@@ -681,11 +822,11 @@ def find_similar_projects(conn, description, department, limit=3):
         return []
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute("""
-            SELECT id, name, client, estimated_hours, actual_hours, department
-            FROM projects
-            WHERE department = %s
-              AND to_tsvector('simple', coalesce(name,'') || ' ' || coalesce(client,'') || ' ' || coalesce(description,'')) @@ websearch_to_tsquery('simple', %s)
-            ORDER BY created_at DESC LIMIT %s
+        SELECT id, name, client, estimated_hours, actual_hours, department
+        FROM projects
+        WHERE department = %s
+        AND to_tsvector('simple', coalesce(name,'') || ' ' || coalesce(client,'') || ' ' || coalesce(description,'')) @@ websearch_to_tsquery('simple', %s)
+        ORDER BY created_at DESC LIMIT %s
         """, (department, description, limit))
         return cur.fetchall()
 
@@ -697,12 +838,12 @@ def find_similar_projects_semantic(conn, description, department, limit=5):
         return []
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute("""
-            SELECT id, name, client, department, estimated_hours, actual_hours,
-                   1 - (description_embedding <-> %s::vector) AS similarity
-            FROM projects
-            WHERE department = %s AND description_embedding IS NOT NULL
-            ORDER BY description_embedding <-> %s::vector
-            LIMIT %s
+        SELECT id, name, client, department, estimated_hours, actual_hours,
+               1 - (description_embedding <-> %s::vector) AS similarity
+        FROM projects
+        WHERE department = %s AND description_embedding IS NOT NULL
+        ORDER BY description_embedding <-> %s::vector
+        LIMIT %s
         """, (to_pgvector(emb), department, to_pgvector(emb), limit))
         return cur.fetchall()
 
@@ -713,16 +854,16 @@ def find_similar_components(conn, name, department, limit=5):
         return []
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute("""
-            SELECT name, avg_hours_total, avg_hours_3d_layout, avg_hours_3d_detail, avg_hours_2d,
-                   confidence, occurrences, 1 - (name_embedding <-> %s::vector) AS similarity
-            FROM component_patterns
-            WHERE department=%s AND name_embedding IS NOT NULL
-            ORDER BY name_embedding <-> %s::vector
-            LIMIT %s
+        SELECT name, avg_hours_total, avg_hours_3d_layout, avg_hours_3d_detail, avg_hours_2d,
+               confidence, occurrences, 1 - (name_embedding <-> %s::vector) AS similarity
+        FROM component_patterns
+        WHERE department=%s AND name_embedding IS NOT NULL
+        ORDER BY name_embedding <-> %s::vector
+        LIMIT %s
         """, (to_pgvector(emb), department, to_pgvector(emb), limit))
         return cur.fetchall()
 
-# === DB ===
+=== DB ===
 @contextmanager
 def get_db_connection():
     conn = None
@@ -746,95 +887,118 @@ def get_db_connection():
 def init_db():
     try:
         with get_db_connection() as conn, conn.cursor() as cur:
-            # Podstawowe tabele
+            # Extension
             cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+
+            # Tabele bazowe (jak w Twoim kodzie)
             cur.execute('''
-                CREATE TABLE IF NOT EXISTS projects (
-                    id SERIAL PRIMARY KEY,
-                    name VARCHAR(255) NOT NULL,
-                    client VARCHAR(255),
-                    department VARCHAR(10),
-                    cad_system VARCHAR(50),
-                    components JSONB,
-                    estimated_hours_3d_layout FLOAT DEFAULT 0,
-                    estimated_hours_3d_detail FLOAT DEFAULT 0,
-                    estimated_hours_2d FLOAT DEFAULT 0,
-                    estimated_hours FLOAT,
-                    actual_hours FLOAT,
-                    complexity_score INTEGER,
-                    accuracy FLOAT,
-                    description TEXT,
-                    ai_analysis TEXT,
-                    created_at TIMESTAMP DEFAULT NOW(),
-                    updated_at TIMESTAMP DEFAULT NOW(),
-                    description_embedding vector(%s)
-                )
+            CREATE TABLE IF NOT EXISTS projects (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                client VARCHAR(255),
+                department VARCHAR(10),
+                cad_system VARCHAR(50),
+                components JSONB,
+                estimated_hours_3d_layout FLOAT DEFAULT 0,
+                estimated_hours_3d_detail FLOAT DEFAULT 0,
+                estimated_hours_2d FLOAT DEFAULT 0,
+                estimated_hours FLOAT,
+                actual_hours FLOAT,
+                complexity_score INTEGER,
+                accuracy FLOAT,
+                description TEXT,
+                ai_analysis TEXT,
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW(),
+                description_embedding vector(%s)
+            )
             ''', (EMBED_DIM,))
+
             cur.execute('''
-                CREATE TABLE IF NOT EXISTS component_patterns (
-                    id SERIAL PRIMARY KEY,
-                    name VARCHAR(255) NOT NULL,
-                    department VARCHAR(10),
-                    avg_hours_3d_layout FLOAT DEFAULT 0,
-                    avg_hours_3d_detail FLOAT DEFAULT 0,
-                    avg_hours_2d FLOAT DEFAULT 0,
-                    avg_hours_total FLOAT DEFAULT 0,
-                    proportion_layout FLOAT DEFAULT 0.33,
-                    proportion_detail FLOAT DEFAULT 0.33,
-                    proportion_doc FLOAT DEFAULT 0.33,
-                    std_dev_hours FLOAT DEFAULT 0,
-                    occurrences INTEGER DEFAULT 0,
-                    min_hours FLOAT,
-                    max_hours FLOAT,
-                    typical_complexity FLOAT DEFAULT 1.0,
-                    cad_systems JSONB,
-                    last_updated TIMESTAMP DEFAULT NOW(),
-                    pattern_key TEXT,
-                    name_embedding vector(%s),
-                    m2_layout DOUBLE PRECISION DEFAULT 0,
-                    m2_detail DOUBLE PRECISION DEFAULT 0,
-                    m2_doc DOUBLE PRECISION DEFAULT 0,
-                    m2_total DOUBLE PRECISION DEFAULT 0,
-                    confidence DOUBLE PRECISION DEFAULT 0,
-                    source TEXT,
-                    last_actual_sample_at TIMESTAMP,
-                    UNIQUE(name, department)
-                )
+            CREATE TABLE IF NOT EXISTS component_patterns (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                department VARCHAR(10),
+                avg_hours_3d_layout FLOAT DEFAULT 0,
+                avg_hours_3d_detail FLOAT DEFAULT 0,
+                avg_hours_2d FLOAT DEFAULT 0,
+                avg_hours_total FLOAT DEFAULT 0,
+                proportion_layout FLOAT DEFAULT 0.33,
+                proportion_detail FLOAT DEFAULT 0.33,
+                proportion_doc FLOAT DEFAULT 0.33,
+                std_dev_hours FLOAT DEFAULT 0,
+                occurrences INTEGER DEFAULT 0,
+                min_hours FLOAT,
+                max_hours FLOAT,
+                typical_complexity FLOAT DEFAULT 1.0,
+                cad_systems JSONB,
+                last_updated TIMESTAMP DEFAULT NOW(),
+                pattern_key TEXT,
+                name_embedding vector(%s),
+                m2_layout DOUBLE PRECISION DEFAULT 0,
+                m2_detail DOUBLE PRECISION DEFAULT 0,
+                m2_doc DOUBLE PRECISION DEFAULT 0,
+                m2_total DOUBLE PRECISION DEFAULT 0,
+                confidence DOUBLE PRECISION DEFAULT 0,
+                source TEXT,
+                last_actual_sample_at TIMESTAMP,
+                UNIQUE(name, department)
+            )
             ''', (EMBED_DIM,))
+
             cur.execute('''
-                CREATE TABLE IF NOT EXISTS project_versions (
-                    id SERIAL PRIMARY KEY,
-                    project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
-                    version VARCHAR(20) NOT NULL,
-                    components JSONB,
-                    estimated_hours FLOAT,
-                    estimated_hours_3d_layout FLOAT DEFAULT 0,
-                    estimated_hours_3d_detail FLOAT DEFAULT 0,
-                    estimated_hours_2d FLOAT DEFAULT 0,
-                    change_description TEXT,
-                    changed_by VARCHAR(100),
-                    is_approved BOOLEAN DEFAULT FALSE,
-                    created_at TIMESTAMP DEFAULT NOW()
-                )
+            CREATE TABLE IF NOT EXISTS project_versions (
+                id SERIAL PRIMARY KEY,
+                project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+                version VARCHAR(20) NOT NULL,
+                components JSONB,
+                estimated_hours FLOAT,
+                estimated_hours_3d_layout FLOAT DEFAULT 0,
+                estimated_hours_3d_detail FLOAT DEFAULT 0,
+                estimated_hours_2d FLOAT DEFAULT 0,
+                change_description TEXT,
+                changed_by VARCHAR(100),
+                is_approved BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
             ''')
+
             cur.execute('''
-                CREATE TABLE IF NOT EXISTS category_baselines (
-                  id SERIAL PRIMARY KEY,
-                  department VARCHAR(10),
-                  category TEXT,
-                  mean_layout DOUBLE PRECISION DEFAULT 0,
-                  mean_detail DOUBLE PRECISION DEFAULT 0,
-                  mean_doc DOUBLE PRECISION DEFAULT 0,
-                  m2_layout DOUBLE PRECISION DEFAULT 0,
-                  m2_detail DOUBLE PRECISION DEFAULT 0,
-                  m2_doc DOUBLE PRECISION DEFAULT 0,
-                  occurrences INTEGER DEFAULT 0,
-                  confidence DOUBLE PRECISION DEFAULT 0,
-                  last_updated TIMESTAMP DEFAULT NOW(),
-                  UNIQUE(department, category)
-                )
+            CREATE TABLE IF NOT EXISTS category_baselines (
+                id SERIAL PRIMARY KEY,
+                department VARCHAR(10),
+                category TEXT,
+                mean_layout DOUBLE PRECISION DEFAULT 0,
+                mean_detail DOUBLE PRECISION DEFAULT 0,
+                mean_doc DOUBLE PRECISION DEFAULT 0,
+                m2_layout DOUBLE PRECISION DEFAULT 0,
+                m2_detail DOUBLE PRECISION DEFAULT 0,
+                m2_doc DOUBLE PRECISION DEFAULT 0,
+                occurrences INTEGER DEFAULT 0,
+                confidence DOUBLE PRECISION DEFAULT 0,
+                last_updated TIMESTAMP DEFAULT NOW(),
+                UNIQUE(department, category)
+            )
             ''')
-            # Indeksy
+
+            # NOWA TABELA: relacje parent -> sub (bundles)
+            cur.execute('''
+            CREATE TABLE IF NOT EXISTS component_bundles (
+                id SERIAL PRIMARY KEY,
+                department VARCHAR(10),
+                parent_key TEXT,
+                parent_name TEXT,
+                sub_key TEXT,
+                sub_name TEXT,
+                occurrences INTEGER DEFAULT 0,
+                total_qty DOUBLE PRECISION DEFAULT 0,
+                confidence DOUBLE PRECISION DEFAULT 0,
+                last_updated TIMESTAMP DEFAULT NOW(),
+                UNIQUE (department, parent_key, sub_key)
+            )
+            ''')
+
+            # Indeksy istniejące
             cur.execute('CREATE INDEX IF NOT EXISTS idx_projects_created_at ON projects(created_at DESC)')
             cur.execute('CREATE INDEX IF NOT EXISTS idx_projects_department ON projects(department)')
             cur.execute('CREATE INDEX IF NOT EXISTS idx_patterns_department ON component_patterns(department)')
@@ -842,21 +1006,38 @@ def init_db():
             cur.execute('CREATE INDEX IF NOT EXISTS idx_versions_project ON project_versions(project_id, created_at DESC)')
             cur.execute("CREATE INDEX IF NOT EXISTS idx_projects_desc_embed_hnsw ON projects USING hnsw (description_embedding vector_l2_ops);")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_component_patterns_name_embed_hnsw ON component_patterns USING hnsw (name_embedding vector_l2_ops);")
+
+            # NOWE INDEXY dla bundles
+            cur.execute('CREATE INDEX IF NOT EXISTS idx_bundles_dept_parent ON component_bundles(department, parent_key)')
+            cur.execute('CREATE INDEX IF NOT EXISTS idx_bundles_dept_parent_occ ON component_bundles(department, parent_key, occurrences DESC)')
+
+            # NOWE KOLUMNY w projects (bezpiecznie, idempotentnie)
+            cur.execute("ALTER TABLE projects ADD COLUMN IF NOT EXISTS is_historical BOOLEAN DEFAULT FALSE;")
+            cur.execute("ALTER TABLE projects ADD COLUMN IF NOT EXISTS estimation_mode VARCHAR(30) DEFAULT 'ai';")
+            cur.execute("ALTER TABLE projects ADD COLUMN IF NOT EXISTS totals_source VARCHAR(30) DEFAULT 'ai';")
+            cur.execute("ALTER TABLE projects ADD COLUMN IF NOT EXISTS locked_totals BOOLEAN DEFAULT FALSE;")
+
+            # Indeksy dla nowych kolumn
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_projects_hist ON projects(is_historical);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_projects_estimation_mode ON projects(estimation_mode);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_projects_totals_source ON projects(totals_source);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_projects_locked_totals ON projects(locked_totals);")
+
             conn.commit()
-            logger.info("Baza zainicjalizowana")
+            logger.info("Baza zainicjalizowana + migracje (bundles, flagi projektów).")
             return True
     except Exception as e:
         logger.error(f"Błąd inicjalizacji: {e}")
         st.error(f"Błąd inicjalizacji: {e}")
         return False
 
-# === STATYSTYKA (WELFORD) ===
+=== STATYSTYKA (WELFORD) ===
 def _welford_step(mean, m2, n, x):
     """Algorytm Welforda - aktualizacja średniej i wariancji + odrzucanie outlierów po min prób."""
     if n and n >= 5:
         std = (m2 / max(n - 1, 1)) ** 0.5
         if mean and abs(x - mean) > 2.5 * std:
-            return mean, m2, n  # outlier - odrzuć
+            return mean, m2, n # outlier - odrzuć
     n_new = (n or 0) + 1
     delta = x - (mean or 0)
     mean_new = (mean or 0) + delta / n_new
@@ -926,8 +1107,8 @@ def update_pattern_smart(cur, name, dept, layout_h, detail_h, doc_h, source='act
 def update_category_baseline(cur, dept, category, layout_h, detail_h, doc_h):
     """Aktualizuje baseline dla kategorii (n++ 1x)."""
     cur.execute("""
-        SELECT mean_layout, mean_detail, mean_doc, m2_layout, m2_detail, m2_doc, occurrences
-        FROM category_baselines WHERE department=%s AND category=%s
+    SELECT mean_layout, mean_detail, mean_doc, m2_layout, m2_detail, m2_doc, occurrences
+    FROM category_baselines WHERE department=%s AND category=%s
     """, (dept, category))
     row = cur.fetchone()
 
@@ -952,13 +1133,92 @@ def update_category_baseline(cur, dept, category, layout_h, detail_h, doc_h):
             VALUES (%s, %s, %s, %s, %s, 1, 0.1)
         """, (dept, category, layout_h, detail_h, doc_h))
 
-# === HEURYSTYKI I PROPOZYCJE Z KOMENTARZY ===
+def update_bundle(cur, dept: str, parent_name: str, sub_name: str, qty: int):
+    """
+    Aktualizuje tabelę component_bundles: relacja parent -> sub,
+    liczy częstość współwystępowania i sumę ilości (qty).
+    """
+    try:
+        pkey = canonicalize_name(parent_name or "")
+        skey = canonicalize_name(sub_name or "")
+        if not pkey or not skey:
+            return
+        q = max(1, int(qty or 1))
+        cur.execute("""
+            INSERT INTO component_bundles (department, parent_key, parent_name, sub_key, sub_name, occurrences, total_qty, confidence)
+            VALUES (%s, %s, %s, %s, %s, 1, %s, 0.1)
+            ON CONFLICT (department, parent_key, sub_key)
+            DO UPDATE SET
+                occurrences = component_bundles.occurrences + 1,
+                total_qty = component_bundles.total_qty + EXCLUDED.total_qty,
+                confidence = LEAST(1.0, (component_bundles.occurrences + 1) / 10.0),
+                last_updated = NOW()
+        """, (dept, pkey, parent_name, skey, sub_name, float(q)))
+    except Exception as e:
+        logger.warning(f"update_bundle err: {e}")
+
+def learn_from_historical_components(cur, dept: str, components: list, distribute: str = 'qty'):
+    """
+    Uczy:
+    - component_patterns: komponenty główne + sub-komponenty (proporcjonalnie do ilości lub po równo),
+    - component_bundles: relacje parent->sub z typową ilością.
+
+    distribute: 'qty' (waga = qty / sum_qty) lub 'equal' (po równo).
+    """
+    for comp in components or []:
+        try:
+            name = comp.get('name', '')
+            if not name:
+                continue
+
+            is_summary = bool(comp.get('is_summary'))
+            subs = comp.get('subcomponents', []) or []
+
+            # ZAWSZE: aktualizuj bundles (wiedza co z czym)
+            for sub in subs:
+                update_bundle(cur, dept, name, sub.get('name', ''), sub.get('quantity', 1))
+
+            # Komponent sumaryczny nie wnosi godzin - nie ucz wzorca godzin
+            if is_summary:
+                continue
+
+            layout = float(comp.get('hours_3d_layout', 0) or 0)
+            detail = float(comp.get('hours_3d_detail', 0) or 0)
+            doc = float(comp.get('hours_2d', 0) or 0)
+            total = layout + detail + doc
+
+            # 1) ucz wzorzec komponentu (jeśli są godziny)
+            if total > 0:
+                update_pattern_smart(cur, name, dept, layout, detail, doc, source='historical_excel')
+
+            # 2) rozdziel godziny na sub-komponenty
+            if subs and total > 0:
+                if distribute == 'qty':
+                    total_qty = sum(int(s.get('quantity', 1) or 1) for s in subs) or len(subs)
+                    for sub in subs:
+                        q = max(1, int(sub.get('quantity', 1) or 1))
+                        w = (q / total_qty) if total_qty else (1.0 / len(subs))
+                        sl, sd, sdoc = layout * w, detail * w, doc * w
+                        update_pattern_smart(cur, sub.get('name', ''), dept, sl, sd, sdoc, source='historical_excel_sub')
+                else:
+                    # equal
+                    n = len(subs)
+                    if n > 0:
+                        w = 1.0 / n
+                        for sub in subs:
+                            sl, sd, sdoc = layout * w, detail * w, doc * w
+                            update_pattern_smart(cur, sub.get('name', ''), dept, sl, sd, sdoc, source='historical_excel_sub')
+
+        except Exception as e:
+            logger.warning(f"learn_from_historical_components err for '{comp.get('name','?')}': {e}")
+
+=== HEURYSTYKI I PROPOZYCJE Z KOMENTARZY ===
 HEURISTIC_LIBRARY = [
     # keywords, per-piece hours L/D/2D
-    (['docisk', 'clamp'],            0.5, 1.5, 0.5),
-    (['śruba trapezowa', 'trapez'],  0.2, 0.8, 0.3),
-    (['konsola', 'bracket'],         0.3, 1.0, 0.4),
-    (['płyta', 'plate'],             0.2, 0.7, 0.4),
+    (['docisk', 'clamp'], 0.5, 1.5, 0.5),
+    (['śruba trapezowa', 'trapez'], 0.2, 0.8, 0.3),
+    (['konsola', 'bracket'], 0.3, 1.0, 0.4),
+    (['płyta', 'plate'], 0.2, 0.7, 0.4),
 ]
 
 def heuristic_estimate_for_name(name: str):
@@ -1041,7 +1301,88 @@ def propose_adjustments_for_components(conn, components, department, conservativ
             proposals.append({"parent": comp.get('name', 'bez nazwy'), "adds": adds})
     return proposals
 
-# === DEMO / PRÓBNE DANE ===
+def propose_bundles_for_component(conn, parent_name: str, department: str,
+                                  conservativeness: float = 1.0,
+                                  top_k: int = 5, min_occ: int = 2) -> list:
+    """
+    Zwraca listę dodatków bazujących na historii (component_bundles):
+    - wybiera typowe sub-komponenty dla parent_name,
+    - próbuje dociągnąć średnie godziny z component_patterns (embedding),
+    - fallback do heurystyk,
+    - skaluje konserwatywnością.
+
+    Zwrót: list[{"name","qty","layout_add","detail_add","doc_add","reason","source","confidence"}]
+    """
+    pkey = canonicalize_name(parent_name or "")
+    if not pkey:
+        return []
+
+    rows = []
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT sub_name, occurrences, total_qty, confidence
+                FROM component_bundles
+                WHERE department=%s AND parent_key=%s AND occurrences >= %s
+                ORDER BY occurrences DESC
+                LIMIT %s
+            """, (department, pkey, min_occ, top_k))
+            rows = cur.fetchall() or []
+    except Exception as e:
+        logger.warning(f"propose_bundles_for_component query err: {e}")
+        return []
+
+    proposals = []
+    for r in rows:
+        occ = max(1, int(r.get('occurrences') or 1))
+        total_qty = float(r.get('total_qty') or 0.0)
+        typical_qty = int(round(total_qty / occ)) if total_qty > 0 else 1
+        typical_qty = max(1, typical_qty)
+
+        # dociągnięcie wzorca godzin
+        try:
+            similar = find_similar_components(conn, r['sub_name'], department, limit=1)
+        except Exception:
+            similar = []
+
+        if similar:
+            s0 = similar[0]
+            l = float(s0.get('avg_hours_3d_layout') or 0.0)
+            d = float(s0.get('avg_hours_3d_detail') or 0.0)
+            dc = float(s0.get('avg_hours_2d') or 0.0)
+            tot = float(s0.get('avg_hours_total') or (l + d + dc))
+            if tot > 0 and (l + d + dc) == 0:
+                # rozbicie domyślne, jeśli tylko total dostępny
+                l, d, dc = tot * 0.3, tot * 0.5, tot * 0.2
+
+            proposals.append({
+                "name": r['sub_name'],
+                "qty": typical_qty,
+                "layout_add": l * typical_qty * conservativeness,
+                "detail_add": d * typical_qty * conservativeness,
+                "doc_add": dc * typical_qty * conservativeness,
+                "reason": f"Historia: często występuje z {parent_name} (occ={occ})",
+                "source": "bundle",
+                "confidence": float(r.get('confidence') or 0.5)
+            })
+        else:
+            # fallback do heurystyki
+            l, d, dc, why = heuristic_estimate_for_name(r['sub_name'])
+            if l + d + dc > 0:
+                proposals.append({
+                    "name": r['sub_name'],
+                    "qty": typical_qty,
+                    "layout_add": l * typical_qty * conservativeness,
+                    "detail_add": d * typical_qty * conservativeness,
+                    "doc_add": dc * typical_qty * conservativeness,
+                    "reason": why or f"Historia (bundle) bez wzorca",
+                    "source": "bundle_heuristic",
+                    "confidence": 0.35
+                })
+
+    return proposals
+
+=== DEMO / PRÓBNE DANE ===
 def generate_sample_excel() -> bytes:
     """
     Generuje przykładowy Excel pasujący do parsera:
@@ -1054,7 +1395,7 @@ def generate_sample_excel() -> bytes:
         pd.DataFrame().to_excel(writer, sheet_name='Dane', index=False)
         ws = writer.sheets['Dane']
 
-        # Multipliers (wiersz 9 zero-based -> index 9)
+        # Multipliers (wiersz 10 zero-based -> index 9)
         ws.write(9, 7, 1.0)   # Layout
         ws.write(9, 9, 1.0)   # Detail
         ws.write(9, 11, 1.0)  # Doc
@@ -1134,11 +1475,11 @@ def generate_sample_image() -> bytes:
     # Ramka
     draw.rectangle([20, 20, w-20, h-20], outline=(50, 50, 50), width=3)
     # Elementy
-    draw.rectangle([60, 150, 220, 250], outline="navy", width=3)   # baza
+    draw.rectangle([60, 150, 220, 250], outline="navy", width=3) # baza
     draw.text((70, 260), "Płyta bazowa", fill="navy")
-    draw.rectangle([300, 120, 520, 180], outline="darkgreen", width=3)  # docisk
+    draw.rectangle([300, 120, 520, 180], outline="darkgreen", width=3) # docisk
     draw.text((310, 185), "Docisk śrubowy", fill="darkgreen")
-    draw.line([520, 150, 700, 150], fill="black", width=3)  # odrzut
+    draw.line([520, 150, 700, 150], fill="black", width=3) # odrzut
     draw.text((600, 160), "Odrzut", fill="black")
     # Tekst tytułu
     draw.text((30, 30), "Stacja dociskania omega (schemat poglądowy)", fill=(0, 0, 0))
@@ -1160,7 +1501,7 @@ def fill_demo_fields():
     )
     st.success("Wypełniono formularz przykładowymi danymi.")
 
-# === UI: Dashboard, Nowy projekt, Historia ===
+=== UI: Dashboard, Nowy projekt, Historia ===
 def render_dashboard_page():
     st.header("📊 Dashboard")
     with get_db_connection() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -1169,9 +1510,9 @@ def render_dashboard_page():
         cur.execute("SELECT AVG(accuracy) as avg FROM projects WHERE accuracy IS NOT NULL")
         avg_accuracy = (cur.fetchone() or {}).get('avg') or 0
         cur.execute("""
-            SELECT department, COUNT(*) as count
-            FROM projects WHERE department IS NOT NULL
-            GROUP BY department ORDER BY department
+        SELECT department, COUNT(*) as count
+        FROM projects WHERE department IS NOT NULL
+        GROUP BY department ORDER BY department
         """)
         dept_stats = cur.fetchall()
 
@@ -1261,6 +1602,9 @@ def render_new_project_page(selected_model):
     st.subheader("⚙️ Uwzględnianie komentarzy")
     use_comments = st.checkbox("Uwzględnij sub-komponenty z komentarzy w estymacji", value=True)
     conserv = st.slider("Konserwatywność proponowanych dodatków", min_value=0.5, max_value=1.5, value=1.0, step=0.1)
+    enable_bundles = st.checkbox("Włącz podpowiedzi z historii (bundles)", value=True,
+                                 help="Podpowiada typowe sub‑komponenty dla podobnych pozycji na bazie importów historycznych")
+
 
     if st.button("🤖 Analizuj z AI", use_container_width=True):
         if not st.session_state.get("description") and not excel_file and not image_files and not pdf_files:
@@ -1343,6 +1687,23 @@ def render_new_project_page(selected_model):
         ai_adjustments = st.session_state.get("ai_adjustments", [])
         rule_adjustments = st.session_state.get("rule_adjustments", [])
 
+        # Bundles z historii dla komponentów bez sub‑komponentów
+        bundle_adjustments = []
+        if enable_bundles and base_components:
+            with get_db_connection() as conn:
+                for comp in base_components:
+                    if comp.get('is_summary'):
+                        continue
+                    # Preferencyjnie sugeruj dla tych BEZ komentarzy/subkomponentów
+                    if comp.get('subcomponents'):
+                        continue
+                    adds = propose_bundles_for_component(conn, comp.get('name',''), department, conservativeness=conserv)
+                    if adds:
+                        bundle_adjustments.append({"parent": comp.get('name',''), "adds": adds})
+
+        # Połącz do jednego źródła “regułowego”
+        combined_rule_adjustments = (rule_adjustments or []) + (bundle_adjustments or [])
+
         st.subheader("Wynik analizy")
         for w in analysis.get("warnings", []):
             st.warning(w)
@@ -1380,24 +1741,25 @@ def render_new_project_page(selected_model):
             st.caption("Brak propozycji AI lub model nie zwrócił 'adjustments'.")
 
         # Proponowane dodatki (Wzorce/Heurystyki)
-        st.subheader("🧠 Proponowane dodatki (wzorce/heurystyki z komentarzy)")
+        st.subheader("🧠 Proponowane dodatki (wzorce/heurystyki + historia bundles)")
         rule_selected = []
-        if rule_adjustments:
-            for i, adj in enumerate(rule_adjustments):
+        if combined_rule_adjustments:
+            for i, adj in enumerate(combined_rule_adjustments):
                 parent = adj.get("parent", "komponent")
-                with st.expander(f"Wzorce/Heurystyki: {parent}"):
+                with st.expander(f"Wzorce/Heurystyki/Historia: {parent}"):
                     for j, add in enumerate(adj.get("adds", [])):
                         key = f"rule_adj_{i}_{j}"
+                        # domyślnie zaznacz: wzorzec z patterns (wyższa pewność); bundle/heurystyczne odznaczone
                         default = True if add.get("source") == "pattern" else False
                         checked = st.checkbox(
-                            f"{add['qty']}x {add['name']} → +L {add['layout_add']:.1f}h, +D {add['detail_add']:.1f}h, +2D {add['doc_add']:.1f}h  ({add['source']}, conf={add.get('confidence',0):.2f})",
+                            f"{add['qty']}x {add['name']} → +L {add['layout_add']:.1f}h, +D {add['detail_add']:.1f}h, +2D {add['doc_add']:.1f}h  ({add.get('source','')}, conf={add.get('confidence',0):.2f})",
                             value=default, key=key
                         )
                         st.caption(f"Powód: {add.get('reason','')}")
                         if checked:
                             rule_selected.append({"parent": parent, "add": add})
         else:
-            st.caption("Brak propozycji z komentarzy lub uwzględnianie komentarzy wyłączone.")
+            st.caption("Brak propozycji z komentarzy/historii lub funkcja wyłączona.")
 
         # Zbuduj komponenty z zaakceptowanych dodatków (AI + reguły)
         adjustment_components = []
@@ -1501,8 +1863,8 @@ def render_new_project_page(selected_model):
         if similar_sem:
             for sp in similar_sem:
                 sim_pct = sp['similarity'] * 100
-                st.write(f"- **{sp['name']}** (sim={sim_pct:.0f}%) — est: {(sp['estimated_hours'] or 0):.1f}h" + 
-                        (f", act: {sp['actual_hours']:.1f}h" if sp['actual_hours'] else ""))
+                st.write(f"- **{sp['name']}** (sim={sim_pct:.0f}%) — est: {(sp['estimated_hours'] or 0):.1f}h" +
+                         (f", act: {sp['actual_hours']:.1f}h" if sp['actual_hours'] else ""))
         else:
             st.caption("Brak embeddingów — dodaj projekty i uruchom przeliczanie")
 
@@ -1602,6 +1964,64 @@ def render_new_project_page(selected_model):
                 except Exception as e:
                     st.error(f"Błąd: {e}")
                     logger.exception("Zapis failed")
+
+def batch_import_excels(files, department: str, learn_from_import: bool = False, distribute: str = 'qty'):
+    """
+    Batch import historycznych plików Excel:
+    - parsuje wartości + komentarze/note (openpyxl),
+    - zapisuje projekt jako Excel-only (is_historical/locked),
+    - opcjonalnie uczy wzorce (komponenty + sub-komponenty) oraz bundles.
+
+    distribute: 'qty' lub 'equal' (dotyczy podziału godzin na sub-komponenty jeśli learn_from_import=True).
+    Zwraca listę wyników {file, status, project_id?, hours?, error?}.
+    """
+    results = []
+    with get_db_connection() as conn, conn.cursor() as cur:
+        for f in files:
+            try:
+                # Nazwa projektu z nazwy pliku
+                fname = getattr(f, "name", "import.xlsx")
+                proj_name = os.path.splitext(os.path.basename(fname))[0]
+
+                # Parsuj (wartości + komentarze komórek)
+                parsed = parse_cad_project_structured_with_xlsx_comments(f)
+                comps_full = parsed.get('components', []) or []
+                totals = parsed.get('totals', {}) or {}
+
+                est_l = float(totals.get('layout', 0) or 0)
+                est_d = float(totals.get('detail', 0) or 0)
+                est_doc = float(totals.get('documentation', 0) or 0)
+                est_total = float(totals.get('total', est_l + est_d + est_doc) or 0)
+
+                # Zapisz projekt jako historyczny, zablokowany dla AI
+                cur.execute("""
+                    INSERT INTO projects (
+                        name, client, department, description, components,
+                        estimated_hours_3d_layout, estimated_hours_3d_detail, estimated_hours_2d,
+                        estimated_hours, ai_analysis,
+                        is_historical, estimation_mode, totals_source, locked_totals
+                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                             TRUE, 'excel_only', 'excel', TRUE)
+                    RETURNING id
+                """, (
+                    proj_name, None, department, None,
+                    json.dumps(comps_full, ensure_ascii=False),
+                    est_l, est_d, est_doc, est_total,
+                    '[HISTORICAL_IMPORT]'
+                ))
+                pid = cur.fetchone()[0]
+
+                # Uczenie z importu (opcjonalnie)
+                if learn_from_import and comps_full:
+                    learn_from_historical_components(cur, department, comps_full, distribute=distribute)
+
+                conn.commit()
+                results.append({"file": fname, "status": "success", "project_id": pid, "hours": est_total})
+            except Exception as e:
+                conn.rollback()
+                logger.exception("Batch import error")
+                results.append({"file": getattr(f, 'name', 'unknown'), "status": "error", "error": str(e)})
+    return results
 
 def render_history_page():
     st.header("📚 Historia i Uczenie")
@@ -1771,9 +2191,20 @@ def render_history_page():
             if len(excel_files) > 10:
                 st.write(f"... +{len(excel_files) - 10}")
 
+            # NOWE OPCJE: uczenie z importu + metoda podziału godzin
+            learn_from_import = st.checkbox("Ucz wzorce z importu (komponenty + sub‑komponenty z komentarzy)", value=True)
+            distribute_method = st.radio(
+                "Rozdział godzin na sub‑komponenty",
+                options=['qty', 'equal'],
+                format_func=lambda v: "Proporcjonalnie do ilości (qty)" if v == 'qty' else "Po równo",
+                horizontal=True
+            )
+
             if st.button("🚀 Importuj", type="primary", use_container_width=True):
                 st.info(f"Import {len(excel_files)} do {batch_dept}...")
-                results = batch_import_excels(excel_files, batch_dept)
+                results = batch_import_excels(excel_files, batch_dept,
+                                              learn_from_import=learn_from_import,
+                                              distribute=distribute_method)
                 success = sum(1 for r in results if r['status'] == 'success')
                 errors = sum(1 for r in results if r['status'] == 'error')
                 c1, c2 = st.columns(2)
