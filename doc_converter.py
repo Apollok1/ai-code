@@ -464,6 +464,7 @@ WYMAGANY JSON:
   "summary": "1-2 akapity skrótu (PL)",
   "key_points": ["punkt 1", "punkt 2", "..."],
   "decisions": ["decyzja 1", "decyzja 2"],
+  "to_be_decided": ["kwestia do ustalenia 1", "kwestia 2"],
   "action_items": [{"owner":"", "task":"", "due":"", "notes":""}],
   "risks": [{"risk":"", "impact":"niski/średni/wysoki", "mitigation":""}],
   "open_questions": ["pytanie 1", "pytanie 2"]
@@ -472,6 +473,7 @@ WYMAGANY JSON:
 ZASADY:
 - Nie wymyślaj informacji. Jeśli czegoś brak, zostaw puste pola lub wpisz [].
 - Zostaw język polski.
+- "to_be_decided" zawiera kwestie wymagające decyzji lub doprecyzowania.
 - Jeśli są mówcy (SPEAKER_x) – staraj się zmapować właścicieli zadań (owner).
 - Nie dodawaj komentarzy poza JSON.
 Fragment:
@@ -479,7 +481,7 @@ Fragment:
 """
 
 REDUCE_PROMPT_TEMPLATE = """
-Jesteś asystentem ds. spotkań (PL). Otrzymasz listę częściowych podsumowań w JSON (z pól: summary, key_points, decisions, action_items, risks, open_questions).
+Jesteś asystentem ds. spotkań (PL). Otrzymasz listę częściowych podsumowań w JSON (z pól: summary, key_points, decisions, to_be_decided, action_items, risks, open_questions).
 Scal je i zwróć jeden końcowy JSON w tym samym formacie. Usuń duplikaty, uczyść i pogrupuj logicznie.
 
 WYMAGANY JSON:
@@ -487,6 +489,7 @@ WYMAGANY JSON:
   "summary": "skondensowany skrót całości",
   "key_points": [...],
   "decisions": [...],
+  "to_be_decided": [...],
   "action_items": [...],
   "risks": [...],
   "open_questions": [...]
@@ -530,14 +533,22 @@ def try_parse_json(s: str) -> Dict[str, Any]:
         return {}
 
 def merge_summary_dicts(items: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Sklejanie listy słowników w formacie summary JSON (na wszelki wypadek, gdyby REDUCE nie zadziałał)."""
-    out = {"summary": "", "key_points": [], "decisions": [], "action_items": [], "risks": [], "open_questions": []}
+    """Sklejanie listy słowników w formacie summary JSON (fallback)."""
+    out = {
+        "summary": "",
+        "key_points": [],
+        "decisions": [],
+        "to_be_decided": [],
+        "action_items": [],
+        "risks": [],
+        "open_questions": []
+    }
     for it in items:
         if not isinstance(it, dict):
             continue
         if it.get("summary"):
             out["summary"] += (("\n" if out["summary"] else "") + it["summary"])
-        for k in ["key_points", "decisions", "open_questions"]:
+        for k in ["key_points", "decisions", "to_be_decided", "open_questions"]:
             out[k].extend(it.get(k, []))
         for ai in it.get("action_items", []):
             if isinstance(ai, dict):
@@ -546,9 +557,8 @@ def merge_summary_dicts(items: List[Dict[str, Any]]) -> Dict[str, Any]:
             if isinstance(r, dict):
                 out["risks"].append(r)
     # deduplikacja prosta
-    out["key_points"] = list(dict.fromkeys(out["key_points"]))
-    out["decisions"] = list(dict.fromkeys(out["decisions"]))
-    out["open_questions"] = list(dict.fromkeys(out["open_questions"]))
+    for k in ["key_points", "decisions", "to_be_decided", "open_questions"]:
+        out[k] = list(dict.fromkeys(out[k]))
     return out
 
 def build_meeting_summary_markdown(data: Dict[str, Any]) -> str:
@@ -559,35 +569,67 @@ def build_meeting_summary_markdown(data: Dict[str, Any]) -> str:
     md.append("# Podsumowanie rozmowy")
     if data.get("summary"):
         md.append(data["summary"])
-    sections = [
-        ("## Kluczowe punkty", "key_points"),
-        ("## Decyzje", "decisions"),
-        ("## Zadania (Action Items)", "action_items"),
-        ("## Ryzyka", "risks"),
-        ("## Pytania do klienta (otwarte kwestie)", "open_questions"),
-    ]
-    for title, key in sections:
-        md.append("\n" + title)
-        items = data.get(key, [])
-        if not items:
-            md.append("- brak")
-            continue
-        if key == "action_items":
-            for ai in items:
-                owner = ai.get("owner", "") or "N/A"
-                task = ai.get("task", "") or "N/A"
-                due = ai.get("due", "") or "-"
-                notes = ai.get("notes", "") or ""
-                md.append(f"- [ ] {task} (owner: {owner}, termin: {due}) {('- ' + notes) if notes else ''}")
-        elif key == "risks":
-            for r in items:
-                risk = r.get("risk", "")
-                impact = r.get("impact", "")
-                mit = r.get("mitigation", "")
-                md.append(f"- {risk} (wpływ: {impact}) → mitygacja: {mit}")
-        else:
-            for x in items:
-                md.append(f"- {x}")
+
+    # Kluczowe punkty
+    md.append("\n## Kluczowe punkty")
+    key_points = data.get("key_points", [])
+    if not key_points:
+        md.append("- brak")
+    else:
+        for x in key_points:
+            md.append(f"- {x}")
+
+    # Decyzje vs Do ustalenia
+    md.append("\n## Decyzje vs Do ustalenia")
+    decisions = data.get("decisions", [])
+    tbd = data.get("to_be_decided", [])
+    md.append("### Decyzje")
+    if decisions:
+        for d in decisions:
+            md.append(f"- {d}")
+    else:
+        md.append("- brak")
+    md.append("### Do ustalenia")
+    if tbd:
+        for q in tbd:
+            md.append(f"- {q}")
+    else:
+        md.append("- brak")
+
+    # Zadania
+    md.append("\n## Zadania (Action Items)")
+    action_items = data.get("action_items", [])
+    if not action_items:
+        md.append("- brak")
+    else:
+        for ai in action_items:
+            owner = ai.get("owner", "") or "N/A"
+            task = ai.get("task", "") or "N/A"
+            due = ai.get("due", "") or "-"
+            notes = ai.get("notes", "") or ""
+            md.append(f"- [ ] {task} (owner: {owner}, termin: {due}) {('- ' + notes) if notes else ''}")
+
+    # Ryzyka
+    md.append("\n## Ryzyka")
+    risks = data.get("risks", [])
+    if not risks:
+        md.append("- brak")
+    else:
+        for r in risks:
+            risk = r.get("risk", "")
+            impact = r.get("impact", "")
+            mit = r.get("mitigation", "")
+            md.append(f"- {risk} (wpływ: {impact}) → mitygacja: {mit}")
+
+    # Pytania do klienta
+    md.append("\n## Pytania do klienta (otwarte kwestie)")
+    open_q = data.get("open_questions", [])
+    if not open_q:
+        md.append("- brak")
+    else:
+        for q in open_q:
+            md.append(f"- {q}")
+
     return "\n".join(md)
 
 def summarize_meeting_transcript(transcript: str, model: str = "llama3:latest", max_chars: int = 6000, diarized: bool = False) -> Dict[str, Any]:
@@ -787,18 +829,28 @@ if uploaded_files:
                     summary_md = build_meeting_summary_markdown(summary_json)
                     st.markdown(summary_md)
 
-                    # Zapis podsumowania
+                    # Zapis podsumowania (MD + JSON)
                     if enable_local_save and run_dir:
                         fname_base = os.path.splitext(safe_filename(aname))[0]
-                        out_summary = os.path.join(run_dir, f"{fname_base}.summary.md")
-                        save_text(out_summary, summary_md)
-                        st.caption(f"💾 Zapisano podsumowanie: {out_summary}")
+                        out_summary_md = os.path.join(run_dir, f"{fname_base}.summary.md")
+                        out_summary_json = os.path.join(run_dir, f"{fname_base}.summary.json")
+                        save_text(out_summary_md, summary_md)
+                        save_text(out_summary_json, json.dumps(summary_json, ensure_ascii=False, indent=2))
+                        st.caption(f"💾 Zapisano podsumowanie MD: {out_summary_md}")
+                        st.caption(f"💾 Zapisano podsumowanie JSON: {out_summary_json}")
 
-                    # Pobierz jako plik
+                    # Pobierz jako pliki
                     st.download_button(
                         "⬇️ Pobierz podsumowanie (MD)",
                         summary_md.encode("utf-8"),
                         file_name=f"{os.path.splitext(safe_filename(aname))[0]}_summary.md",
                         mime="text/markdown",
-                        key=f"dl_{aname}"
+                        key=f"dl_md_{aname}"
+                    )
+                    st.download_button(
+                        "⬇️ Pobierz podsumowanie (JSON)",
+                        json.dumps(summary_json, ensure_ascii=False, indent=2).encode("utf-8"),
+                        file_name=f"{os.path.splitext(safe_filename(aname))[0]}_summary.json",
+                        mime="application/json",
+                        key=f"dl_json_{aname}"
                     )
