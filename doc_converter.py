@@ -465,8 +465,8 @@ WYMAGANY JSON:
   "key_points": ["punkt 1", "punkt 2", "..."],
   "decisions": ["decyzja 1", "decyzja 2"],
   "to_be_decided": ["kwestia do ustalenia 1", "kwestia 2"],
-  "action_items": [{"owner":"", "task":"", "due":"", "notes":""}],
-  "risks": [{"risk":"", "impact":"niski/średni/wysoki", "mitigation":""}],
+  "action_items": [{{ "owner":"", "task":"", "due":"", "notes":"" }}],
+  "risks": [{{ "risk":"", "impact":"niski/średni/wysoki", "mitigation":"" }}],
   "open_questions": ["pytanie 1", "pytanie 2"]
 }}
 
