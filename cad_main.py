@@ -23,13 +23,13 @@ from PyPDF2 import PdfReader
 from rapidfuzz import fuzz, process
 from openpyxl import load_workbook
 
-=== KONFIGURACJA i LOGGING ===
+##=== KONFIGURACJA i LOGGING ===
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("cad-estimator")
 
 st.set_page_config(page_title="CAD Estimator Pro", layout="wide", page_icon="🚀")
 
-=== ENV ===
+#=== ENV ===
 OLLAMA_URL = os.getenv('OLLAMA_URL', 'http://ollama:11434')
 DB_HOST = os.getenv('DB_HOST', 'cad-postgres')
 DB_NAME = os.getenv('DB_NAME', 'cad_estimator')
@@ -38,7 +38,7 @@ DB_PASSWORD = os.getenv('DB_PASSWORD', 'cad_password_2024')
 EMBED_MODEL = os.getenv('EMBED_MODEL', 'nomic-embed-text')
 EMBED_DIM = int(os.getenv('EMBED_DIM', '768'))
 
-=== DZIAŁY ===
+#=== DZIAŁY ===
 DEPARTMENTS = {
 '131': 'Automotive',
 '132': 'Industrial Machinery',
@@ -59,7 +59,7 @@ Specyfika: Maszyny budowlane, koparki, ładowarki, ekstremalne obciążenia, odp
 Specyfika: Maszyny specjalne, niestandardowe rozwiązania, prototypy, unikalne wymagania klienta."""
 }
 
-=== SŁOWNIK NORMALIZACJI KOMPONENTÓW (PL/DE/EN -> EN) ===
+#=== SŁOWNIK NORMALIZACJI KOMPONENTÓW (PL/DE/EN -> EN) ===
 COMPONENT_ALIASES = {
 # Wsporniki
 'wspornik': 'bracket', 'halterung': 'bracket', 'halter': 'bracket', 'träger': 'bracket',
@@ -103,7 +103,7 @@ COMPONENT_ALIASES = {
 'śruba': 'screw', 'schraube': 'screw', 'bolt': 'bolt',
 }
 
-=== PROMPTY ===
+#=== PROMPTY ===
 MASTER_PROMPT = """Jesteś senior konstruktorem CAD z 20-letnim doświadczeniem w:
 
 Projektowaniu ram spawalniczych i konstrukcji stalowych
@@ -295,7 +295,7 @@ def build_analysis_prompt(description, components_excel, learned_patterns, pdf_t
     sections.append("\nWAŻNE: Zwróć WYŁĄCZNIE JSON bez tekstu.")
     return "\n".join(sections)
 
-=== REQUESTS z retry ===
+#=== REQUESTS z retry ===
 _session = None
 def get_session():
     global _session
@@ -307,7 +307,7 @@ def get_session():
         _session = s
     return _session
 
-=== WEKTORY ===
+#=== WEKTORY ===
 def to_pgvector(vec):
     if not vec:
         return None
@@ -349,7 +349,7 @@ def ensure_pattern_embedding(cur, pattern_key: str, dept: str, text_for_embed: s
         except Exception as e:
             logger.warning(f"Embedding failed for pattern {pattern_key}: {e}")
 
-=== AI API ===
+#=== AI API ===
 @lru_cache(maxsize=1)
 def list_local_models():
     try:
@@ -394,7 +394,7 @@ def encode_image_b64(file, max_px=1280, quality=85):
         logger.warning(f"Błąd kompresji: {e}")
         return base64.b64encode(file.getvalue()).decode("utf-8")
 
-=== NORMALIZACJA NAZW ===
+#=== NORMALIZACJA NAZW ===
 def canonicalize_name(name: str) -> str:
     """Normalizuje nazwę komponentu do porównań i uczenia (z aliasami PL/DE/EN)."""
     if not name:
@@ -424,7 +424,7 @@ def canonicalize_name(name: str) -> str:
             out.append(t)
     return ' '.join(out).strip()
 
-=== PARSERY ===
+#=== PARSERY ===
 def parse_subcomponents_from_comment(comment):
     """
     Ulepszony parser: obsługuje mieszane wpisy z i bez ilości oraz usuwa myślnik po liczbie (np. '2x - docisk').
@@ -959,7 +959,7 @@ def find_similar_components(conn, name, department, limit=5):
         """, (to_pgvector(emb), department, to_pgvector(emb), limit))
         return cur.fetchall()
 
-=== DB ===
+#=== DB ===
 @contextmanager
 def get_db_connection():
     conn = None
@@ -1127,7 +1127,7 @@ def init_db():
         st.error(f"Błąd inicjalizacji: {e}")
         return False
 
-=== STATYSTYKA (WELFORD) ===
+#=== STATYSTYKA (WELFORD) ===
 def _welford_step(mean, m2, n, x):
     """Algorytm Welforda - aktualizacja średniej i wariancji + odrzucanie outlierów po min prób."""
     if n and n >= 5:
@@ -1308,7 +1308,7 @@ def learn_from_historical_components(cur, dept: str, components: list, distribut
         except Exception as e:
             logger.warning(f"learn_from_historical_components err for '{comp.get('name','?')}': {e}")
 
-=== HEURYSTYKI I PROPOZYCJE Z KOMENTARZY ===
+#=== HEURYSTYKI I PROPOZYCJE Z KOMENTARZY ===
 HEURISTIC_LIBRARY = [
     # keywords, per-piece hours L/D/2D
     (['docisk', 'clamp'], 0.5, 1.5, 0.5),
@@ -1478,7 +1478,7 @@ def propose_bundles_for_component(conn, parent_name: str, department: str,
 
     return proposals
 
-=== DEMO / PRÓBNE DANE ===
+#=== DEMO / PRÓBNE DANE ===
 def generate_sample_excel() -> bytes:
     """
     Generuje przykładowy Excel pasujący do parsera:
@@ -1597,7 +1597,7 @@ def fill_demo_fields():
     )
     st.success("Wypełniono formularz przykładowymi danymi.")
 
-=== UI: Dashboard, Nowy projekt, Historia ===
+#=== UI: Dashboard, Nowy projekt, Historia ===
 def render_dashboard_page():
     st.header("📊 Dashboard")
     with get_db_connection() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
