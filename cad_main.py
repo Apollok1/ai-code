@@ -23,13 +23,13 @@ from PyPDF2 import PdfReader
 from rapidfuzz import fuzz, process
 from openpyxl import load_workbook
 
-##=== KONFIGURACJA i LOGGING ===
+# === KONFIGURACJA i LOGGING ===
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("cad-estimator")
 
 st.set_page_config(page_title="CAD Estimator Pro", layout="wide", page_icon="🚀")
 
-#=== ENV ===
+# === ENV ===
 OLLAMA_URL = os.getenv('OLLAMA_URL', 'http://ollama:11434')
 DB_HOST = os.getenv('DB_HOST', 'cad-postgres')
 DB_NAME = os.getenv('DB_NAME', 'cad_estimator')
@@ -38,72 +38,60 @@ DB_PASSWORD = os.getenv('DB_PASSWORD', 'cad_password_2024')
 EMBED_MODEL = os.getenv('EMBED_MODEL', 'nomic-embed-text')
 EMBED_DIM = int(os.getenv('EMBED_DIM', '768'))
 
-#=== DZIAŁY ===
+# === DZIAŁY ===
 DEPARTMENTS = {
-'131': 'Automotive',
-'132': 'Industrial Machinery',
-'133': 'Transportation',
-'134': 'Heavy Equipment',
-'135': 'Special Purpose Machinery'
+    '131': 'Automotive',
+    '132': 'Industrial Machinery',
+    '133': 'Transportation',
+    '134': 'Heavy Equipment',
+    '135': 'Special Purpose Machinery'
 }
 DEPARTMENT_CONTEXT = {
-'131': """Branża: AUTOMOTIVE (Faurecia, VW, Merit, Sitech, Joyson)
+    '131': """Branża: AUTOMOTIVE (Faurecia, VW, Merit, Sitech, Joyson)
 Specyfika: Komponenty samochodowe, wysokie wymagania jakościowe, spawanie precyzyjne, duże serie produkcyjne, normy automotive (IATF 16949).""",
-'132': """Branża: INDUSTRIAL MACHINERY (PMP, ITM, Amazon)
+    '132': """Branża: INDUSTRIAL MACHINERY (PMP, ITM, Amazon)
 Specyfika: Maszyny przemysłowe, automatyka, systemy pakowania, linie produkcyjne, robotyka przemysłowa, PLC.""",
-'133': """Branża: TRANSPORTATION (Volvo, Scania)
+    '133': """Branża: TRANSPORTATION (Volvo, Scania)
 Specyfika: Pojazdy ciężarowe, autobusy, systemy transportowe, wytrzymałość strukturalna, normy transportowe.""",
-'134': """Branża: HEAVY EQUIPMENT (Volvo CE, Mine Master)
+    '134': """Branża: HEAVY EQUIPMENT (Volvo CE, Mine Master)
 Specyfika: Maszyny budowlane, koparki, ładowarki, ekstremalne obciążenia, odporność na warunki terenowe.""",
-'135': """Branża: SPECIAL PURPOSE MACHINERY (Bosch, Chassis Brakes, BWI, Besta)
+    '135': """Branża: SPECIAL PURPOSE MACHINERY (Bosch, Chassis Brakes, BWI, Besta)
 Specyfika: Maszyny specjalne, niestandardowe rozwiązania, prototypy, unikalne wymagania klienta."""
 }
 
-#=== SŁOWNIK NORMALIZACJI KOMPONENTÓW (PL/DE/EN -> EN) ===
+# === SŁOWNIK NORMALIZACJI KOMPONENTÓW (PL/DE/EN -> EN) ===
 COMPONENT_ALIASES = {
-# Wsporniki
-'wspornik': 'bracket', 'halterung': 'bracket', 'halter': 'bracket', 'träger': 'bracket',
-'support': 'bracket', 'konsole': 'bracket',
-
-# Ramy
-'rama': 'frame', 'rahmen': 'frame', 'gestell': 'frame', 'chassis': 'frame',
-
-# Przenośniki
-'przenośnik': 'conveyor', 'förderband': 'conveyor', 'förderer': 'conveyor', 'transport': 'conveyor',
-
-# Płyty
-'płyta': 'plate', 'platte': 'plate', 'sheet': 'plate', 'panel': 'plate',
-
-# Pokrywy
-'pokrywa': 'cover', 'deckel': 'cover', 'abdeckung': 'cover',
-
-# Obudowy
-'obudowa': 'housing', 'gehäuse': 'housing', 'casing': 'housing',
-
-# Napędy / siłowniki
-'napęd': 'drive', 'antrieb': 'drive', 'actuator': 'drive',
-'siłownik': 'cylinder', 'cylinder': 'cylinder', 'zylinder': 'cylinder',
-
-# Prowadnice
-'prowadnica': 'guide', 'führung': 'guide', 'rail': 'guide',
-
-# Osłony
-'osłona': 'shield', 'schutz': 'shield', 'guard': 'shield',
-
-# Podstawy
-'podstawa': 'base', 'basis': 'base', 'fundament': 'base', 'sockel': 'base',
-
-# Wały
-'wał': 'shaft', 'welle': 'shaft', 'axle': 'shaft',
-
-# Łożyska
-'łożysko': 'bearing', 'lager': 'bearing',
-
-# Śruby / bolty
-'śruba': 'screw', 'schraube': 'screw', 'bolt': 'bolt',
+    # Wsporniki
+    'wspornik': 'bracket', 'halterung': 'bracket', 'halter': 'bracket', 'träger': 'bracket',
+    'support': 'bracket', 'konsole': 'bracket',
+    # Ramy
+    'rama': 'frame', 'rahmen': 'frame', 'gestell': 'frame', 'chassis': 'frame',
+    # Przenośniki
+    'przenośnik': 'conveyor', 'förderband': 'conveyor', 'förderer': 'conveyor', 'transport': 'conveyor',
+    # Płyty
+    'płyta': 'plate', 'platte': 'plate', 'sheet': 'plate', 'panel': 'plate',
+    # Pokrywy
+    'pokrywa': 'cover', 'deckel': 'cover', 'abdeckung': 'cover',
+    # Obudowy
+    'obudowa': 'housing', 'gehäuse': 'housing', 'casing': 'housing',
+    # Napędy / siłowniki
+    'napęd': 'drive', 'antrieb': 'drive', 'actuator': 'drive',
+    'siłownik': 'cylinder', 'cylinder': 'cylinder', 'zylinder': 'cylinder',
+    # Prowadnice
+    'prowadnica': 'guide', 'führung': 'guide', 'rail': 'guide',
+    # Osłony
+    'osłona': 'shield', 'schutz': 'shield', 'guard': 'shield',
+    # Podstawy
+    'podstawa': 'base', 'basis': 'base', 'fundament': 'base', 'sockel': 'base',
+    # Wały
+    'wał': 'shaft', 'welle': 'shaft', 'axle': 'shaft',
+    # Łożyska
+    'łożysko': 'bearing', 'lager': 'bearing',
+    # Śruby / bolty
+    'śruba': 'screw', 'schraube': 'screw', 'bolt': 'bolt',
 }
 
-#=== PROMPTY ===
+# === PROMPTY ===
 MASTER_PROMPT = """Jesteś senior konstruktorem CAD z 20-letnim doświadczeniem w:
 
 Projektowaniu ram spawalniczych i konstrukcji stalowych
@@ -149,6 +137,7 @@ WYMAGANY FORMAT ODPOWIEDZI - ZWRÓĆ TYLKO CZYSTY JSON:
 
 WAŻNE: Zwróć WYŁĄCZNIE JSON bez tekstu.
 """
+
 def build_brief_prompt(description, components_excel, pdf_text, department):
     comps = components_excel or []
     parts_only = [c for c in comps if not c.get('is_summary')]
@@ -206,7 +195,6 @@ Zbuduj brief zadania i checklistę:
 """)
     return "\n".join(lines)
 
-
 def parse_brief_response(text: str) -> dict:
     if not text:
         return {"brief_md": "", "scope": [], "assumptions": [], "missing_info": [], "risks": [], "checklist": [], "open_questions": []}
@@ -246,6 +234,7 @@ def parse_brief_response(text: str) -> dict:
             "brief_md": text,
             "scope": [], "assumptions": [], "missing_info": [], "risks": [], "checklist": [], "open_questions": []
         }
+
 def build_analysis_prompt(description, components_excel, learned_patterns, pdf_text, department):
     sections = []
     sections.append(MASTER_PROMPT)
@@ -295,7 +284,7 @@ def build_analysis_prompt(description, components_excel, learned_patterns, pdf_t
     sections.append("\nWAŻNE: Zwróć WYŁĄCZNIE JSON bez tekstu.")
     return "\n".join(sections)
 
-#=== REQUESTS z retry ===
+# === REQUESTS z retry ===
 _session = None
 def get_session():
     global _session
@@ -307,7 +296,7 @@ def get_session():
         _session = s
     return _session
 
-#=== WEKTORY ===
+# === WEKTORY ===
 def to_pgvector(vec):
     if not vec:
         return None
@@ -349,7 +338,7 @@ def ensure_pattern_embedding(cur, pattern_key: str, dept: str, text_for_embed: s
         except Exception as e:
             logger.warning(f"Embedding failed for pattern {pattern_key}: {e}")
 
-#=== AI API ===
+# === AI API ===
 @lru_cache(maxsize=1)
 def list_local_models():
     try:
@@ -394,7 +383,7 @@ def encode_image_b64(file, max_px=1280, quality=85):
         logger.warning(f"Błąd kompresji: {e}")
         return base64.b64encode(file.getvalue()).decode("utf-8")
 
-#=== NORMALIZACJA NAZW ===
+# === NORMALIZACJA NAZW ===
 def canonicalize_name(name: str) -> str:
     """Normalizuje nazwę komponentu do porównań i uczenia (z aliasami PL/DE/EN)."""
     if not name:
@@ -424,7 +413,7 @@ def canonicalize_name(name: str) -> str:
             out.append(t)
     return ' '.join(out).strip()
 
-#=== PARSERY ===
+# === PARSERY ===
 def parse_subcomponents_from_comment(comment):
     """
     Ulepszony parser: obsługuje mieszane wpisy z i bez ilości oraz usuwa myślnik po liczbie (np. '2x - docisk').
@@ -959,7 +948,7 @@ def find_similar_components(conn, name, department, limit=5):
         """, (to_pgvector(emb), department, to_pgvector(emb), limit))
         return cur.fetchall()
 
-#=== DB ===
+# === DB ===
 @contextmanager
 def get_db_connection():
     conn = None
@@ -1127,7 +1116,7 @@ def init_db():
         st.error(f"Błąd inicjalizacji: {e}")
         return False
 
-#=== STATYSTYKA (WELFORD) ===
+# === STATYSTYKA (WELFORD) ===
 def _welford_step(mean, m2, n, x):
     """Algorytm Welforda - aktualizacja średniej i wariancji + odrzucanie outlierów po min prób."""
     if n and n >= 5:
@@ -1308,7 +1297,7 @@ def learn_from_historical_components(cur, dept: str, components: list, distribut
         except Exception as e:
             logger.warning(f"learn_from_historical_components err for '{comp.get('name','?')}': {e}")
 
-#=== HEURYSTYKI I PROPOZYCJE Z KOMENTARZY ===
+# === HEURYSTYKI I PROPOZYCJE Z KOMENTARZY ===
 HEURISTIC_LIBRARY = [
     # keywords, per-piece hours L/D/2D
     (['docisk', 'clamp'], 0.5, 1.5, 0.5),
@@ -1478,7 +1467,7 @@ def propose_bundles_for_component(conn, parent_name: str, department: str,
 
     return proposals
 
-#=== DEMO / PRÓBNE DANE ===
+# === DEMO / PRÓBNE DANE ===
 def generate_sample_excel() -> bytes:
     """
     Generuje przykładowy Excel pasujący do parsera:
@@ -1597,7 +1586,7 @@ def fill_demo_fields():
     )
     st.success("Wypełniono formularz przykładowymi danymi.")
 
-#=== UI: Dashboard, Nowy projekt, Historia ===
+# === UI: Dashboard, Nowy projekt, Historia ===
 def render_dashboard_page():
     st.header("📊 Dashboard")
     with get_db_connection() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -1694,13 +1683,6 @@ def render_new_project_page(selected_model):
         image_files = st.file_uploader("Zdjęcia/Rysunki", type=['jpg', 'png'], accept_multiple_files=True)
         pdf_files = st.file_uploader("PDF", type=['pdf'], accept_multiple_files=True)
 
-    # Parametry sugestii
-    st.subheader("⚙️ Uwzględnianie komentarzy")
-    use_comments = st.checkbox("Uwzględnij sub-komponenty z komentarzy w estymacji", value=True)
-    conserv = st.slider("Konserwatywność proponowanych dodatków", min_value=0.5, max_value=1.5, value=1.0, step=0.1)
-    enable_bundles = st.checkbox("Włącz podpowiedzi z historii (bundles)", value=True,
-                                 help="Podpowiada typowe sub‑komponenty dla podobnych pozycji na bazie importów historycznych")
-   
     # 🔹 AI Brief: opis zadania i checklista
     st.subheader("📝 AI: Opis zadania i checklista")
     if st.button("📝 Generuj opis zadania (AI)", use_container_width=True):
@@ -1713,18 +1695,18 @@ def render_new_project_page(selected_model):
                     components_for_brief = parse_cad_project_structured_with_xlsx_comments(BytesIO(excel_file.getvalue()))['components']
                 except Exception:
                     components_for_brief = []
-    
+
             pdf_text_for_brief = ""
             if pdf_files:
                 pdf_text_for_brief = "\n".join([extract_text_from_pdf(pf) for pf in pdf_files])
-    
+
             prompt_brief = build_brief_prompt(
                 st.session_state.get("description", ""),
                 components_for_brief,
                 pdf_text_for_brief,
                 department
             )
-    
+
             ai_model_brief = selected_model or "llama3:latest"
             resp = query_ollama(prompt_brief, model=ai_model_brief, format_json=True)
             brief = parse_brief_response(resp)
@@ -1733,7 +1715,7 @@ def render_new_project_page(selected_model):
         except Exception as e:
             logger.exception("Brief generation failed")
             st.error(f"Nie udało się wygenerować opisu: {e}")
-    
+
     # Wyświetl brief (jeśli jest w sesji)
     if "ai_brief" in st.session_state:
         b = st.session_state["ai_brief"]
@@ -1768,7 +1750,7 @@ def render_new_project_page(selected_model):
                 st.markdown("**Otwarte pytania:**")
                 for it in b["open_questions"]:
                     st.write(f"• {it}")
-    
+
         # Pobranie do .md
         md_export = "# Opis zadania (AI)\n\n" + b.get("brief_md","") + "\n\n"
         if b.get("missing_info"):
@@ -1784,12 +1766,18 @@ def render_new_project_page(selected_model):
         if b.get("open_questions"):
             md_export += "## Otwarte pytania\n" + "\n".join([f"- {x}" for x in b["open_questions"]]) + "\n\n"
 
-    st.download_button("⬇️ Pobierz opis (.md)", md_export.encode("utf-8"),
-                       file_name=f"opis_zadania_{datetime.now().strftime('%Y%m%d_%H%M')}.md",
-                       mime="text/markdown")
+        st.download_button("⬇️ Pobierz opis (.md)", md_export.encode("utf-8"),
+                           file_name=f"opis_zadania_{datetime.now().strftime('%Y%m%d_%H%M')}.md",
+                           mime="text/markdown")
+
+    # Parametry sugestii
+    st.subheader("⚙️ Uwzględnianie komentarzy")
+    use_comments = st.checkbox("Uwzględnij sub-komponenty z komentarzy w estymacji", value=True)
+    conserv = st.slider("Konserwatywność proponowanych dodatków", min_value=0.5, max_value=1.5, value=1.0, step=0.1)
+    enable_bundles = st.checkbox("Włącz podpowiedzi z historii (bundles)", value=True,
+                                 help="Podpowiada typowe sub‑komponenty dla podobnych pozycji na bazie importów historycznych")
 
 
-    
     if st.button("🤖 Analizuj z AI", use_container_width=True):
         if not st.session_state.get("description") and not excel_file and not image_files and not pdf_files:
             st.warning("Podaj opis lub wgraj pliki")
