@@ -19,7 +19,7 @@ from docx import Document
 import cv2
 
 # --- DODATKOWE IMPORTY DO PODSUMOWAŃ AUDIO ---
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any
 
 # Logging
 logging.basicConfig(level=logging.INFO)
@@ -92,10 +92,70 @@ def segments_to_srt(segments: list) -> str:
         lines.append(f"{i}\n{start} --> {end}\n{text_seg}\n")
     return "\n".join(lines)
 
-def calculate_timeout(file_size_bytes: int, base: int = 120) -> int:
-    """Dynamiczny timeout bazując na rozmiarze pliku."""
-    size_mb = file_size_bytes / 1024 / 1024
-    return max(base, int(size_mb * 10))  # ~10s/MB
+# --- TIMEOUTY I HELPERY ---
+def get_file_size(file) -> int:
+    """Bezpieczne pobranie rozmiaru pliku."""
+    try:
+        sz = getattr(file, "size", None)
+        if sz is not None:
+            return sz
+        try:
+            return len(file.getvalue())
+        except Exception:
+            pass
+        pos = file.tell()
+        file.seek(0, os.SEEK_END)
+        sz = file.tell()
+        file.seek(pos)
+        return sz
+    except Exception:
+        return 0
+
+def calculate_timeout(file_size_bytes: int, base: int = 240, per_mb: int = 25) -> int:
+    """Dynamiczny timeout: ~25s/MB + baza; lepsze dla długich nagrań."""
+    size_mb = max(1.0, file_size_bytes / 1024 / 1024)
+    return int(max(base, size_mb * per_mb))
+
+def check_pyannote_health(url: str):
+    """Próba health-check Pyannote pod kilkoma endpointami."""
+    url = (url or "").rstrip("/")
+    for path in ("/health", "/status", "/ping"):
+        try:
+            r = requests.get(url + path, timeout=3)
+            if r.ok:
+                try:
+                    js = r.json()
+                except Exception:
+                    js = {"raw": r.text}
+                if "model_loaded" in js:
+                    return bool(js.get("model_loaded")), js
+                return True, js
+        except Exception:
+            continue
+    return False, {}
+
+def normalize_diarization(resp: dict) -> list:
+    """Ujednolicenie odpowiedzi z Pyannote do listy segmentów {start, end, speaker}."""
+    if not resp:
+        return []
+    raw = resp.get("segments") or resp.get("turns") or []
+    out = []
+    for seg in raw:
+        start = seg.get("start") or seg.get("start_time") or seg.get("begin") or 0.0
+        end = seg.get("end") or seg.get("end_time") or seg.get("stop") or 0.0
+        speaker = seg.get("speaker") or seg.get("label") or "SPEAKER_?"
+        out.append({"start": float(start), "end": float(end), "speaker": speaker})
+    return out
+
+def pick_speaker_for_interval(diar_segments: list, start: float, end: float) -> str:
+    """Wybierz mówcę z największym overlapem dla [start, end]."""
+    best_spk, best_overlap = "SPEAKER_?", 0.0
+    for s in diar_segments:
+        ov = max(0.0, min(end, s["end"]) - max(start, s["start"]))
+        if ov > best_overlap:
+            best_overlap = ov
+            best_spk = s["speaker"]
+    return best_spk
 
 def list_ollama_models():
     """Lista modeli z Ollama."""
@@ -157,114 +217,132 @@ def ocr_image_bytes(img_bytes: bytes, lang: str = 'pol+eng') -> str:
 def extract_audio_whisper(file):
     """Audio → tekst przez Whisper ASR. Zwraca (text, pages, meta)."""
     try:
+        size_bytes = get_file_size(file)
+        timeout_read = calculate_timeout(size_bytes, base=240, per_mb=25)
+
+        # Opcjonalne downsamplowanie (jeśli masz pydub/ffmpeg)
         file.seek(0)
-        timeout = calculate_timeout(file.size)
-        data = file.read()
-        files = {'audio_file': (file.name, data, getattr(file, "type", None) or "application/octet-stream")}
+        raw = file.read()
+        mime = getattr(file, "type", None) or "application/octet-stream"
+        fname = file.name
+
+        try:
+            # Jeśli plik jest duży, spróbuj downmix+resample do 16k mono WAV
+            if size_bytes > 25 * 1024 * 1024:  # >25MB
+                from pydub import AudioSegment
+                import tempfile
+                with tempfile.NamedTemporaryFile(suffix=os.path.splitext(fname)[1], delete=False) as tmp_in:
+                    tmp_in.write(raw)
+                    tmp_in_path = tmp_in.name
+                audio = AudioSegment.from_file(tmp_in_path)
+                audio = audio.set_channels(1).set_frame_rate(16000)
+                buf = io.BytesIO()
+                audio.export(buf, format="wav", parameters=["-acodec", "pcm_s16le"])
+                raw = buf.getvalue()
+                mime = "audio/wav"
+                fname = os.path.splitext(fname)[0] + "_16k.wav"
+                try:
+                    os.remove(tmp_in_path)
+                except Exception:
+                    pass
+        except Exception:
+            pass  # brak pydub/ffmpeg — lecimy oryginałem
+
+        files = {"audio_file": (fname, raw, mime)}
         r = requests.post(
-            f"{WHISPER_URL}/asr?task=transcribe&language=pl&word_timestamps=true&output=json",
+            f"{WHISPER_URL}/asr?task=transcribe&language=pl&word_timestamps=false&output=json",
             files=files,
-            timeout=timeout
+            timeout=(30, timeout_read)  # (connect, read)
         )
         r.raise_for_status()
 
-        # Walidacja JSON
         try:
             result = r.json()
         except json.JSONDecodeError as je:
             logger.error(f"Whisper JSON decode error: {je}, response: {r.text[:500]}")
-            return f"[BŁĄD: Whisper zwrócił nieprawidłowy format]", 0, {"type": "audio", "error": "invalid_json"}
+            return "[BŁĄD: Whisper zwrócił nieprawidłowy format]", 0, {"type": "audio", "error": "invalid_json"}
 
         text_res = result.get("text", "") or ""
         segments = result.get("segments", [])
-
-        # Metadata - tylko istotne dane, nie cały JSON
         meta = {
             "type": "audio",
             "segments_count": len(segments),
             "duration": result.get("duration"),
             "language": result.get("language"),
-            "segments": segments  # Potrzebne dla SRT
+            "segments": segments
         }
 
-        # Format z timestampami
         if segments:
             lines = ["=== TRANSKRYPCJA Z TIMESTAMPAMI ===", ""]
             for seg in segments:
                 start = seg.get("start", 0)
                 end = seg.get("end", 0)
-                txt = seg.get("text", "").strip()
+                txt = (seg.get("text") or "").strip()
                 lines.append(f"[{start:.1f}s - {end:.1f}s] {txt}")
             text_res = "\n".join(lines)
 
         return text_res, 1, meta
 
     except requests.exceptions.Timeout:
-        logger.error(f"Whisper timeout after {timeout}s")
-        return f"[BŁĄD: Timeout - plik zbyt długi]", 0, {"type": "audio", "error": "timeout"}
+        logger.error(f"Whisper timeout after {timeout_read}s")
+        return "[BŁĄD: Timeout - plik zbyt długi]", 0, {"type": "audio", "error": "timeout"}
     except Exception as e:
         logger.error(f"Whisper error: {e}")
         return f"[BŁĄD AUDIO: {e}]", 0, {"type": "audio", "error": str(e)}
 
 def diarize_audio(file) -> dict:
     """Pyannote speaker diarization."""
-    pyannote_url = os.getenv("PYANNOTE_URL", "http://pyannote:8000")
+    pyannote_url = os.getenv("PYANNOTE_URL", "http://pyannote:8000").rstrip("/")
     try:
+        size_bytes = get_file_size(file)
+        timeout_read = calculate_timeout(size_bytes, base=300, per_mb=30)
         file.seek(0)
-        timeout = calculate_timeout(file.size, base=300)
         files = {'file': (file.name, file.read(), getattr(file, "type", None) or "application/octet-stream")}
-        r = requests.post(
-            f"{pyannote_url}/diarize",
-            files=files,
-            timeout=timeout
-        )
+        r = requests.post(f"{pyannote_url}/diarize", files=files, timeout=(30, timeout_read))
         r.raise_for_status()
         return r.json()
+    except requests.exceptions.ReadTimeout:
+        logger.error("Pyannote read timeout")
+        return {"error": "timeout"}
     except Exception as e:
         logger.error(f"Pyannote error: {e}")
-        return {}
+        return {"error": str(e)}
 
 def extract_audio_with_speakers(file):
     """Whisper + Pyannote = transkrypcja z identyfikacją głosów."""
     try:
-        # 1. Whisper - transkrypcja z timestampami
+        # 1. Whisper
         text_only, _, meta = extract_audio_whisper(file)
         segments = meta.get("segments", [])
-
         if not segments:
             return text_only, 1, meta
 
-        # 2. Pyannote - diarization
+        # 2. Health-check Pyannote
+        ok, _ = check_pyannote_health(os.getenv("PYANNOTE_URL", "http://pyannote:8000"))
+        if not ok:
+            st.warning("Nie udało się połączyć z Pyannote — zwracam samą transkrypcję.")
+            return text_only, 1, meta
+
         st.info("🎤 Identyfikuję głosy...")
         file.seek(0)
         diarization = diarize_audio(file)
+        diar_segments = normalize_diarization(diarization)
 
-        if not diarization or 'segments' not in diarization:
-            st.warning("Nie udało się rozpoznać głosów - zwracam samą transkrypcję")
+        if not diar_segments:
+            st.warning("Pyannote nie zwrócił poprawnych segmentów — zwracam samą transkrypcję.")
             return text_only, 1, meta
 
-        # 3. Połącz - mapuj segmenty Whisper → głosy Pyannote
+        # 3. Połącz wg największego overlapu
         output_lines = ["=== TRANSKRYPCJA Z IDENTYFIKACJĄ GŁOSÓW ===", ""]
-
         for seg in segments:
-            start = seg.get("start", 0)
-            end = seg.get("end", 0)
-            txt = seg.get("text", "").strip()
-
-            # Znajdź kto mówi w tym przedziale
-            speaker = "SPEAKER_?"
-            for spk_seg in diarization['segments']:
-                spk_start = spk_seg.get('start', 0)
-                spk_end = spk_seg.get('end', 999999)
-                if spk_start <= start <= spk_end:
-                    speaker = spk_seg.get('speaker', 'SPEAKER_?')
-                    break
-
+            start = float(seg.get("start", 0))
+            end = float(seg.get("end", 0))
+            txt = (seg.get("text") or "").strip()
+            speaker = pick_speaker_for_interval(diar_segments, start, end)
             output_lines.append(f"[{start:.1f}s - {end:.1f}s] {speaker}: {txt}")
 
         result = "\n".join(output_lines)
         meta['has_speakers'] = True
-
         return result, 1, meta
 
     except Exception as e:
@@ -289,28 +367,31 @@ def extract_pdf(file, use_vision: bool, vision_model: str, ocr_pages_limit: int 
 
         if len(full_text.strip()) < MIN_TEXT_FOR_OCR_SKIP:
             file.seek(0)
+            raw = file.read()
+            with pdfplumber.open(io.BytesIO(raw)) as pdf:
+                total_pages = len(pdf.pages)
+
             images = convert_from_bytes(
-                file.read(),
+                raw,
                 fmt="jpeg",
                 dpi=150,
                 first_page=1,
-                last_page=min(ocr_pages_limit, 10)
+                last_page=min(ocr_pages_limit, total_pages)
             )
 
             if use_vision and vision_model:
                 st.info(f"🖼️ Używam {vision_model} do analizy obrazów...")
-                for idx, img in enumerate(images[:5], 1):
-                    st.caption(f"Przetwarzam stronę {idx}/{len(images[:5])}")
+                for idx, img in enumerate(images[:ocr_pages_limit], 1):
+                    st.caption(f"Przetwarzam stronę {idx}/{min(ocr_pages_limit, len(images))}")
                     buf = io.BytesIO()
                     img.save(buf, format="JPEG", quality=85)
                     img_b64 = base64.b64encode(buf.getvalue()).decode()
-
                     response = query_ollama_vision(VISION_TRANSCRIBE_PROMPT, img_b64, vision_model)
                     texts.append(f"\n--- Strona {idx} (Vision) ---\n{response}")
             else:
                 st.info("📝 OCR Tesseract...")
                 for idx, img in enumerate(images[:ocr_pages_limit], 1):
-                    st.caption(f"OCR strona {idx}/{len(images)}")
+                    st.caption(f"OCR strona {idx}/{min(ocr_pages_limit, len(images))}")
                     buf = io.BytesIO()
                     img.save(buf, format="JPEG")
                     ocr_text = ocr_image_bytes(buf.getvalue())
@@ -417,15 +498,9 @@ def process_file(file, use_vision: bool, vision_model: str, ocr_limit: int, imag
     elif name.endswith(('.jpg', '.jpeg', '.png')):
         return extract_image(file, use_vision, vision_model, image_mode)
     elif name.endswith(('.mp3', '.wav', '.m4a', '.ogg', '.flac')):
-        # Sprawdź czy Pyannote dostępny
-        pyannote_url = os.getenv("PYANNOTE_URL", "http://pyannote:8000")
-        try:
-            r = requests.get(f"{pyannote_url}/health", timeout=2)
-            if r.ok and r.json().get("model_loaded"):
-                return extract_audio_with_speakers(file)
-        except Exception:
-            pass
-        # Fallback: tylko Whisper
+        ok, _ = check_pyannote_health(os.getenv("PYANNOTE_URL", "http://pyannote:8000"))
+        if ok:
+            return extract_audio_with_speakers(file)
         return extract_audio_whisper(file)
     elif name.endswith('.txt'):
         file.seek(0)
@@ -460,15 +535,15 @@ Jesteś asystentem ds. spotkań (PL). Otrzymasz fragment transkrypcji rozmowy z 
 Zrób skrót tego fragmentu i wylistuj najważniejsze informacje.
 
 WYMAGANY JSON:
-{{
+{
   "summary": "1-2 akapity skrótu (PL)",
   "key_points": ["punkt 1", "punkt 2", "..."],
   "decisions": ["decyzja 1", "decyzja 2"],
   "to_be_decided": ["kwestia do ustalenia 1", "kwestia 2"],
-  "action_items": [{{ "owner":"", "task":"", "due":"", "notes":"" }}],
-  "risks": [{{ "risk":"", "impact":"niski/średni/wysoki", "mitigation":"" }}],
+  "action_items": [{ "owner":"", "task":"", "due":"", "notes":"" }],
+  "risks": [{ "risk":"", "impact":"niski/średni/wysoki", "mitigation":"" }],
   "open_questions": ["pytanie 1", "pytanie 2"]
-}}
+}
 
 ZASADY:
 - Nie wymyślaj informacji. Jeśli czegoś brak, zostaw puste pola lub wpisz [].
@@ -485,7 +560,7 @@ Jesteś asystentem ds. spotkań (PL). Otrzymasz listę częściowych podsumowań
 Scal je i zwróć jeden końcowy JSON w tym samym formacie. Usuń duplikaty, uczyść i pogrupuj logicznie.
 
 WYMAGANY JSON:
-{{
+{
   "summary": "skondensowany skrót całości",
   "key_points": [...],
   "decisions": [...],
@@ -493,7 +568,7 @@ WYMAGANY JSON:
   "action_items": [...],
   "risks": [...],
   "open_questions": [...]
-}}
+}
 
 Wejście (lista JSON fragmentów):
 {partials}
@@ -722,6 +797,18 @@ with st.sidebar:
     summarize_model = st.selectbox("Model do podsumowania", options=summarize_model_candidates or ["llama3:latest"])
     chunk_chars = st.slider("Rozmiar chunku (znaki)", min_value=2000, max_value=8000, value=6000, step=500)
 
+    # Opcjonalny szybki test podsumowania
+    if st.button("🔎 Test podsumowania (krótki fragment)"):
+        test_text = "=== TRANSKRYPCJA Z TIMESTAMPAMI ===\n[0.0s - 5.0s] SPEAKER_1: Witaj.\n[5.0s - 10.0s] SPEAKER_2: Cześć, działamy nad wdrożeniem."
+        with st.spinner("Testuję..."):
+            summary_json = summarize_meeting_transcript(
+                transcript=test_text,
+                model=summarize_model if summarize_model_candidates else "llama3:latest",
+                max_chars=2000,
+                diarized=True
+            )
+            st.markdown(build_meeting_summary_markdown(summary_json))
+
 uploaded_files = st.file_uploader(
     "Wgraj dokumenty",
     type=['pdf', 'docx', 'pptx', 'ppt', 'jpg', 'jpeg', 'png', 'txt', 'mp3', 'wav', 'm4a', 'ogg', 'flac'],
@@ -744,7 +831,11 @@ if uploaded_files:
         audio_items = []  # [(name, text, meta)]
 
         for idx, file in enumerate(uploaded_files):
-            progress.progress((idx + 1) / len(uploaded_files), text=f"Przetwarzam: {file.name}")
+            try:
+                progress.progress((idx + 1) / len(uploaded_files), text=f"Przetwarzam: {file.name}")
+            except TypeError:
+                # starsze wersje Streamlit bez parametru text
+                progress.progress((idx + 1) / len(uploaded_files))
 
             st.subheader(f"📄 {file.name}")
 
@@ -840,17 +931,18 @@ if uploaded_files:
                         st.caption(f"💾 Zapisano podsumowanie JSON: {out_summary_json}")
 
                     # Pobierz jako pliki
+                    safe_key = safe_filename(aname)
                     st.download_button(
                         "⬇️ Pobierz podsumowanie (MD)",
                         summary_md.encode("utf-8"),
-                        file_name=f"{os.path.splitext(safe_filename(aname))[0]}_summary.md",
+                        file_name=f"{os.path.splitext(safe_key)[0]}_summary.md",
                         mime="text/markdown",
-                        key=f"dl_md_{aname}"
+                        key=f"dl_md_{safe_key}"
                     )
                     st.download_button(
                         "⬇️ Pobierz podsumowanie (JSON)",
                         json.dumps(summary_json, ensure_ascii=False, indent=2).encode("utf-8"),
-                        file_name=f"{os.path.splitext(safe_filename(aname))[0]}_summary.json",
+                        file_name=f"{os.path.splitext(safe_key)[0]}_summary.json",
                         mime="application/json",
-                        key=f"dl_json_{aname}"
+                        key=f"dl_json_{safe_key}"
                     )
