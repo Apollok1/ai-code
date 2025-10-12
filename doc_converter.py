@@ -1,3 +1,6 @@
+# app.py — Document Converter Pro (Part 1/3)
+# Część 1/3: Importy, konfiguracja, offline guard, diagnostyka, helpery, OCR, Ollama utils, session_state
+
 import streamlit as st
 import io
 import base64
@@ -12,12 +15,13 @@ import shutil
 import subprocess
 import platform
 import importlib.util
+import tempfile
 from urllib.parse import urlparse
 from datetime import datetime
 from PIL import Image
 import numpy as np
 
-# Parsery
+# Parsery/formaty
 import pdfplumber
 from pdf2image import convert_from_bytes
 import pytesseract
@@ -27,6 +31,28 @@ import cv2
 
 from typing import List, Dict, Any
 
+# Opcjonalne biblioteki (ładowane dynamicznie; jeśli brak, będą None — UI pokaże w diagnostyce)
+try:
+    import mailparser
+except Exception:
+    mailparser = None
+try:
+    import extract_msg
+except Exception:
+    extract_msg = None
+try:
+    from duckduckgo_search import DDGS
+except Exception:
+    DDGS = None
+try:
+    import trafilatura
+except Exception:
+    trafilatura = None
+try:
+    import pandas as pd
+except Exception:
+    pd = None
+
 # Logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("doc-converter")
@@ -35,11 +61,12 @@ st.set_page_config(page_title="📄 Document Converter", layout="wide", page_ico
 
 # === CONFIG (domyślnie localhost; offline mode ON) ===
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
-ANYTHINGLLM_URL = os.getenv("ANYTHINGLLM_URL", "")  # domyślnie puste, wyłączone
+ANYTHINGLLM_URL = os.getenv("ANYTHINGLLM_URL", "")  # puste = wyłączone
 ANYTHINGLLM_API_KEY = os.getenv("ANYTHINGLLM_API_KEY", "")
 WHISPER_URL = os.getenv("WHISPER_URL", "http://127.0.0.1:9000")
 PYANNOTE_URL = os.getenv("PYANNOTE_URL", "http://127.0.0.1:8000")
 OFFLINE_MODE = os.getenv("STRICT_OFFLINE", "1").lower() in ("1", "true", "yes")
+ALLOW_WEB = False  # UI może to zmienić (web lookup)
 
 # === STAŁE ===
 MIN_TEXT_FOR_OCR_SKIP = 100
@@ -76,6 +103,7 @@ def is_private_host(host: str) -> bool:
     return False
 
 def assert_private_url(url: str):
+    # Blokuje wyjście w internet w trybie OFFLINE_MODE (wyjątek: prywatne/localhost)
     if not OFFLINE_MODE:
         return
     try:
@@ -95,7 +123,7 @@ def http_post(url, **kwargs):
     assert_private_url(url)
     return requests.post(url, **kwargs)
 
-# === HELPERY ===
+# === HELPERY PLIKÓW / FORMATÓW ===
 def safe_filename(name: str) -> str:
     base = os.path.basename(name)
     base = re.sub(r'[^A-Za-z0-9.-]+', '', base)
@@ -130,7 +158,7 @@ def segments_to_srt(segments: list) -> str:
         lines.append(f"{i}\n{start} --> {end}\n{text_seg}\n")
     return "\n".join(lines)
 
-# --- TIMEOUTY I HELPERY ---
+# --- TIMEOUTY I HELPERY ROZMIARU ---
 def get_file_size(file) -> int:
     try:
         sz = getattr(file, "size", None)
@@ -152,7 +180,7 @@ def calculate_timeout(file_size_bytes: int, base: int = 240, per_mb: int = 25) -
     size_mb = max(1.0, file_size_bytes / 1024 / 1024)
     return int(max(base, size_mb * per_mb))
 
-# === DIAGNOSTYKA ===
+# === DIAGNOSTYKA ŚRODOWISKA ===
 def has_module(mod: str) -> bool:
     return importlib.util.find_spec(mod) is not None
 
@@ -173,7 +201,7 @@ def cmd_version(cmd: str, args: list = ["--version"]) -> str:
 
 def list_tesseract_langs() -> List[str]:
     try:
-        res = subprocess.run(["tesseract", "--list-langs"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=3)
+        res = subprocess.run(["tesseract", "--list-langs"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=4)
         out = res.stdout or ""
         langs = [l.strip() for l in out.splitlines() if l.strip() and not l.lower().startswith("list of available languages")]
         return langs
@@ -201,7 +229,11 @@ def probe_service(name: str, base_url: str, paths: List[str]) -> Dict[str, Any]:
         return info
 
 def run_diagnostics() -> Dict[str, Any]:
-    py_mods = ["pdfplumber", "pdf2image", "pytesseract", "pptx", "docx", "cv2", "PIL", "numpy", "requests", "pydub"]
+    py_mods = [
+        "pdfplumber", "pdf2image", "pytesseract", "pptx", "docx", "cv2", "PIL",
+        "numpy", "requests", "pydub", "duckduckgo_search", "trafilatura",
+        "mailparser", "extract_msg", "pandas"
+    ]
     modules = {m: {"present": has_module(m), "version": module_version(m) if has_module(m) else ""} for m in py_mods}
 
     exes = {
@@ -230,9 +262,9 @@ def run_diagnostics() -> Dict[str, Any]:
     }
 
     missing_sys = []
-    if not exes["tesseract"]: missing_sys.append("tesseract")
-    if not exes["ffmpeg"]: missing_sys.append("ffmpeg")
-    if not exes["pdftoppm"]: missing_sys.append("poppler-tools (pdftoppm)")
+    if not exes["tesseract"]:  missing_sys.append("tesseract")
+    if not exes["ffmpeg"]:     missing_sys.append("ffmpeg")
+    if not exes["pdftoppm"]:   missing_sys.append("poppler-tools (pdftoppm)")
     missing_langs = []
     if not has_pol: missing_langs.append("tesseract-langpack-pol (pol)")
     if not has_eng: missing_langs.append("tesseract-langpack-eng (eng)")
@@ -252,7 +284,7 @@ def run_diagnostics() -> Dict[str, Any]:
     gpu = {}
     if exes["nvidia-smi"]:
         try:
-            res = subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"], stdout=subprocess.PIPE, text=True, timeout=3)
+            res = subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"], stdout=subprocess.PIPE, text=True, timeout=4)
             gpu["info"] = res.stdout.strip()
         except Exception as e:
             gpu["info"] = f"nvidia-smi error: {e}"
@@ -280,7 +312,7 @@ def run_diagnostics() -> Dict[str, Any]:
         }
     }
 
-# === OLLAMA/LLM/WIZJA ===
+# === OLLAMA / MODELE / WIZJA ===
 def list_ollama_models():
     try:
         r = http_get(f"{OLLAMA_URL}/api/tags", timeout=5)
@@ -317,7 +349,7 @@ def query_ollama_text(prompt: str, model: str = "llama3:latest", json_mode: bool
         logger.error(f"Ollama text error: {e}")
         return f"[BŁĄD OLLAMA: {e}]"
 
-# === OCR ===
+# === OCR (Tesseract z prostym preprocessingiem) ===
 def ocr_image_bytes(img_bytes: bytes, lang: str = 'pol+eng') -> str:
     try:
         img = Image.open(io.BytesIO(img_bytes)).convert('L')
@@ -329,20 +361,50 @@ def ocr_image_bytes(img_bytes: bytes, lang: str = 'pol+eng') -> str:
         logger.warning(f"OCR error: {e}")
         return ""
 
+# === SESSION STATE INIT ===
+def init_state():
+    ss = st.session_state
+    ss.setdefault("results", [])           # lista: {name, text, meta, pages}
+    ss.setdefault("combined_text", "")
+    ss.setdefault("audio_items", [])       # lista: (name, text, meta)
+    ss.setdefault("audio_summaries", [])   # lista: {name, md, json}
+    ss.setdefault("run_dir", None)         # stały katalog dla tego przebiegu
+    ss.setdefault("stats", {'processed': 0, 'errors': 0, 'pages': 0})
+    ss.setdefault("converted", False)      # czy mamy gotowe wyniki na ekranie
+    ss.setdefault("files_sig", None)       # sygnatura zestawu plików (nazwa+rozmiar)
+    ss.setdefault("diag", None)            # wyniki diagnostyki
+    ss.setdefault("ALLOW_WEB", False)      # toggle do web lookupu
+
+def files_signature(files) -> int:
+    try:
+        items = [(f.name, getattr(f, 'size', None) or len(f.getvalue())) for f in files]
+        return hash(tuple(items))
+    except Exception:
+        return 0
+
+init_state()
+
+# KONIEC CZĘŚCI 1/3 — daj znać, kiedy wysłać Część 2/3 (ekstraktory, audio/pyannote, podsumowania, Project Brain)
+# app.py — Document Converter Pro (Part 2/3)
+# Część 2/3: Ekstraktory plików, audio/pyannote, router, AnythingLLM,
+#            podsumowania audio oraz Project Brain (zadania/ryzyka/brief + web lookup)
+
 # === AUDIO: Whisper / Pyannote ===
 def extract_audio_whisper(file):
+    """Audio → tekst przez Whisper ASR. Zwraca (text, pages, meta)."""
     try:
         size_bytes = get_file_size(file)
         timeout_read = calculate_timeout(size_bytes, base=240, per_mb=25)
+
         file.seek(0)
         raw = file.read()
         mime = getattr(file, "type", None) or "application/octet-stream"
         fname = file.name
 
+        # Opcjonalne downsample do 16k mono dla dużych plików (jeśli pydub/ffmpeg dostępne)
         try:
             if size_bytes > 25 * 1024 * 1024:
                 from pydub import AudioSegment
-                import tempfile
                 with tempfile.NamedTemporaryFile(suffix=os.path.splitext(fname)[1], delete=False) as tmp_in:
                     tmp_in.write(raw)
                     tmp_in_path = tmp_in.name
@@ -396,7 +458,7 @@ def extract_audio_whisper(file):
         return text_res, 1, meta
 
     except requests.exceptions.Timeout:
-        logger.error(f"Whisper timeout after {timeout_read}s")
+        logger.error("Whisper timeout")
         return "[BŁĄD: Timeout - plik zbyt długi]", 0, {"type": "audio", "error": "timeout"}
     except Exception as e:
         logger.error(f"Whisper error: {e}")
@@ -420,6 +482,7 @@ def check_pyannote_health(url: str):
     return False, {}
 
 def normalize_diarization(resp: dict) -> list:
+    """Ujednolicenie odpowiedzi z Pyannote do listy segmentów {start, end, speaker}."""
     if not resp:
         return []
     raw = resp.get("segments") or resp.get("turns") or []
@@ -432,6 +495,7 @@ def normalize_diarization(resp: dict) -> list:
     return out
 
 def pick_speaker_for_interval(diar_segments: list, start: float, end: float) -> str:
+    """Wybierz mówcę z największym overlapem dla [start, end]."""
     best_spk, best_overlap = "SPEAKER_?", 0.0
     for s in diar_segments:
         ov = max(0.0, min(end, s["end"]) - max(start, s["start"]))
@@ -441,6 +505,7 @@ def pick_speaker_for_interval(diar_segments: list, start: float, end: float) -> 
     return best_spk
 
 def diarize_audio(file) -> dict:
+    """Pyannote speaker diarization."""
     pyannote_url = PYANNOTE_URL.rstrip("/")
     try:
         size_bytes = get_file_size(file)
@@ -458,26 +523,30 @@ def diarize_audio(file) -> dict:
         return {"error": str(e)}
 
 def extract_audio_with_speakers(file):
+    """Whisper + Pyannote = transkrypcja z identyfikacją głosów."""
     try:
+        # 1) Whisper
         text_only, _, meta = extract_audio_whisper(file)
         segments = meta.get("segments", [])
         if not segments:
             return text_only, 1, meta
 
+        # 2) Health-check Pyannote
         ok, _ = check_pyannote_health(PYANNOTE_URL)
         if not ok:
             st.warning("Nie udało się połączyć z Pyannote — zwracam samą transkrypcję.")
             return text_only, 1, meta
 
+        # 3) Diarization
         st.info("🎤 Identyfikuję głosy...")
         file.seek(0)
         diarization = diarize_audio(file)
         diar_segments = normalize_diarization(diarization)
-
         if not diar_segments:
             st.warning("Pyannote nie zwrócił poprawnych segmentów — zwracam samą transkrypcję.")
             return text_only, 1, meta
 
+        # 4) Merge
         output_lines = ["=== TRANSKRYPCJA Z IDENTYFIKACJĄ GŁOSÓW ===", ""]
         for seg in segments:
             start = float(seg.get("start", 0))
@@ -494,8 +563,9 @@ def extract_audio_with_speakers(file):
         logger.error(f"Audio with speakers error: {e}")
         return f"[BŁĄD: {e}]", 0, {"type": "audio", "error": str(e)}
 
-# === EKSTRAKTORY ===
+# === EKSTRAKTORY DOKUMENTÓW ===
 def extract_pdf(file, use_vision: bool, vision_model: str, ocr_pages_limit: int = 20):
+    """PDF: tekst + opcjonalnie OCR/Vision (transkrypcja obrazu)."""
     texts = []
     try:
         file.seek(0)
@@ -509,6 +579,7 @@ def extract_pdf(file, use_vision: bool, vision_model: str, ocr_pages_limit: int 
 
         full_text = "\n".join(texts)
 
+        # Fallback: OCR/Vision dla skanów lub niskiej jakości PDF
         if len(full_text.strip()) < MIN_TEXT_FOR_OCR_SKIP:
             file.seek(0)
             raw = file.read()
@@ -548,19 +619,24 @@ def extract_pdf(file, use_vision: bool, vision_model: str, ocr_pages_limit: int 
         return f"[BŁĄD PDF: {e}]", 0, {"type": "pdf", "error": str(e)}
 
 def extract_pptx(file, use_vision: bool, vision_model: str):
+    """PPTX: tekst + obrazy (opcjonalnie Vision opis)."""
     try:
         file.seek(0)
         prs = Presentation(file)
         slides_text = []
+
         for i, slide in enumerate(prs.slides, 1):
             parts = [f"=== Slajd {i} ==="]
+
             for shape in slide.shapes:
                 if hasattr(shape, "text") and shape.text:
                     parts.append(shape.text)
+
             if slide.has_notes_slide and slide.notes_slide.notes_text_frame:
                 notes = slide.notes_slide.notes_text_frame.text
                 if notes:
                     parts.append(f"Notatki: {notes}")
+
             if use_vision and vision_model:
                 for shape in slide.shapes:
                     if getattr(shape, "shape_type", None) == 13:  # PICTURE
@@ -571,34 +647,42 @@ def extract_pptx(file, use_vision: bool, vision_model: str):
                             parts.append(f"[Obraz] {response}")
                         except Exception:
                             pass
+
             slides_text.append("\n".join(parts))
+
         return "\n\n".join(slides_text), len(prs.slides), {"type": "pptx", "slides": len(prs.slides)}
     except Exception as e:
         logger.error(f"PPTX error: {e}")
         return f"[BŁĄD PPTX: {e}]", 0, {"type": "pptx", "error": str(e)}
 
 def extract_docx(file):
+    """DOCX: tekst + tabele."""
     try:
         file.seek(0)
         doc = Document(file)
         paras = [p.text for p in doc.paragraphs if p.text]
+
         for tbl in doc.tables:
             for row in tbl.rows:
                 paras.append(" | ".join(cell.text for cell in row.cells))
+
         return "\n".join(paras), len(paras), {"type": "docx"}
     except Exception as e:
         logger.error(f"DOCX error: {e}")
         return f"[BŁĄD DOCX: {e}]", 0, {"type": "docx", "error": str(e)}
 
 def extract_image(file, use_vision: bool, vision_model: str, image_mode: str):
+    """Obraz: OCR / Vision (przepisz) / Vision (opisz) / OCR+opis."""
     try:
         file.seek(0)
         img_bytes = file.read()
         results = []
         meta = {"type": "image", "mode": image_mode}
+
         if image_mode in ("ocr", "ocr_plus_vision_desc"):
             ocr_text = ocr_image_bytes(img_bytes)
             results.append(f"=== OCR ===\n{ocr_text}")
+
         if image_mode in ("vision_transcribe", "vision_describe", "ocr_plus_vision_desc"):
             if use_vision and vision_model:
                 img_b64 = base64.b64encode(img_bytes).decode()
@@ -609,14 +693,75 @@ def extract_image(file, use_vision: bool, vision_model: str, image_mode: str):
                 meta["vision_model"] = vision_model
             else:
                 results.append("[Vision niedostępne]")
+
         txt = "\n\n".join(results).strip()
         return txt, 1, meta
     except Exception as e:
         logger.error(f"Image error: {e}")
         return f"[BŁĄD IMG: {e}]", 0, {"type": "image", "error": str(e)}
 
+# === E-MAIL: EML/MSG ===
+def extract_eml(file):
+    """EML: nagłówki + treść. Wymaga mailparser (opcjonalnie fallback)."""
+    try:
+        file.seek(0)
+        raw = file.read()
+        if mailparser is None:
+            text = raw.decode("utf-8", errors="ignore")
+            return text, 1, {"type": "email", "note": "mailparser not installed"}
+        m = mailparser.parse_from_bytes(raw)
+        headers = [
+            f"From: {m.from_[0][1] if m.from_ else ''}",
+            f"To: {', '.join([x[1] for x in m.to]) if m.to else ''}",
+            f"Subject: {m.subject or ''}",
+            f"Date: {m.date.isoformat() if m.date else ''}"
+        ]
+        body = (m.text_plain[0] if m.text_plain else m.body) or ""
+        attach = [att.get('filename') for att in (m.attachments or []) if att.get('filename')]
+        if attach:
+            headers.append(f"Attachments: {', '.join(attach)}")
+        text = "\n".join(headers) + "\n\n" + (body or "")
+        return text, 1, {"type": "email", "has_attachments": bool(attach)}
+    except Exception as e:
+        logger.error(f"EML error: {e}")
+        return f"[BŁĄD EML: {e}]", 0, {"type": "email", "error": str(e)}
+
+def extract_msg(file):
+    """MSG (Outlook): nagłówki + treść. Wymaga extract_msg (fallback na surowy tekst)."""
+    try:
+        if extract_msg is None:
+            file.seek(0)
+            raw = file.read()
+            text = raw.decode("utf-8", errors="ignore")
+            return text, 1, {"type": "email", "note": "extract-msg not installed"}
+        file.seek(0)
+        raw = file.read()
+        with tempfile.NamedTemporaryFile(suffix=".msg", delete=False) as tmp:
+            tmp.write(raw)
+            tmp_path = tmp.name
+        msg = extract_msg.Message(tmp_path)
+        headers = [
+            f"From: {msg.sender or ''}",
+            f"To: {msg.to or ''}",
+            f"Subject: {msg.subject or ''}",
+            f"Date: {msg.date or ''}"
+        ]
+        body = msg.body or ""
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+        text = "\n".join(headers) + "\n\n" + body
+        return text, 1, {"type": "email"}
+    except Exception as e:
+        logger.error(f"MSG error: {e}")
+        return f"[BŁĄD MSG: {e}]", 0, {"type": "email", "error": str(e)}
+
+# === ROUTER ===
 def process_file(file, use_vision: bool, vision_model: str, ocr_limit: int, image_mode: str):
+    """Router do odpowiedniego ekstraktora."""
     name = file.name.lower()
+
     if name.endswith('.pdf'):
         return extract_pdf(file, use_vision, vision_model, ocr_limit)
     elif name.endswith(('.pptx', '.ppt')):
@@ -630,6 +775,10 @@ def process_file(file, use_vision: bool, vision_model: str, ocr_limit: int, imag
         if ok:
             return extract_audio_with_speakers(file)
         return extract_audio_whisper(file)
+    elif name.endswith('.eml'):
+        return extract_eml(file)
+    elif name.endswith('.msg'):
+        return extract_msg(file)
     elif name.endswith('.txt'):
         file.seek(0)
         content = file.read().decode('utf-8', errors='ignore')
@@ -637,7 +786,9 @@ def process_file(file, use_vision: bool, vision_model: str, ocr_limit: int, imag
     else:
         return "[Nieobsługiwany format]", 0, {"type": "unknown"}
 
+# === ANYTHINGLLM (lokalnie, respektuje offline) ===
 def send_to_anythingllm(text: str, filename: str):
+    """Wyślij dokument do AnythingLLM (tylko gdy nie OFFLINE_MODE i URL prywatny)."""
     if OFFLINE_MODE:
         return False, "Tryb offline — wysyłka zablokowana"
     if not ANYTHINGLLM_URL or not ANYTHINGLLM_API_KEY:
@@ -651,7 +802,7 @@ def send_to_anythingllm(text: str, filename: str):
     except Exception as e:
         return False, f"Błąd AnythingLLM: {e}"
 
-# --- PROMPTY DO PODSUMOWAŃ AUDIO ---
+# === PODSUMOWANIA AUDIO (Map-Reduce JSON + Markdown) ===
 MAP_PROMPT_TEMPLATE = """
 Jesteś asystentem ds. spotkań (PL). Otrzymasz fragment transkrypcji rozmowy z klientem (możliwe znaczniki SPEAKER_1, SPEAKER_2 i znaczniki czasu).
 Zrób skrót tego fragmentu i wylistuj najważniejsze informacje.
@@ -761,28 +912,19 @@ def build_meeting_summary_markdown(data: Dict[str, Any]) -> str:
     md.append("# Podsumowanie rozmowy")
     if data.get("summary"):
         md.append(data["summary"])
+
     md.append("\n## Kluczowe punkty")
-    key_points = data.get("key_points", [])
-    if not key_points:
-        md.append("- brak")
-    else:
-        for x in key_points:
-            md.append(f"- {x}")
+    for x in (data.get("key_points") or []) or ["brak"]:
+        md.append(f"- {x}")
+
     md.append("\n## Decyzje vs Do ustalenia")
-    decisions = data.get("decisions", [])
-    tbd = data.get("to_be_decided", [])
     md.append("### Decyzje")
-    if decisions:
-        for d in decisions:
-            md.append(f"- {d}")
-    else:
-        md.append("- brak")
+    for d in (data.get("decisions") or []) or ["brak"]:
+        md.append(f"- {d}")
     md.append("### Do ustalenia")
-    if tbd:
-        for q in tbd:
-            md.append(f"- {q}")
-    else:
-        md.append("- brak")
+    for q in (data.get("to_be_decided") or []) or ["brak"]:
+        md.append(f"- {q}")
+
     md.append("\n## Zadania (Action Items)")
     action_items = data.get("action_items", [])
     if not action_items:
@@ -794,6 +936,7 @@ def build_meeting_summary_markdown(data: Dict[str, Any]) -> str:
             due = ai.get("due", "") or "-"
             notes = ai.get("notes", "") or ""
             md.append(f"- [ ] {task} (owner: {owner}, termin: {due}) {('- ' + notes) if notes else ''}")
+
     md.append("\n## Ryzyka")
     risks = data.get("risks", [])
     if not risks:
@@ -804,18 +947,17 @@ def build_meeting_summary_markdown(data: Dict[str, Any]) -> str:
             impact = r.get("impact", "")
             mit = r.get("mitigation", "")
             md.append(f"- {risk} (wpływ: {impact}) → mitygacja: {mit}")
+
     md.append("\n## Pytania do klienta (otwarte kwestie)")
-    open_q = data.get("open_questions", [])
-    if not open_q:
-        md.append("- brak")
-    else:
-        for q in open_q:
-            md.append(f"- {q}")
+    for q in (data.get("open_questions") or []) or ["brak"]:
+        md.append(f"- {q}")
+
     return "\n".join(md)
 
 def summarize_meeting_transcript(transcript: str, model: str = "llama3:latest", max_chars: int = 6000, diarized: bool = False) -> Dict[str, Any]:
     if not transcript or len(transcript.strip()) < 20:
         return {}
+
     parts = chunk_text(transcript, max_chars=max_chars, overlap=500)
     partials: List[Dict[str, Any]] = []
     for p in parts:
@@ -827,8 +969,10 @@ def summarize_meeting_transcript(transcript: str, model: str = "llama3:latest", 
             data = try_parse_json(resp2)
         if data:
             partials.append(data)
+
     if not partials:
         return {"summary": transcript[:1200] + ("..." if len(transcript) > 1200 else "")}
+
     partials_str = json.dumps(partials, ensure_ascii=False, indent=2)
     reduce_prompt = REDUCE_PROMPT_TEMPLATE.format(partials=partials_str)
     reduce_resp = query_ollama_text(reduce_prompt, model=model, json_mode=True, timeout=240)
@@ -837,39 +981,170 @@ def summarize_meeting_transcript(transcript: str, model: str = "llama3:latest", 
         final_data = merge_summary_dicts(partials)
     return final_data
 
-# === SESSION STATE INIT ===
-def init_state():
-    ss = st.session_state
-    ss.setdefault("results", [])           # lista: {name, text, meta, pages}
-    ss.setdefault("combined_text", "")
-    ss.setdefault("audio_items", [])       # lista: (name, text, meta)
-    ss.setdefault("audio_summaries", [])   # lista: {name, md, json}
-    ss.setdefault("run_dir", None)         # stały katalog dla tego przebiegu
-    ss.setdefault("stats", {'processed': 0, 'errors': 0, 'pages': 0})
-    ss.setdefault("converted", False)      # czy mamy gotowe wyniki na ekranie
-    ss.setdefault("files_sig", None)       # sygnatura zestawu plików (nazwa+rozmiar)
-    ss.setdefault("diag", None)            # wyniki diagnostyki
+# === PROJECT BRAIN (klasyfikacja, zadania, ryzyka, brief) ===
+DOC_CLASS_PROMPT = """
+Oceń, jaki to typ dokumentu (PL). Zwróć JSON z polem "type" ∈
+["email","chat","meeting_transcript","spec","invoice","drawing","image_text","note","other"].
+Kontekst:
+{content}
+Zwróć: {{"type": "<...>"}}
+"""
 
-def files_signature(files) -> int:
+TASKS_PROMPT = """
+Jesteś asystentem PM (PL). Z treści wyodrębnij listę zadań.
+Zwróć JSON:
+{
+ "tasks":[
+   {"owner":"","task":"","due":"","priority":"low/medium/high","tags":[],"source":""}
+ ]
+}
+Zasady: nie wymyślaj; jeśli brak due/owner wpisz "".
+Treść:
+{content}
+"""
+
+RISKS_PROMPT = """
+Jesteś asystentem PM (PL). Wylistuj ryzyka, założenia i pytania (RFI).
+JSON:
+{
+ "risks":[{"risk":"","impact":"low/medium/high","mitigation":""}],
+ "assumptions":["..."],
+ "rfis":["pytanie 1","pytanie 2"]
+}
+Treść:
+{content}
+"""
+
+PROJECT_BRIEF_PROMPT = """
+Z wielu fragmentów projektu zrób skrót (PL).
+Wejście (JSON):
+{items}
+Zwróć JSON:
+{
+ "brief":"1-3 akapity",
+ "key_points":[],
+ "decisions":[],
+ "rfis":[],
+ "risks":[{"risk":"","impact":"","mitigation":""}],
+ "next_steps":[]
+}
+"""
+
+WEB_QUERIES_PROMPT = """
+Na bazie treści zaproponuj 3–5 neutralnych zapytań do wyszukiwarki, bez danych wrażliwych.
+JSON: {"queries":["...","..."]}
+Treść:
+{content}
+"""
+
+def classify_document(text: str, model: str) -> str:
+    resp = query_ollama_text(DOC_CLASS_PROMPT.format(content=text[:4000]), model=model, json_mode=True, timeout=90)
+    data = try_parse_json(resp)
+    return (data.get("type") or "other") if isinstance(data, dict) else "other"
+
+def extract_tasks_from_text(text: str, model: str) -> List[Dict[str,Any]]:
+    resp = query_ollama_text(TASKS_PROMPT.format(content=text[:6000]), model=model, json_mode=True, timeout=120)
+    data = try_parse_json(resp) or {}
+    tasks = data.get("tasks", []) if isinstance(data, dict) else []
+    # sanityzacja typów
+    out = []
+    for t in tasks:
+        if isinstance(t, dict):
+            out.append({
+                "owner": t.get("owner",""),
+                "task": t.get("task",""),
+                "due": t.get("due",""),
+                "priority": t.get("priority",""),
+                "tags": t.get("tags", []),
+                "source": t.get("source","")
+            })
+    return out
+
+def extract_risks_from_text(text: str, model: str) -> Dict[str,Any]:
+    resp = query_ollama_text(RISKS_PROMPT.format(content=text[:6000]), model=model, json_mode=True, timeout=120)
+    data = try_parse_json(resp) or {}
+    return {
+        "risks": data.get("risks", []),
+        "assumptions": data.get("assumptions", []),
+        "rfis": data.get("rfis", [])
+    }
+
+def build_project_brief(items: List[Dict[str,Any]], model: str) -> Dict[str,Any]:
+    payload = json.dumps(items, ensure_ascii=False)[:12000]
+    resp = query_ollama_text(PROJECT_BRIEF_PROMPT.format(items=payload), model=model, json_mode=True, timeout=180)
+    data = try_parse_json(resp)
+    if not data:
+        return {"brief": "", "key_points": [], "decisions": [], "rfis": [], "risks": [], "next_steps": []}
+    return data
+
+def propose_web_queries(text: str, model: str) -> List[str]:
+    resp = query_ollama_text(WEB_QUERIES_PROMPT.format(content=text[:4000]), model=model, json_mode=True, timeout=90)
+    data = try_parse_json(resp) or {}
+    q = data.get("queries", [])
+    # proste odanonimizowanie (usuń maile/telefony)
+    clean = []
+    for s in q:
+        s = re.sub(r'\S+@\S+', '[email]', s)
+        s = re.sub(r'\b\d{7,}\b', '[num]', s)
+        clean.append(s)
+    return clean
+
+def web_search_and_summarize(queries: List[str], max_results: int, model: str) -> Dict[str,Any]:
+    """Pobiera strony przez DuckDuckGo i streszcza lokalnie.
+       Działa tylko, gdy w UI włączono ALLOW_WEB (sesja)."""
+    if not st.session_state.get("ALLOW_WEB", False):
+        return {"note":"web lookup disabled (ALLOW_WEB=False)", "items":[]}
+    if DDGS is None or trafilatura is None:
+        return {"note":"duckduckgo-search/trafilatura not installed", "items":[]}
+    results = []
     try:
-        items = [(f.name, getattr(f, 'size', None) or len(f.getvalue())) for f in files]
-        return hash(tuple(items))
-    except Exception:
-        return 0
+        with DDGS() as ddg:
+            for q in queries or []:
+                hits = ddg.text(q, region="pl-pl", safesearch="moderate", max_results=max_results)
+                for h in (hits or []):
+                    url = h.get("href") or h.get("url")
+                    title = h.get("title","")
+                    if not url:
+                        continue
+                    # pobierz treść
+                    try:
+                        c = trafilatura.fetch_url(url)
+                        txt = trafilatura.extract(c) or ""
+                    except Exception:
+                        txt = ""
+                    if not txt:
+                        continue
+                    summary = query_ollama_text(f"Streść (PL) w 5 punktach:\n\n{txt[:6000]}", model=model, json_mode=False, timeout=90)
+                    results.append({"query": q, "url": url, "title": title, "summary": summary})
+                    if len(results) >= max_results:
+                        break
+                if len(results) >= max_results:
+                    break
+    except Exception as e:
+        logger.error(f"Web lookup error: {e}")
+    return {"items": results}
 
-init_state()
+# KONIEC CZĘŚCI 2/3 — daj znać, kiedy wysłać Część 3/3 (UI: sidebar, uploader, konwersja, zapisy, Project Brain UI, web lookup)
+# app.py — Document Converter Pro (Part 3/3)
+# Część 3/3: UI — sidebar, uploader, konwersja, zapisy, podsumowania audio,
+#            Project Brain (zadania/ryzyka/brief) + opcjonalny web lookup
 
-# === UI ===
+# === UI / SIDEBAR ===
 st.title("📄 Document Converter Pro")
-st.caption("Konwersja PDF/DOCX/PPTX/IMG/AUDIO → TXT z OCR, Vision lub Whisper (offline)")
+st.caption("Konwersja PDF/DOCX/PPTX/IMG/AUDIO/EMAIL → TXT z OCR, Vision lub Whisper (offline-first)")
 
 with st.sidebar:
     st.header("⚙️ Ustawienia")
 
     # Tryb offline
-    offline_toggle = st.checkbox("Tryb offline (blokuj internet)", value=OFFLINE_MODE, help="Zezwalaj tylko na połączenia lokalne/prywatne")
-    OFFLINE_MODE = offline_toggle
+    OFFLINE_MODE = st.checkbox("Tryb offline (blokuj internet poza lokalnymi usługami)", value=OFFLINE_MODE)
+    st.session_state["ALLOW_WEB"] = st.checkbox(
+        "Zezwól na web lookup (pobieranie publicznych stron)",
+        value=st.session_state.get("ALLOW_WEB", False),
+        help="Nie wysyła treści dokumentów na zewnątrz. Pobiera tylko publiczne strony dla uzupełnienia wiedzy."
+    )
 
+    # Status adresów
     def _status_url(name, url):
         try:
             host = urlparse(url).hostname or ""
@@ -880,29 +1155,57 @@ with st.sidebar:
     _status_url("Whisper", WHISPER_URL)
     _status_url("Pyannote", PYANNOTE_URL)
 
+    # Vision
     vision_models = list_vision_models()
     use_vision = st.checkbox("Użyj modelu wizyjnego (Ollama Vision)", value=True if vision_models else False)
-
-    if vision_models:
+    if vision_models and use_vision:
         selected_vision = st.selectbox("Model wizyjny", vision_models, index=0)
     else:
         selected_vision = None
-        st.warning("⚠️ Brak modeli Vision w Ollama (np. llava:13b / qwen2-vl:7b)")
+        if use_vision:
+            st.warning("⚠️ Brak modeli Vision w Ollama (np. llava:13b / qwen2-vl:7b)")
 
     st.subheader("OCR")
     ocr_pages_limit = st.slider("Limit stron OCR", 5, 50, 20)
 
     st.subheader("Obrazy (IMG)")
     if use_vision and selected_vision:
-        image_mode_label = st.selectbox("Tryb dla obrazów", options=list(IMAGE_MODE_MAP.keys()), index=3)
+        image_mode_label = st.selectbox(
+            "Tryb dla obrazów",
+            options=["OCR", "Vision: przepisz tekst", "Vision: opisz obraz", "OCR + Vision opis"],
+            index=3
+        )
     else:
-        image_mode_label = st.selectbox("Tryb dla obrazów", options=["OCR"], index=0, disabled=True)
+        image_mode_label = st.selectbox(
+            "Tryb dla obrazów",
+            options=["OCR"],
+            index=0,
+            disabled=True
+        )
+    IMAGE_MODE_MAP = {
+        "OCR": "ocr",
+        "Vision: przepisz tekst": "vision_transcribe",
+        "Vision: opisz obraz": "vision_describe",
+        "OCR + Vision opis": "ocr_plus_vision_desc",
+    }
     image_mode = IMAGE_MODE_MAP.get(image_mode_label, "ocr")
 
+    # Zapis lokalny
     st.subheader("Zapis lokalny")
     enable_local_save = st.checkbox("Zapisz wyniki lokalnie (folder)", value=False)
     base_output_dir = st.text_input("Katalog wyjściowy", value="outputs")
 
+    # AnythingLLM
+    st.subheader("AnythingLLM")
+    has_anythingllm_cfg = bool(ANYTHINGLLM_URL and ANYTHINGLLM_API_KEY)
+    if OFFLINE_MODE:
+        st.caption("Status: 🔒 Wyłączone (tryb offline)")
+        has_anythingllm = False
+    else:
+        st.caption(f"Status: {'✅ Skonfigurowane' if has_anythingllm_cfg else '❌ Brak config'}")
+        has_anythingllm = has_anythingllm_cfg
+
+    # Podsumowania audio
     st.subheader("🧠 Podsumowanie audio (AI)")
     summarize_audio_enabled = st.checkbox("Włącz podsumowanie rozmów audio", value=True)
     summarize_model_candidates = [
@@ -912,6 +1215,11 @@ with st.sidebar:
     summarize_model = st.selectbox("Model do podsumowania", options=summarize_model_candidates or ["llama3:latest"])
     chunk_chars = st.slider("Rozmiar chunku (znaki)", min_value=2000, max_value=8000, value=6000, step=500)
 
+    # Project Brain toggle
+    st.subheader("🧭 Project Brain (PM)")
+    enable_project_brain = st.checkbox("Włącz Project Brain (zadania/ryzyka/brief)", value=True)
+
+    # Diagnostyka
     st.subheader("🔧 Diagnostyka środowiska")
     if st.button("Skanuj środowisko"):
         st.session_state["diag"] = run_diagnostics()
@@ -932,13 +1240,14 @@ with st.sidebar:
         with st.expander("Pełne szczegóły diagnostyki"):
             st.json(diag, expanded=False)
 
+# === FILE UPLOADER ===
 uploaded_files = st.file_uploader(
     "Wgraj dokumenty",
-    type=['pdf', 'docx', 'pptx', 'ppt', 'jpg', 'jpeg', 'png', 'txt', 'mp3', 'wav', 'm4a', 'ogg', 'flac'],
+    type=['pdf', 'docx', 'pptx', 'ppt', 'jpg', 'jpeg', 'png', 'txt', 'mp3', 'wav', 'm4a', 'ogg', 'flac', 'eml', 'msg'],
     accept_multiple_files=True
 )
 
-# KONWERSJA → zapis do session_state (bez resetu przy zapisie)
+# === KONWERSJA → zapis do session_state (bez resetu przy zapisie) ===
 if uploaded_files:
     st.info(f"📁 {len(uploaded_files)} plików")
     if st.button("🚀 Konwertuj wszystkie", type="primary", key="btn_convert_all"):
@@ -962,11 +1271,13 @@ if uploaded_files:
                 progress.progress((idx + 1) / len(uploaded_files), text=f"Przetwarzam: {file.name}")
             except TypeError:
                 progress.progress((idx + 1) / len(uploaded_files))
+
             st.subheader(f"📄 {file.name}")
 
             try:
                 extracted_text, pages, meta = process_file(file, use_vision, selected_vision, ocr_pages_limit, image_mode)
 
+                # Do sesji
                 st.session_state["results"].append({
                     "name": file.name,
                     "text": extracted_text,
@@ -974,6 +1285,7 @@ if uploaded_files:
                     "pages": pages
                 })
 
+                # Tekst łączny
                 all_texts.append(f"\n{'='*80}\n")
                 all_texts.append(f"PLIK: {file.name}\n")
                 all_texts.append(f"Typ: {getattr(file, 'type', 'unknown')}, Rozmiar: {getattr(file, 'size', 0)/1024:.1f} KB\n")
@@ -981,13 +1293,15 @@ if uploaded_files:
                 all_texts.append(extracted_text)
                 all_texts.append(f"\n[Stron/sekcji: {pages}]\n")
 
+                # Statystyki
                 st.session_state["stats"]["processed"] += 1
                 st.session_state["stats"]["pages"] += pages
 
+                # Podgląd
                 with st.expander(f"Preview: {file.name}"):
                     st.text(extracted_text[:2000] + ("..." if len(extracted_text) > 2000 else ""))
 
-                # Audio do podsumowania
+                # Audio → do podsumowań
                 if isinstance(meta, dict) and meta.get("type") == "audio":
                     st.session_state["audio_items"].append((file.name, extracted_text, meta))
 
@@ -1000,12 +1314,11 @@ if uploaded_files:
         st.session_state["combined_text"] = "\n".join(all_texts)
         st.session_state["converted"] = True
 
-# === SEKCJA WYNIKÓW (bez resetu po zapisie) ===
+# === SEKCJA WYNIKÓW ===
 if st.session_state.get("converted"):
     st.success(f"✅ Przetworzono: {st.session_state['stats']['processed']} plików")
     st.metric("Strony/sekcje", st.session_state["stats"]["pages"])
 
-    # Pobierz/wyświetl łączny TXT
     st.download_button(
         "⬇️ Pobierz TXT",
         st.session_state["combined_text"].encode('utf-8'),
@@ -1014,8 +1327,8 @@ if st.session_state.get("converted"):
         key="dl_combined_txt"
     )
 
-    # Przyciski zapisu bez resetu
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
+
     with c1:
         if st.button("💾 Zapisz połączony TXT na dysk", key="btn_save_combined_txt"):
             out_dir = st.session_state["run_dir"] or create_run_dir("outputs")
@@ -1054,8 +1367,21 @@ if st.session_state.get("converted"):
                         summary_md = build_meeting_summary_markdown(summary_json)
                         st.session_state["audio_summaries"].append({"name": aname, "md": summary_md, "json": summary_json})
                 st.success("Gotowe podsumowania — poniżej do pobrania/zapisania.")
+            else:
+                st.info("Brak plików audio do podsumowania.")
 
-    # Sekcja podsumowań (jeśli są)
+    with c4:
+        if has_anythingllm:
+            if st.button("📤 Wyślij do AnythingLLM", key="btn_send_anythingllm"):
+                success, msg = send_to_anythingllm(st.session_state["combined_text"], "converted_docs.txt")
+                if success:
+                    st.success(msg)
+                else:
+                    st.error(msg)
+        else:
+            st.caption("AnythingLLM wyłączone lub brak config/tryb offline")
+
+    # Audio summaries output
     if st.session_state["audio_summaries"]:
         st.subheader("🧠 Podsumowania rozmów audio")
         for s in st.session_state["audio_summaries"]:
@@ -1092,10 +1418,135 @@ if st.session_state.get("converted"):
                     save_text(os.path.join(out_dir, f"{base}.summary.json"), json.dumps(summary_json, ensure_ascii=False, indent=2))
                     st.success(f"Zapisano do: {out_dir}")
 
-    # Reset sesji (nie rusza plików na dysku)
-    if st.button("♻️ Reset sesji (wyczyść wyniki)", type="secondary", key="btn_reset_session"):
-        for k in ["results", "combined_text", "audio_items", "audio_summaries", "run_dir"]:
-            st.session_state[k] = [] if isinstance(st.session_state.get(k), list) else None
-        st.session_state["stats"] = {'processed': 0, 'errors': 0, 'pages': 0}
-        st.session_state["converted"] = False
-        st.info("Wyczyszczono wyniki z pamięci sesji.")
+# === PROJECT BRAIN (UI) ===
+if st.session_state.get("converted") and enable_project_brain:
+    st.markdown("---")
+    st.subheader("🧭 Project Brain (zadania, ryzyka, brief)")
+
+    if st.button("▶️ Analizuj dokumenty (Project Brain)", key="btn_run_project_brain"):
+        per_doc = []
+        all_tasks = []
+        all_risks = []
+        all_assumptions = []
+        all_rfis = []
+
+        pb_model = summarize_model if summarize_model_candidates else "llama3:latest"
+
+        with st.spinner("Analizuję dokumenty pod kątem zadań/ryzyk..."):
+            for it in st.session_state["results"]:
+                name, text = it["name"], it["text"]
+                doctype = classify_document(text, model=pb_model)
+                tasks = extract_tasks_from_text(text, model=pb_model)
+                for t in tasks:
+                    t["source"] = name
+                risks_pack = extract_risks_from_text(text, model=pb_model)
+
+                per_doc.append({"name": name, "type": doctype, "tasks": tasks, **risks_pack})
+                all_tasks.extend(tasks)
+                all_risks.extend(risks_pack.get("risks", []))
+                all_assumptions.extend(risks_pack.get("assumptions", []))
+                all_rfis.extend(risks_pack.get("rfis", []))
+
+        brief_input = [{"name": x["name"], "type": x["type"], "tasks": x["tasks"],
+                        "risks": x.get("risks", []), "assumptions": x.get("assumptions", []), "rfis": x.get("rfis", [])}
+                       for x in per_doc]
+        project_brief = build_project_brief(brief_input, model=pb_model)
+
+        st.session_state["project_brain"] = {
+            "per_doc": per_doc,
+            "tasks": all_tasks,
+            "risks": all_risks,
+            "assumptions": all_assumptions,
+            "rfis": all_rfis,
+            "brief": project_brief
+        }
+        st.success("Analiza zakończona.")
+
+    # Prezentacja wyników Project Brain (jeśli są)
+    pb = st.session_state.get("project_brain")
+    if pb:
+        st.markdown("### ✅ Zadania (edytuj)")
+        if pb["tasks"]:
+            if pd is not None:
+                df_tasks = pd.DataFrame(pb["tasks"])
+                # Upewnij się o kolumnach
+                for col in ["owner","task","due","priority","tags","source"]:
+                    if col not in df_tasks.columns: df_tasks[col] = ""
+                edited = st.data_editor(df_tasks, num_rows="dynamic", use_container_width=True, key="tasks_editor")
+                st.session_state["project_tasks"] = edited
+                st.download_button("⬇️ Eksport zadań (CSV)", edited.to_csv(index=False).encode("utf-8"), "project_tasks.csv", "text/csv")
+            else:
+                st.info("pandas nie jest zainstalowany — edycja tabeli niedostępna. Wyświetlam JSON.")
+                st.json(pb["tasks"])
+        else:
+            st.info("Brak wykrytych zadań.")
+
+        cpr1, cpr2, cpr3 = st.columns(3)
+        with cpr1:
+            st.markdown("### ⚠️ Ryzyka")
+            if pb["risks"]:
+                st.json(pb["risks"])
+            else:
+                st.write("- brak")
+        with cpr2:
+            st.markdown("### ❓ RFI (pytania do klienta)")
+            if pb["rfis"]:
+                st.write("\n".join([f"- {x}" for x in pb["rfis"]]))
+            else:
+                st.write("- brak")
+        with cpr3:
+            st.markdown("### 📌 Założenia")
+            if pb["assumptions"]:
+                st.write("\n".join([f"- {x}" for x in pb["assumptions"]]))
+            else:
+                st.write("- brak")
+
+        st.markdown("### 📝 Project Brief")
+        st.json(pb["brief"])
+
+        # Zapisy na dysk
+        col_save1, col_save2 = st.columns(2)
+        with col_save1:
+            if st.button("💾 Zapisz Brief (JSON)", key="btn_save_brief_json"):
+                out_dir = st.session_state["run_dir"] or create_run_dir("outputs")
+                st.session_state["run_dir"] = out_dir
+                save_text(os.path.join(out_dir, "project_brief.json"), json.dumps(pb["brief"], ensure_ascii=False, indent=2))
+                st.success(f"Zapisano: {out_dir}/project_brief.json")
+        with col_save2:
+            if st.button("💾 Zapisz zadania (CSV)", key="btn_save_tasks_csv"):
+                if pd is not None and "project_tasks" in st.session_state:
+                    out_dir = st.session_state["run_dir"] or create_run_dir("outputs")
+                    st.session_state["run_dir"] = out_dir
+                    st.session_state["project_tasks"].to_csv(os.path.join(out_dir, "project_tasks.csv"), index=False)
+                    st.success(f"Zapisano: {out_dir}/project_tasks.csv")
+                else:
+                    st.info("Brak edytowalnej tabeli zadań lub brak pandas.")
+
+        # Web lookup (opcjonalnie)
+        st.markdown("### 🌐 Uzupełnienie wiedzy z sieci (opcjonalne)")
+        if st.session_state.get("ALLOW_WEB", False):
+            combined_preview = st.session_state["combined_text"][:8000]
+            pb_model = summarize_model if summarize_model_candidates else "llama3:latest"
+            queries = propose_web_queries(combined_preview, model=pb_model)
+            max_hits = st.slider("Ile wyników ściągnąć", 1, 10, 4)
+            st.write("Zapytania:", queries or "—")
+            if st.button("🔎 Szukaj i streść"):
+                with st.spinner("Pobieram i streszczam..."):
+                    webres = web_search_and_summarize(queries, max_hits, model=pb_model)
+                if webres.get("items"):
+                    for it in webres["items"]:
+                        st.markdown(f"- [{it['title']}]({it['url']})")
+                        st.write(it["summary"])
+                else:
+                    st.info("Brak wyników lub brak modułów duckduckgo-search/trafilatura.")
+        else:
+            st.caption("Web lookup wyłączony (odblokuj w panelu bocznym).")
+
+# Reset sesji (nie rusza plików na dysku)
+st.markdown("---")
+if st.button("♻️ Reset sesji (wyczyść wyniki)", type="secondary", key="btn_reset_session"):
+    for k in ["results", "combined_text", "audio_items", "audio_summaries", "run_dir", "project_brain", "project_tasks"]:
+        st.session_state[k] = [] if isinstance(st.session_state.get(k), list) else None
+    st.session_state["stats"] = {'processed': 0, 'errors': 0, 'pages': 0}
+    st.session_state["converted"] = False
+    st.info("Wyczyszczono wyniki z pamięci sesji.")
