@@ -227,7 +227,6 @@ def probe_service(name: str, base_url: str, paths: List[str]) -> Dict[str, Any]:
     except Exception as e:
         info["detail"] = str(e)
         return info
-
 def run_diagnostics() -> Dict[str, Any]:
     py_mods = [
         "pdfplumber", "pdf2image", "pytesseract", "pptx", "docx", "cv2", "PIL",
@@ -236,19 +235,24 @@ def run_diagnostics() -> Dict[str, Any]:
     ]
     modules = {m: {"present": has_module(m), "version": module_version(m) if has_module(m) else ""} for m in py_mods}
 
+    # executables: dodaj AMD ROCm narzędzia
     exes = {
         "tesseract": shutil.which("tesseract") is not None,
         "ffmpeg": shutil.which("ffmpeg") is not None,
         "pdftoppm": shutil.which("pdftoppm") is not None,
         "pdftocairo": shutil.which("pdftocairo") is not None,
-        "nvidia-smi": shutil.which("nvidia-smi") is not None
+        "nvidia-smi": shutil.which("nvidia-smi") is not None,
+        "rocm-smi": shutil.which("rocm-smi") is not None,
+        "rocminfo": shutil.which("rocminfo") is not None,
     }
     versions = {
         "tesseract": cmd_version("tesseract"),
         "ffmpeg": cmd_version("ffmpeg"),
         "pdftoppm": cmd_version("pdftoppm", ["-v"]),
         "pdftocairo": cmd_version("pdftocairo", ["-v"]),
-        "nvidia-smi": cmd_version("nvidia-smi")
+        "nvidia-smi": cmd_version("nvidia-smi"),
+        "rocm-smi": cmd_version("rocm-smi", ["--showproductname"]),
+        "rocminfo": cmd_version("rocminfo", []),
     }
 
     langs = list_tesseract_langs()
@@ -277,19 +281,32 @@ def run_diagnostics() -> Dict[str, Any]:
     if "poppler-tools (pdftoppm)" in missing_sys: rec_zypper.append("poppler-tools")
     rec_zypper += [pkg for pkg in ["tesseract-langpack-pol", "tesseract-langpack-eng"] if pkg in [x.split()[0] for x in missing_langs]]
 
-    rec_pip = []
-    if missing_py:
-        rec_pip = missing_py
+    rec_pip = missing_py if missing_py else []
 
+    # GPU info: preferuj AMD (ROCm), jeśli rocm-smi jest dostępne
     gpu = {}
-    if exes["nvidia-smi"]:
+    if exes["rocm-smi"]:
+        try:
+            # Przykład: pokaż nazwę produktu i użycie pamięci
+            prod = subprocess.run(["rocm-smi", "--showproductname"], stdout=subprocess.PIPE, text=True, timeout=4).stdout.strip()
+            memu = subprocess.run(["rocm-smi", "--showmemuse"], stdout=subprocess.PIPE, text=True, timeout=4).stdout.strip()
+            gpu["vendor"] = "AMD ROCm"
+            gpu["product"] = prod
+            gpu["mem_use"] = memu
+        except Exception as e:
+            gpu["vendor"] = "AMD ROCm"
+            gpu["info"] = f"rocm-smi error: {e}"
+    elif exes["nvidia-smi"]:
         try:
             res = subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"], stdout=subprocess.PIPE, text=True, timeout=4)
+            gpu["vendor"] = "NVIDIA"
             gpu["info"] = res.stdout.strip()
         except Exception as e:
+            gpu["vendor"] = "NVIDIA"
             gpu["info"] = f"nvidia-smi error: {e}"
     else:
-        gpu["info"] = "GPU nie wykryto (nvidia-smi brak)"
+        gpu["vendor"] = "unknown"
+        gpu["info"] = "GPU tool not found (no rocm-smi/nvidia-smi)"
 
     return {
         "system": {
