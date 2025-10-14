@@ -1371,9 +1371,11 @@ if uploaded_files:
                 st.session_state["results"].append({
                     "name": file.name,
                     "text": extracted_text,
+                    "original_text": extracted_text, # <-- DODAJ TĘ LINIĘ
                     "meta": meta,
                     "pages": pages
                 })
+               
 
                 # Tekst łączny
                 all_texts.append(f"\n{'='*80}\n")
@@ -1391,38 +1393,77 @@ if uploaded_files:
                 with st.expander(f"Preview: {file.name}"):
                     st.text(extracted_text[:2000] + ("..." if len(extracted_text) > 2000 else ""))
 
-                # === SEKCJA PRZYPISYWANIA IMION MÓWCÓW ===
+                # === SEKCJA PRZYPISYWANIA IMION MÓWCÓW (zapisująca stan w sesji) ===
                 if isinstance(meta, dict) and meta.get("has_speakers"):
                     st.markdown("##### 🎤 Przypisz imiona mówcom")
                     
-                    # Znajdź unikalne etykiety SPEAKER_XX z tekstu
-                    unique_speakers = sorted(list(set(re.findall(r'SPEAKER_\d+', extracted_text))))
+                    # Unikalny klucz dla mapy mówców w sesji, oparty na nazwie pliku
+                    session_key_map = f"speaker_map_{safe_filename(file.name)}"
+                
+                    # Inicjalizuj mapę w sesji, jeśli jeszcze nie istnieje
+                    if session_key_map not in st.session_state:
+                        st.session_state[session_key_map] = {}
+                
+                    # Znajdź unikalne etykiety SPEAKER_XX z oryginalnego tekstu
+                    # (zawsze bazujemy na oryginalnym tekście, aby uniknąć problemów po re-mapowaniu)
+                    original_text = next((r["original_text"] for r in st.session_state["results"] if r["name"] == file.name), extracted_text)
+                    unique_speakers = sorted(list(set(re.findall(r'SPEAKER_\d+', original_text))))
                     
                     if unique_speakers:
-                        speaker_map = {}
+                        # Aktualizuj mapę w sesji o nowo znalezionych mówców
+                        for speaker_id in unique_speakers:
+                            if speaker_id not in st.session_state[session_key_map]:
+                                st.session_state[session_key_map][speaker_id] = speaker_id
+                
+                        # Wyświetl pola tekstowe
                         cols = st.columns(len(unique_speakers))
                         for i, speaker_id in enumerate(unique_speakers):
                             with cols[i]:
-                                # Użyj unikalnego klucza dla każdego pola, łącząc nazwę pliku i ID mówcy
-                                input_key = f"speaker_name_{safe_filename(file.name)}_{speaker_id}"
-                                speaker_map[speaker_id] = st.text_input(
+                                # Klucz dla pola tekstowego jest unikalny
+                                input_key = f"speaker_name_input_{safe_filename(file.name)}_{speaker_id}"
+                                
+                                # Użyj funkcji zwrotnej `on_change`, aby aktualizować sesję natychmiast po zmianie
+                                def update_speaker_name(sid, key):
+                                    st.session_state[session_key_map][sid] = st.session_state[key]
+                
+                                st.text_input(
                                     f"Imię dla {speaker_id}",
-                                    value=speaker_id, # Domyślnie zostawiamy oryginalną nazwę
-                                    key=input_key
+                                    value=st.session_state[session_key_map][speaker_id],
+                                    key=input_key,
+                                    on_change=update_speaker_name,
+                                    args=(speaker_id, input_key) # Przekaż argumenty do funkcji zwrotnej
                                 )
                         
                         # Przycisk do zastosowania zmian
                         remap_key = f"remap_button_{safe_filename(file.name)}"
-                        if st.button("Zastosuj imiona", key=remap_key):
-                            # Zaktualizuj tekst w `st.session_state`
-                            # Znajdź odpowiedni wynik w sesji
+                        if st.button("Zastosuj i zapisz imiona", key=remap_key):
+                            # Zastosuj mapowanie do tekstu w st.session_state
                             for result in st.session_state["results"]:
                                 if result["name"] == file.name:
-                                    # Zastosuj mapowanie i zaktualizuj tekst
-                                    result["text"] = remap_speakers(result["text"], speaker_map)
+                                    # Użyj oryginalnego tekstu jako bazy, aby uniknąć wielokrotnego mapowania
+                                    result["text"] = remap_speakers(
+                                        result.get("original_text", extracted_text), 
+                                        st.session_state[session_key_map]
+                                    )
                                     st.success(f"Zaktualizowano imiona dla pliku: {file.name}")
-                                    # Wymuś odświeżenie interfejsu, aby pokazać zmiany
-                                    st.rerun()
+                                    # Nie potrzebujemy st.rerun(), bo przycisk i tak go powoduje
+                            
+                            # Odśwież widok, aby pokazać zmiany
+                            st.rerun()
+                
+                # --- Ważna zmiana: Przechowaj oryginalny tekst ---
+                # W głównej pętli, tam gdzie dodajesz wyniki do st.session_state, dodaj pole "original_text"
+                # To jest kluczowe, aby wielokrotne mapowanie nie zepsuło etykiet.
+                # Zmień ten fragment:
+                # st.session_state["results"].append({ ... })
+                # na:
+                # st.session_state["results"].append({
+                #     "name": file.name,
+                #     "text": extracted_text,
+                #     "original_text": extracted_text, # <-- DODAJ TĘ LINIĘ
+                #     "meta": meta,
+                #     "pages": pages
+                # })
 
                 # Audio → do podsumowań
                 if isinstance(meta, dict) and meta.get("type") == "audio":
