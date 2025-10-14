@@ -413,6 +413,111 @@ def canonicalize_name(name: str) -> str:
             out.append(t)
     return ' '.join(out).strip()
 
+def safe_json_loads(data_bytes_or_str):
+    try:
+        if isinstance(data_bytes_or_str, (bytes, bytearray)):
+            s = data_bytes_or_str.decode("utf-8", errors="ignore")
+        else:
+            s = str(data_bytes_or_str)
+        s = s.strip()
+        if s.startswith("```json"):
+            s = s[7:]
+        if s.startswith("```"):
+            s = s[3:]
+        if s.endswith("```"):
+            s = s[:-3]
+        return json.loads(s)
+    except Exception:
+        return {}
+
+def parse_components_from_docconv_json(obj: dict) -> list:
+    """
+    Wyciąga listę komponentów z JSON (z doc-convertera lub innych źródeł).
+    Akceptuje różne schematy:
+    - {"components":[{"name","hours_3d_layout","hours_3d_detail","hours_2d"} ...]}
+    - {"components":[{"name","layout_h","detail_h","doc_h"} ...]}
+    - {"components":[{"name","hours"} ...]}  -> rozkłada na 30/50/20
+    """
+    if not isinstance(obj, dict):
+        return []
+    comps = obj.get("components") or []
+    out = []
+    for c in comps:
+        if not isinstance(c, dict):
+            continue
+        name = c.get("name") or c.get("title") or c.get("component") or ""
+        if not name:
+            continue
+        # Wersje pól
+        l = c.get("hours_3d_layout", c.get("layout_h", 0.0)) or 0.0
+        d = c.get("hours_3d_detail", c.get("detail_h", 0.0)) or 0.0
+        doc = c.get("hours_2d", c.get("doc_h", 0.0)) or 0.0
+        if (l + d + doc) == 0 and c.get("hours"):
+            tot = float(c.get("hours") or 0.0)
+            # domyślne proporcje
+            l, d, doc = tot * 0.3, tot * 0.5, tot * 0.2
+        item = {
+            "name": name,
+            "hours_3d_layout": float(l),
+            "hours_3d_detail": float(d),
+            "hours_2d": float(doc),
+            "hours": float(l) + float(d) + float(doc),
+            "is_summary": False,
+            "comment": c.get("comment", "")
+        }
+        out.append(item)
+    return out
+
+def merge_components(base: list, extra: list) -> list:
+    """
+    Scala dwie listy komponentów, deduplikuje po canonicalize_name i sumuje godziny.
+    """
+    idx = {}
+    out = []
+    def key_of(c): return canonicalize_name(c.get("name",""))
+    for c in base or []:
+        k = key_of(c)
+        if not k:
+            out.append(c)
+            continue
+        idx[k] = dict(c)
+    for c in extra or []:
+        k = key_of(c)
+        if not k:
+            out.append(c)
+            continue
+        if k in idx:
+            a = idx[k]
+            a["hours_3d_layout"] = a.get("hours_3d_layout",0)+c.get("hours_3d_layout",0)
+            a["hours_3d_detail"] = a.get("hours_3d_detail",0)+c.get("hours_3d_detail",0)
+            a["hours_2d"] = a.get("hours_2d",0)+c.get("hours_2d",0)
+            a["hours"] = a["hours_3d_layout"]+a["hours_3d_detail"]+a["hours_2d"]
+        else:
+            idx[k] = dict(c)
+    # sklej
+    names_seen = set()
+    for c in (base or []):
+        k = key_of(c)
+        if k and k in idx and k not in names_seen:
+            out.append(idx[k]); names_seen.add(k)
+        elif not k:
+            out.append(c)
+    for k, c in idx.items():
+        if k not in names_seen:
+            out.append(c)
+    return out
+
+def detect_embed_dim(model: str = EMBED_MODEL) -> int:
+    """
+    Zwraca długość wektora z modelu EMBED_MODEL.
+    """
+    try:
+        v = get_embedding_ollama("embed-dim-probe", model=model)
+        return len(v) if isinstance(v, list) else 0
+    except Exception:
+        return 0
+
+
 # === PARSERY ===
 def parse_subcomponents_from_comment(comment):
     """
@@ -858,8 +963,25 @@ def show_project_timeline(components):
     st.plotly_chart(fig, use_container_width=True)
 
 def export_quotation_to_excel(project_data):
+    """
+    Eksport bez twardej zależności:
+    - preferuj xlsxwriter (jeśli zainstalowany),
+    - fallback na openpyxl,
+    - jeśli brak obu — podnieś wyjątek z czytelnym komunikatem.
+    """
     output = BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+    engine = None
+    try:
+        import xlsxwriter  # noqa
+        engine = "xlsxwriter"
+    except Exception:
+        try:
+            import openpyxl  # noqa
+            engine = "openpyxl"
+        except Exception:
+            raise RuntimeError("Brak silnika do zapisu XLSX. Zainstaluj: xlsxwriter lub openpyxl.")
+
+    with pd.ExcelWriter(output, engine=engine) as writer:
         components = [c for c in project_data.get('components', []) if not c.get('is_summary', False)]
         df_components = pd.DataFrame(components)
         if not df_components.empty:
@@ -1678,10 +1800,13 @@ def render_new_project_page(selected_model):
         st.text_input("Nazwa projektu*", key="project_name")
         st.text_input("Klient", key="client")
         st.text_area("Opis", height=200, key="description")
+   
     with col2:
         excel_file = st.file_uploader("Excel", type=['xlsx', 'xls'])
         image_files = st.file_uploader("Zdjęcia/Rysunki", type=['jpg', 'png'], accept_multiple_files=True)
         pdf_files = st.file_uploader("PDF", type=['pdf'], accept_multiple_files=True)
+        json_files = st.file_uploader("JSON (doc-converter/AI)", type=['json'], accept_multiple_files=True)
+    pasted_text = st.text_area("Dodatkowy tekst/specyfikacja (wklej – opcjonalnie)", height=120, key="pasted_text")
 
     # 🔹 AI Brief: opis zadania i checklista
     st.subheader("📝 AI: Opis zadania i checklista")
@@ -1700,12 +1825,32 @@ def render_new_project_page(selected_model):
             if pdf_files:
                 pdf_text_for_brief = "\n".join([extract_text_from_pdf(pf) for pf in pdf_files])
 
+            components_from_json_for_brief = []
+            if json_files:
+                for jf in json_files:
+                    try:
+                        data = safe_json_loads(jf.getvalue())
+                        components_from_json_for_brief += parse_components_from_docconv_json(data)
+                    except Exception:
+                        pass
+            
+            pdf_text_for_brief_extra = (st.session_state.get("pasted_text") or "")
+            if pdf_text_for_brief_extra:
+                pdf_text_for_brief = (pdf_text_for_brief + "\n\n" + pdf_text_for_brief_extra).strip()
+
             prompt_brief = build_brief_prompt(
                 st.session_state.get("description", ""),
                 components_for_brief,
                 pdf_text_for_brief,
                 department
             )
+            prompt_brief = build_brief_prompt(
+                st.session_state.get("description",""),
+                components_for_brief + components_from_json_for_brief,
+                pdf_text_for_brief,
+                department
+            )
+            
 
             ai_model_brief = selected_model or "llama3:latest"
             resp = query_ollama(prompt_brief, model=ai_model_brief, format_json=True)
@@ -1789,6 +1934,16 @@ def render_new_project_page(selected_model):
                     progress_bar.progress(15, text="Wczytuję Excel...")
                     components_from_excel = process_excel(excel_file)
 
+                components_from_json = []
+                if json_files:
+                    progress_bar.progress(20, text="Czytam JSON...")
+                    for jf in json_files:
+                        try:
+                            obj = safe_json_loads(jf.getvalue())
+                            components_from_json += parse_components_from_docconv_json(obj)
+                        except Exception:
+                            pass
+
                 images_b64 = []
                 if image_files:
                     progress_bar.progress(25, text="Analizuję obrazy...")
@@ -1799,6 +1954,12 @@ def render_new_project_page(selected_model):
                 if pdf_files:
                     progress_bar.progress(30, text="PDF...")
                     pdf_text = "\n".join([extract_text_from_pdf(pf) for pf in pdf_files])
+
+                # + wklejany tekst
+                if st.session_state.get("pasted_text"):
+                    pdf_text = (pdf_text + "\n\n" + st.session_state.get("pasted_text")).strip()
+                
+                # wzorce z DB (bez zmian)
 
                 # Wzorce
                 with get_db_connection() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -1813,11 +1974,28 @@ def render_new_project_page(selected_model):
                     learned_patterns = cur.fetchall()
 
                 st.write(f"🧠 {len(learned_patterns)} wzorców z działu {department}")
+                
+                # Zbuduj prompt – przekaż komponenty z excela + JSON (przykłady)
+                components_for_prompt = (components_from_excel or []) + components_from_json
+                prompt = build_analysis_prompt(
+                    st.session_state.get("description", ""),
+                    components_for_prompt,
+                    learned_patterns,
+                    pdf_text,
+                    department
+                )
 
                 prompt = build_analysis_prompt(st.session_state.get("description", ""), components_from_excel, learned_patterns, pdf_text, department)
 
-                if images_b64 and model_available("llava"):
-                    ai_model = "llava:13b" if model_available("llava:13b") else "llava:latest"
+            
+
+                if images_b64:
+                    if model_available("llava"):
+                        ai_model = "llava:13b" if model_available("llava:13b") else "llava:latest"
+                    elif model_available("qwen2-vl"):
+                        ai_model = "qwen2-vl:7b" if model_available("qwen2-vl:7b") else "qwen2-vl:latest"
+                    else:
+                        ai_model = selected_model or "llama3:latest"
                 else:
                     ai_model = selected_model or "llama3:latest"
 
@@ -1826,6 +2004,13 @@ def render_new_project_page(selected_model):
 
                 progress_bar.progress(80, text="Parsuję...")
                 parsed = parse_ai_response(ai_text, components_from_excel=components_from_excel)
+                # Dołącz komponenty z JSON (deduplikacja po canonicalize_name)
+                if components_from_json:
+                    parsed['components'] = merge_components(parsed.get('components', []), components_from_json)
+                    # uaktualnij sumy po merge
+                    parsed['total_layout'] = sum(c.get('hours_3d_layout',0) for c in parsed['components'])
+                    parsed['total_detail'] = sum(c.get('hours_3d_detail',0) for c in parsed['components'])
+                    parsed['total_2d'] = sum(c.get('hours_2d',0) for c in parsed['components'])
 
                 # Kategoryzacja
                 if parsed.get('components'):
@@ -2416,6 +2601,23 @@ def main():
             st.write("\n".join(f"- `{m}`" for m in models))
         else:
             st.write("Brak modeli")
+
+    st.sidebar.markdown("---")
+    if st.sidebar.button("🔄 Odśwież listę modeli"):
+        try:
+            list_local_models.cache_clear()
+        except Exception:
+            pass
+        st.rerun()
+    
+    st.sidebar.subheader("Embedding (diagnostyka)")
+    detected_dim = detect_embed_dim(EMBED_MODEL)
+    if detected_dim and detected_dim != EMBED_DIM:
+        st.sidebar.error(f"EMBED_DIM={EMBED_DIM} vs model '{EMBED_MODEL}' zwraca {detected_dim}. Zmień EMBED_DIM lub model.")
+    elif detected_dim:
+        st.sidebar.success(f"Model '{EMBED_MODEL}' OK (dim={detected_dim}).")
+    else:
+        st.sidebar.info("Nie udało się pobrać embeddingu (sprawdź OLLAMA_URL / model).")
 
     # DEMO / PRÓBNE DANE
     with st.sidebar.expander("🧪 Demo / Próbne dane", expanded=False):
