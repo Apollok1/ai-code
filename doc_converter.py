@@ -90,36 +90,8 @@ IMAGE_MODE_MAP = {
     "Vision: opisz obraz": "vision_describe",
     "OCR + Vision opis": "ocr_plus_vision_desc",
 }
-import subprocess
-import tempfile
 
-def prepare_audio_for_pyannote(audio_path):
-    """Konwertuje audio do formatu kompatybilnego z pyannote."""
-    
-    # Jeśli już WAV - zwróć bez zmian
-    if audio_path.lower().endswith('.wav'):
-        return audio_path
-    
-    # Konwertuj do WAV (mono, 16kHz)
-    with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
-        output_path = tmp.name
-    
-    subprocess.run([
-        'ffmpeg', '-i', audio_path,
-        '-ar', '16000',  # 16kHz
-        '-ac', '1',       # mono
-        '-y',             # overwrite
-        output_path
-    ], check=True, capture_output=True)
-    
-    return output_path
 
-# Użycie:
-audio_for_pyannote = prepare_audio_for_pyannote(uploaded_file.name)
-response = requests.post(
-    f"{PYANNOTE_URL}/diarize",
-    files={"file": open(audio_for_pyannote, "rb")}
-)
 # === OFFLINE GUARD ===
 def is_private_host(host: str) -> bool:
     try:
@@ -556,23 +528,76 @@ def pick_speaker_for_interval(diar_segments: list, start: float, end: float) -> 
             best_spk = s["speaker"]
     return best_spk
 
-def diarize_audio(file) -> dict:
-    """Pyannote speaker diarization."""
-    pyannote_url = PYANNOTE_URL.rstrip("/")
-    try:
-        size_bytes = get_file_size(file)
-        timeout_read = calculate_timeout(size_bytes, base=300, per_mb=30)
+def diarize_audio(file):
+    """
+    Wysyła plik audio do serwera pyannote, konwertując go w locie do WAV 16kHz mono.
+    """
+    pyannote_url = os.getenv("PYANNOTE_URL", PYANNOTE_URL).rstrip("/")
+    
+    # Zapisz oryginalny plik tymczasowo na dysku, aby ffmpeg mógł go odczytać
+    with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.name)[1]) as tmp_in:
         file.seek(0)
-        files = {'file': (file.name, file.read(), getattr(file, "type", None) or "application/octet-stream")}
-        r = http_post(f"{pyannote_url}/diarize", files=files, timeout=(30, timeout_read))
-        r.raise_for_status()
-        return r.json()
+        tmp_in.write(file.read())
+        original_audio_path = tmp_in.name
+
+    converted_audio_path = None
+    try:
+        # --- POCZĄTEK TWOJEGO KODU (zintegrowany) ---
+        
+        # Jeśli już jest WAV, możemy pominąć konwersję (choć resamplowanie może być nadal potrzebne)
+        # Dla pewności, zawsze konwertujemy do 16kHz mono
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_out:
+            converted_audio_path = tmp_out.name
+        
+        logger.info(f"Konwertowanie pliku audio do WAV 16kHz mono dla pyannote...")
+        command = [
+            'ffmpeg', '-i', original_audio_path,
+            '-ar', '16000',  # 16kHz sample rate
+            '-ac', '1',       # mono channel
+            '-y',             # overwrite output file if it exists
+            converted_audio_path
+        ]
+        
+        subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True
+        )
+        logger.info(f"Konwersja zakończona. Plik tymczasowy: {converted_audio_path}")
+        
+        # --- KONIEC TWOJEGO KODU ---
+
+        # Wyślij skonwertowany plik do serwera pyannote
+        with open(converted_audio_path, "rb") as converted_file:
+            size_bytes = os.path.getsize(converted_audio_path)
+            timeout_read = calculate_timeout(size_bytes, base=300, per_mb=30)
+            
+            files = {'file': (os.path.basename(converted_audio_path), converted_file, 'audio/wav')}
+            
+            r = http_post(
+                f"{pyannote_url}/diarize",
+                files=files,
+                timeout=(30, timeout_read)
+            )
+            r.raise_for_status()
+            return r.json()
+
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Błąd ffmpeg podczas konwersji audio: {e.stderr}")
+        return {"error": f"Błąd ffmpeg: {e.stderr}"}
     except requests.exceptions.ReadTimeout:
-        logger.error("Pyannote read timeout")
+        logger.error("Timeout serwera pyannote.")
         return {"error": "timeout"}
     except Exception as e:
-        logger.error(f"Pyannote error: {e}")
+        logger.error(f"Błąd podczas diaryzacji: {e}")
         return {"error": str(e)}
+    finally:
+        # Posprzątaj pliki tymczasowe
+        if os.path.exists(original_audio_path):
+            os.remove(original_audio_path)
+        if converted_audio_path and os.path.exists(converted_audio_path):
+            os.remove(converted_audio_path)
 
 def extract_audio_with_speakers(file):
     """Whisper + Pyannote = transkrypcja z identyfikacją głosów."""
