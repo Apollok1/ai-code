@@ -20,6 +20,8 @@ from urllib.parse import urlparse
 from datetime import datetime
 from PIL import Image
 import numpy as np
+import subprocess
+import tempfile
 
 # Parsery/formaty
 import pdfplumber
@@ -52,17 +54,11 @@ try:
     import pandas as pd
 except Exception:
     pd = None
-import subprocess
-import tempfile
 
 
 
-# Użycie:
-audio_for_pyannote = prepare_audio_for_pyannote(uploaded_file.name)
-response = requests.post(
-    f"{PYANNOTE_URL}/diarize",
-    files={"file": open(audio_for_pyannote, "rb")}
-)
+
+
 # Logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("doc-converter")
@@ -94,6 +90,9 @@ IMAGE_MODE_MAP = {
     "Vision: opisz obraz": "vision_describe",
     "OCR + Vision opis": "ocr_plus_vision_desc",
 }
+import subprocess
+import tempfile
+
 def prepare_audio_for_pyannote(audio_path):
     """Konwertuje audio do formatu kompatybilnego z pyannote."""
     
@@ -114,6 +113,13 @@ def prepare_audio_for_pyannote(audio_path):
     ], check=True, capture_output=True)
     
     return output_path
+
+# Użycie:
+audio_for_pyannote = prepare_audio_for_pyannote(uploaded_file.name)
+response = requests.post(
+    f"{PYANNOTE_URL}/diarize",
+    files={"file": open(audio_for_pyannote, "rb")}
+)
 # === OFFLINE GUARD ===
 def is_private_host(host: str) -> bool:
     try:
