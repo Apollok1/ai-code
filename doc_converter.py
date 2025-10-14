@@ -1,6 +1,6 @@
 # app.py — Document Converter Pro (Part 1/3)
 # Część 1/3: Importy, konfiguracja, offline guard, diagnostyka, helpery, OCR, Ollama utils, session_state
-
+#cos nowego
 import streamlit as st
 import io
 import base64
