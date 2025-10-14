@@ -1,4 +1,7 @@
-# main.py
+# === CAD Estimator Pro — main.py (Part 1/4) ==================================
+# Importy, konfiguracja, stałe, helpery HTTP/AI i nowe funkcje integracyjne
+# ============================================================================
+
 import streamlit as st
 import pandas as pd
 import psycopg2
@@ -23,10 +26,11 @@ from PyPDF2 import PdfReader
 from rapidfuzz import fuzz, process
 from openpyxl import load_workbook
 
-# === KONFIGURACJA i LOGGING ===
+# === LOGGING ===
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("cad-estimator")
 
+# === UI CONFIG ===
 st.set_page_config(page_title="CAD Estimator Pro", layout="wide", page_icon="🚀")
 
 # === ENV ===
@@ -138,153 +142,7 @@ WYMAGANY FORMAT ODPOWIEDZI - ZWRÓĆ TYLKO CZYSTY JSON:
 WAŻNE: Zwróć WYŁĄCZNIE JSON bez tekstu.
 """
 
-def build_brief_prompt(description, components_excel, pdf_text, department):
-    comps = components_excel or []
-    parts_only = [c for c in comps if not c.get('is_summary')]
-    total_layout = sum(c.get('hours_3d_layout', 0) for c in parts_only)
-    total_detail = sum(c.get('hours_3d_detail', 0) for c in parts_only)
-    total_2d = sum(c.get('hours_2d', 0) for c in parts_only)
-
-    lines = []
-    lines.append("Jesteś doświadczonym inżynierem/konstruktorem. Opracuj krótki opis zadania dla zespołu projektowego.")
-    lines.append("Odpowiadaj ZAWSZE po polsku. Zwróć WYŁĄCZNIE JSON.")
-    if department and department in DEPARTMENT_CONTEXT:
-        lines.append("\n[Kontext działu]\n" + DEPARTMENT_CONTEXT[department])
-
-    lines.append("\n[Opis użytkownika]\n" + (description or "(brak)"))
-
-    lines.append("\n[Podsumowanie z Excela]")
-    lines.append(f"- 3D Layout: {total_layout:.1f}h | 3D Detail: {total_detail:.1f}h | 2D: {total_2d:.1f}h | TOTAL: {total_layout+total_detail+total_2d:.1f}h")
-    if parts_only:
-        lines.append("\n[Komponenty (przykłady)]")
-        for c in parts_only[:15]:
-            row = f"- {c.get('name','?')}: L {c.get('hours_3d_layout',0):.1f}h, D {c.get('hours_3d_detail',0):.1f}h, 2D {c.get('hours_2d',0):.1f}h"
-            if c.get('comment'):
-                row += f" | Komentarz: {c['comment'][:120]}"
-            subs = c.get('subcomponents') or []
-            if subs:
-                subs_str = ", ".join([f"{s.get('quantity',1)}x {s.get('name')}" for s in subs])[:180]
-                row += f" | Zawiera: {subs_str}"
-            lines.append(row)
-
-    if pdf_text:
-        lines.append("\n[Wyciąg z PDF (skrót)]")
-        lines.append(pdf_text[:3000])
-
-    lines.append("""
-[Twoje zadanie]
-Zbuduj brief zadania i checklistę:
-- brief_md: 5-10 zdań podsumowania (markdown), jasno co robimy i co jest out-of-scope,
-- scope: punktowo zakres (co robimy),
-- assumptions: kluczowe założenia,
-- missing_info: lista brakujących informacji/pytań do klienta (priorytetyzuj),
-- risks: ryzyka (obowiązkowo: risk, impact: niski/średni/wysoki, mitigation),
-- checklist: kontrolna lista do przejścia przed startem,
-- open_questions: pytania do klienta/PM.
-
-[Format JSON – zwróć tylko to]
-{
-  "brief_md": "markdown",
-  "scope": ["..."],
-  "assumptions": ["..."],
-  "missing_info": ["..."],
-  "risks": [{"risk":"...", "impact":"niski/średni/wysoki", "mitigation":"..."}],
-  "checklist": ["..."],
-  "open_questions": ["..."]
-}
-""")
-    return "\n".join(lines)
-
-def parse_brief_response(text: str) -> dict:
-    if not text:
-        return {"brief_md": "", "scope": [], "assumptions": [], "missing_info": [], "risks": [], "checklist": [], "open_questions": []}
-
-    clean = text.strip()
-    if clean.startswith("```json"):
-        clean = clean[7:]
-    if clean.startswith("```"):
-        clean = clean[3:]
-    if clean.endswith("```"):
-        clean = clean[:-3]
-
-    try:
-        data = json.loads(clean)
-        # Normalizacja pól
-        data.setdefault("brief_md", "")
-        data.setdefault("scope", [])
-        data.setdefault("assumptions", [])
-        data.setdefault("missing_info", [])
-        risks = []
-        for r in data.get("risks", []):
-            if isinstance(r, dict):
-                risks.append({
-                    "risk": r.get("risk",""),
-                    "impact": r.get("impact","nieznany"),
-                    "mitigation": r.get("mitigation","")
-                })
-            elif isinstance(r, str):
-                risks.append({"risk": r, "impact":"nieznany", "mitigation":""})
-        data["risks"] = risks
-        data.setdefault("checklist", [])
-        data.setdefault("open_questions", [])
-        return data
-    except Exception:
-        # fallback – potraktuj całość jako markdown brief
-        return {
-            "brief_md": text,
-            "scope": [], "assumptions": [], "missing_info": [], "risks": [], "checklist": [], "open_questions": []
-        }
-
-def build_analysis_prompt(description, components_excel, learned_patterns, pdf_text, department):
-    sections = []
-    sections.append(MASTER_PROMPT)
-    if department and department in DEPARTMENT_CONTEXT:
-        sections.append(f"\n{DEPARTMENT_CONTEXT[department]}\n")
-    sections.append(f"\nOPIS KLIENTA:\n{description or '(brak)'}\n")
-
-    if components_excel:
-        limited = components_excel[:30]
-        total_layout = sum(c.get('hours_3d_layout', 0) for c in components_excel if not c.get('is_summary'))
-        total_detail = sum(c.get('hours_3d_detail', 0) for c in components_excel if not c.get('is_summary'))
-        total_2d = sum(c.get('hours_2d', 0) for c in components_excel if not c.get('is_summary'))
-
-        sections.append(f"\nKOMPONENTY Z EXCEL ({len(limited)} z {len(components_excel)} pozycji):")
-        sections.append(f"- 3D Layout: {total_layout:.1f}h")
-        sections.append(f"- 3D Detail: {total_detail:.1f}h")
-        sections.append(f"- 2D Documentation: {total_2d:.1f}h")
-        sections.append("\nPrzykładowe komponenty:")
-        for comp in limited[:15]:
-            if not comp.get('is_summary'):
-                sections.append(f"- {comp['name']}: Layout {comp.get('hours_3d_layout',0):.1f}h + Detail {comp.get('hours_3d_detail',0):.1f}h + 2D {comp.get('hours_2d',0):.1f}h")
-                if comp.get('comment'):
-                    sections.append(f"  Uwagi: {comp['comment'][:100]}")
-
-        # SUBKOMPONENTY Z KOMENTARZY
-        sections.append("\nSUBKOMPONENTY Z KOMENTARZY (nazwa + ilość):")
-        for comp in limited[:15]:
-            subs = comp.get('subcomponents', [])
-            if subs:
-                subs_txt = ", ".join([f"{s.get('quantity',1)}x {s.get('name')}" for s in subs])
-                sections.append(f"- {comp['name']}: {subs_txt}")
-
-    if pdf_text:
-        sections.append("\nTREŚĆ Z DOKUMENTÓW PDF (skrót):\n")
-        sections.append(pdf_text[:5000])
-
-    if learned_patterns:
-        sections.append(f"\n🧠 TWOJE DOŚWIADCZENIE W DZIALE {department}:")
-        for p in learned_patterns[:10]:
-            mark = "✅" if p['occurrences'] > 5 else "⚠️"
-            layout_h = p.get('avg_hours_3d_layout', 0)
-            detail_h = p.get('avg_hours_3d_detail', 0)
-            doc_h = p.get('avg_hours_2d', 0)
-            total_h = p.get('avg_hours_total', layout_h + detail_h + doc_h)
-            sections.append(f"{mark} '{p['name']}': Total {total_h:.1f}h (Layout {layout_h:.1f}h, Detail {detail_h:.1f}h, 2D {doc_h:.1f}h) - {p['occurrences']}x")
-
-    sections.append("\nWAŻNE: Zwróć WYŁĄCZNIE JSON bez tekstu.")
-    return "\n".join(sections)
-
-# === REQUESTS z retry ===
+# === HTTP Session z retry (stabilniejsze zapytania) ===
 _session = None
 def get_session():
     global _session
@@ -296,7 +154,136 @@ def get_session():
         _session = s
     return _session
 
-# === WEKTORY ===
+# === NORMALIZACJA NAZW (canonical key) ===
+def canonicalize_name(name: str) -> str:
+    """Normalizuje nazwę komponentu do porównań i uczenia (z aliasami PL/DE/EN)."""
+    if not name:
+        return ""
+    n = name.lower()
+    # Usuń wymiary i liczby
+    n = re.sub(r'\b\d+[.,]?\d*\s*(mm|cm|m|kg|t|ton|szt|pcs|inch|")\b', ' ', n)
+    n = re.sub(r'\b\d+[.,]?\d*\b', ' ', n)
+    # Tokenizacja i mapowanie aliasów
+    tokens = re.split(r'[\s-_.,;/]+', n)
+    norm_tokens = []
+    stoplist = {'i', 'a', 'the', 'and', 'or', 'der', 'die', 'das', 'und', 'ein', 'eine', 'of', 'for'}
+    for tok in tokens:
+        if not tok or tok in stoplist:
+            continue
+        mapped = COMPONENT_ALIASES.get(tok)
+        if not mapped:
+            for alias, canonical in COMPONENT_ALIASES.items():
+                if alias in tok:
+                    mapped = canonical
+                    break
+        norm_tokens.append(mapped or tok)
+    seen, out = set(), []
+    for t in norm_tokens:
+        if t not in seen:
+            seen.add(t)
+            out.append(t)
+    return ' '.join(out).strip()
+
+# === Helpery integracji z doc-converterem i diagnostyki ===
+def safe_json_loads(data_bytes_or_str):
+    """Wczytuje JSON, toleruje code fences oraz bytes."""
+    try:
+        if isinstance(data_bytes_or_str, (bytes, bytearray)):
+            s = data_bytes_or_str.decode("utf-8", errors="ignore")
+        else:
+            s = str(data_bytes_or_str)
+        s = s.strip()
+        if s.startswith("```json"):
+            s = s[7:]
+        if s.startswith("```"):
+            s = s[3:]
+        if s.endswith("```"):
+            s = s[:-3]
+        return json.loads(s)
+    except Exception:
+        return {}
+
+def parse_components_from_docconv_json(obj: dict) -> list:
+    """
+    Wyciąga komponenty z JSON (różne schematy):
+    - {"components":[{"name","hours_3d_layout","hours_3d_detail","hours_2d"}]}
+    - {"components":[{"name","layout_h","detail_h","doc_h"}]}
+    - {"components":[{"name","hours"}]} -> rozkłada na 30/50/20
+    """
+    if not isinstance(obj, dict):
+        return []
+    comps = obj.get("components") or []
+    out = []
+    for c in comps:
+        if not isinstance(c, dict):
+            continue
+        name = c.get("name") or c.get("title") or c.get("component") or ""
+        if not name:
+            continue
+        l = c.get("hours_3d_layout", c.get("layout_h", 0.0)) or 0.0
+        d = c.get("hours_3d_detail", c.get("detail_h", 0.0)) or 0.0
+        doc = c.get("hours_2d", c.get("doc_h", 0.0)) or 0.0
+        if (l + d + doc) == 0 and c.get("hours"):
+            tot = float(c.get("hours") or 0.0)
+            l, d, doc = tot * 0.3, tot * 0.5, tot * 0.2
+        item = {
+            "name": name,
+            "hours_3d_layout": float(l),
+            "hours_3d_detail": float(d),
+            "hours_2d": float(doc),
+            "hours": float(l) + float(d) + float(doc),
+            "is_summary": False,
+            "comment": c.get("comment", "")
+        }
+        out.append(item)
+    return out
+
+def merge_components(base: list, extra: list) -> list:
+    """Scala dwie listy komponentów, deduplikuje po canonicalize_name i sumuje godziny."""
+    idx = {}
+    out = []
+    def key_of(c): return canonicalize_name(c.get("name",""))
+    for c in base or []:
+        k = key_of(c)
+        if not k:
+            out.append(c)
+            continue
+        idx[k] = dict(c)
+    for c in extra or []:
+        k = key_of(c)
+        if not k:
+            out.append(c)
+            continue
+        if k in idx:
+            a = idx[k]
+            a["hours_3d_layout"] = a.get("hours_3d_layout",0)+c.get("hours_3d_layout",0)
+            a["hours_3d_detail"] = a.get("hours_3d_detail",0)+c.get("hours_3d_detail",0)
+            a["hours_2d"] = a.get("hours_2d",0)+c.get("hours_2d",0)
+            a["hours"] = a["hours_3d_layout"]+a["hours_3d_detail"]+a["hours_2d"]
+        else:
+            idx[k] = dict(c)
+    # kolejnosc bazowych + nowe
+    names_seen = set()
+    for c in (base or []):
+        k = key_of(c)
+        if k and k in idx and k not in names_seen:
+            out.append(idx[k]); names_seen.add(k)
+        elif not k:
+            out.append(c)
+    for k, c in idx.items():
+        if k not in names_seen:
+            out.append(c)
+    return out
+
+def detect_embed_dim(model: str = EMBED_MODEL) -> int:
+    """Zwraca długość wektora dla modelu embeddingowego (diagnostyka)."""
+    try:
+        v = get_embedding_ollama("embed-dim-probe", model=model)
+        return len(v) if isinstance(v, list) else 0
+    except Exception:
+        return 0
+
+# === WEKTORY / EMBEDDINGS ===
 def to_pgvector(vec):
     if not vec:
         return None
@@ -338,20 +325,21 @@ def ensure_pattern_embedding(cur, pattern_key: str, dept: str, text_for_embed: s
         except Exception as e:
             logger.warning(f"Embedding failed for pattern {pattern_key}: {e}")
 
-# === AI API ===
+# === MODELE OLLAMA ===
 @lru_cache(maxsize=1)
 def list_local_models():
     try:
         r = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5)
         if r.ok:
             return [m.get("name", "") for m in r.json().get("models", [])]
-    except:
+    except Exception:
         pass
     return []
 
 def model_available(prefix: str) -> bool:
     return any(m.startswith(prefix) for m in list_local_models())
 
+# === ZAPYTANIA DO OLLAMA (tekst + vision) ===
 @st.cache_data(ttl=3600, show_spinner=False)
 def query_ollama_cached(_payload_str: str) -> str:
     payload = json.loads(_payload_str)
@@ -373,6 +361,7 @@ def query_ollama(prompt: str, model: str = "llama3:latest", images_b64=None, for
     return query_ollama_cached(json.dumps(payload))
 
 def encode_image_b64(file, max_px=1280, quality=85):
+    """Kompresja obrazu do JPEG i zwrot Base64 (dla modeli Vision w Ollama)."""
     try:
         im = Image.open(file).convert("RGB")
         im.thumbnail((max_px, max_px))
@@ -382,146 +371,18 @@ def encode_image_b64(file, max_px=1280, quality=85):
     except Exception as e:
         logger.warning(f"Błąd kompresji: {e}")
         return base64.b64encode(file.getvalue()).decode("utf-8")
+# === CAD Estimator Pro — main.py (Part 2/4) ==================================
+# Parsers (Excel/PDF), AI parsing, kategoryzacja, timeline, eksport XLSX,
+# DB połączenia i podstawowe zapytania
+# ============================================================================
 
-# === NORMALIZACJA NAZW ===
-def canonicalize_name(name: str) -> str:
-    """Normalizuje nazwę komponentu do porównań i uczenia (z aliasami PL/DE/EN)."""
-    if not name:
-        return ""
-    n = name.lower()
-    # Usuń wymiary i liczby
-    n = re.sub(r'\b\d+[.,]?\d*\s*(mm|cm|m|kg|t|ton|szt|pcs|inch|")\b', ' ', n)
-    n = re.sub(r'\b\d+[.,]?\d*\b', ' ', n)
-    # Tokenizacja i mapowanie aliasów
-    tokens = re.split(r'[\s-_.,;/]+', n)
-    norm_tokens = []
-    stoplist = {'i', 'a', 'the', 'and', 'or', 'der', 'die', 'das', 'und', 'ein', 'eine', 'of', 'for'}
-    for tok in tokens:
-        if not tok or tok in stoplist:
-            continue
-        mapped = COMPONENT_ALIASES.get(tok)
-        if not mapped:
-            for alias, canonical in COMPONENT_ALIASES.items():
-                if alias in tok:
-                    mapped = canonical
-                    break
-        norm_tokens.append(mapped or tok)
-    seen, out = set(), []
-    for t in norm_tokens:
-        if t not in seen:
-            seen.add(t)
-            out.append(t)
-    return ' '.join(out).strip()
-
-def safe_json_loads(data_bytes_or_str):
-    try:
-        if isinstance(data_bytes_or_str, (bytes, bytearray)):
-            s = data_bytes_or_str.decode("utf-8", errors="ignore")
-        else:
-            s = str(data_bytes_or_str)
-        s = s.strip()
-        if s.startswith("```json"):
-            s = s[7:]
-        if s.startswith("```"):
-            s = s[3:]
-        if s.endswith("```"):
-            s = s[:-3]
-        return json.loads(s)
-    except Exception:
-        return {}
-
-def parse_components_from_docconv_json(obj: dict) -> list:
-    """
-    Wyciąga listę komponentów z JSON (z doc-convertera lub innych źródeł).
-    Akceptuje różne schematy:
-    - {"components":[{"name","hours_3d_layout","hours_3d_detail","hours_2d"} ...]}
-    - {"components":[{"name","layout_h","detail_h","doc_h"} ...]}
-    - {"components":[{"name","hours"} ...]}  -> rozkłada na 30/50/20
-    """
-    if not isinstance(obj, dict):
-        return []
-    comps = obj.get("components") or []
-    out = []
-    for c in comps:
-        if not isinstance(c, dict):
-            continue
-        name = c.get("name") or c.get("title") or c.get("component") or ""
-        if not name:
-            continue
-        # Wersje pól
-        l = c.get("hours_3d_layout", c.get("layout_h", 0.0)) or 0.0
-        d = c.get("hours_3d_detail", c.get("detail_h", 0.0)) or 0.0
-        doc = c.get("hours_2d", c.get("doc_h", 0.0)) or 0.0
-        if (l + d + doc) == 0 and c.get("hours"):
-            tot = float(c.get("hours") or 0.0)
-            # domyślne proporcje
-            l, d, doc = tot * 0.3, tot * 0.5, tot * 0.2
-        item = {
-            "name": name,
-            "hours_3d_layout": float(l),
-            "hours_3d_detail": float(d),
-            "hours_2d": float(doc),
-            "hours": float(l) + float(d) + float(doc),
-            "is_summary": False,
-            "comment": c.get("comment", "")
-        }
-        out.append(item)
-    return out
-
-def merge_components(base: list, extra: list) -> list:
-    """
-    Scala dwie listy komponentów, deduplikuje po canonicalize_name i sumuje godziny.
-    """
-    idx = {}
-    out = []
-    def key_of(c): return canonicalize_name(c.get("name",""))
-    for c in base or []:
-        k = key_of(c)
-        if not k:
-            out.append(c)
-            continue
-        idx[k] = dict(c)
-    for c in extra or []:
-        k = key_of(c)
-        if not k:
-            out.append(c)
-            continue
-        if k in idx:
-            a = idx[k]
-            a["hours_3d_layout"] = a.get("hours_3d_layout",0)+c.get("hours_3d_layout",0)
-            a["hours_3d_detail"] = a.get("hours_3d_detail",0)+c.get("hours_3d_detail",0)
-            a["hours_2d"] = a.get("hours_2d",0)+c.get("hours_2d",0)
-            a["hours"] = a["hours_3d_layout"]+a["hours_3d_detail"]+a["hours_2d"]
-        else:
-            idx[k] = dict(c)
-    # sklej
-    names_seen = set()
-    for c in (base or []):
-        k = key_of(c)
-        if k and k in idx and k not in names_seen:
-            out.append(idx[k]); names_seen.add(k)
-        elif not k:
-            out.append(c)
-    for k, c in idx.items():
-        if k not in names_seen:
-            out.append(c)
-    return out
-
-def detect_embed_dim(model: str = EMBED_MODEL) -> int:
-    """
-    Zwraca długość wektora z modelu EMBED_MODEL.
-    """
-    try:
-        v = get_embedding_ollama("embed-dim-probe", model=model)
-        return len(v) if isinstance(v, list) else 0
-    except Exception:
-        return 0
-
-
-# === PARSERY ===
+# === PARSERY SUB-KOMPONENTÓW Z KOMENTARZY ===
 def parse_subcomponents_from_comment(comment):
     """
-    Ulepszony parser: obsługuje mieszane wpisy z i bez ilości oraz usuwa myślnik po liczbie (np. '2x - docisk').
+    Ulepszony parser komentarzy:
+    - obsługuje wpisy z i bez ilości,
+    - toleruje myślnik po liczbie (np. '2x - docisk'),
+    - odfiltrowuje ewidentne wymiary/jednostki.
     """
     if not comment or not isinstance(comment, str):
         return []
@@ -531,7 +392,10 @@ def parse_subcomponents_from_comment(comment):
         return s
 
     subcomponents = []
-    qty_re = re.compile(r'(\d+)\s*(?:x|szt\.?|sztuk|pcs)?\s*[-–—]?\s*([^,;\n]+?)(?=[,;\n]|$)', re.IGNORECASE)
+    qty_re = re.compile(
+        r'(\d+)\s*(?:x|szt\.?|sztuk|pcs)?\s*[-–—]?\s*([^,;\n]+?)(?=[,;\n]|$)',
+        re.IGNORECASE
+    )
 
     consumed_spans = []
     for m in qty_re.finditer(comment):
@@ -568,8 +432,9 @@ def parse_subcomponents_from_comment(comment):
     logger.info(f"Parsed {len(subcomponents)} subcomponents from: {comment[:80]}...")
     return subcomponents
 
+# === PARSER ODPOWIEDZI AI (JSON → komponenty) ===
 def parse_ai_response(text: str, components_from_excel=None):
-    """Parsing z priorytetem JSON, fallback do regex i Excel. Wyciąga też 'adjustments'."""
+    """Priorytet JSON, fallback regex, domknięcia sum i normalizacja risks/adjustments."""
     warnings = []
     parsed_components = []
     total_layout = total_detail = total_2d = 0.0
@@ -595,7 +460,7 @@ def parse_ai_response(text: str, components_from_excel=None):
     try:
         data = json.loads(clean)
 
-        # Normalizacja risks
+        # Normalizacja ryzyk
         risks = []
         for r in data.get("risks", []):
             if isinstance(r, str):
@@ -608,7 +473,7 @@ def parse_ai_response(text: str, components_from_excel=None):
                 })
         data["risks"] = risks
 
-        # Components
+        # Komponenty
         for c in data.get("components", []):
             item = {
                 "name": c.get("name", "bez nazwy"),
@@ -617,6 +482,7 @@ def parse_ai_response(text: str, components_from_excel=None):
                 "hours_2d": float(c.get("doc_h", 0) or 0),
             }
             item["hours"] = item["hours_3d_layout"] + item["hours_3d_detail"] + item["hours_2d"]
+            item["is_summary"] = False
             parsed_components.append(item)
 
         sums = data.get("sums", {})
@@ -643,7 +509,7 @@ def parse_ai_response(text: str, components_from_excel=None):
         data["ai_adjustments"] = ai_adj
 
     except json.JSONDecodeError:
-        warnings.append("Fallback do regex")
+        warnings.append("Fallback do regex (AI nie zwrócił poprawnego JSON)")
         pattern = r"-\s*([^\n]+?)\s+Layout:\s*(\d+[.,]?\d*)\s*h?,?\s*Detail:\s*(\d+[.,]?\d*)\s*h?,?\s*2D:\s*(\d+[.,]?\d*)\s*h?"
         for m in re.finditer(pattern, text, re.IGNORECASE):
             try:
@@ -652,9 +518,10 @@ def parse_ai_response(text: str, components_from_excel=None):
                     "hours_3d_layout": float(m.group(2).replace(',', '.')),
                     "hours_3d_detail": float(m.group(3).replace(',', '.')),
                     "hours_2d": float(m.group(4).replace(',', '.')),
-                    "hours": sum(float(m.group(i).replace(',', '.')) for i in [2,3,4])
+                    "hours": sum(float(m.group(i).replace(',', '.')) for i in [2,3,4]),
+                    "is_summary": False
                 })
-            except:
+            except Exception:
                 pass
         data["ai_adjustments"] = []
 
@@ -690,8 +557,9 @@ def parse_ai_response(text: str, components_from_excel=None):
         "ai_adjustments": data.get("ai_adjustments", [])
     }
 
+# === PARSERY EXCEL (z/bez komentarzy) ===
 def parse_cad_project_structured(file_stream):
-    """Parser Excel z hierarchią, komentarzami i godzinami."""
+    """Parser Excel z hierarchią, komentarzami i godzinami (bez openpyxl-comments)."""
     result = {'components': [], 'multipliers': {}, 'totals': {}, 'statistics': {}}
     df = pd.read_excel(file_stream, header=None)
 
@@ -705,7 +573,7 @@ def parse_cad_project_structured(file_stream):
         result['multipliers']['layout'] = float(df.iloc[9, COL_HOURS_LAYOUT]) if pd.notna(df.iloc[9, COL_HOURS_LAYOUT]) else 1.0
         result['multipliers']['detail'] = float(df.iloc[9, COL_HOURS_DETAIL]) if pd.notna(df.iloc[9, COL_HOURS_DETAIL]) else 1.0
         result['multipliers']['documentation'] = float(df.iloc[9, COL_HOURS_DOC]) if pd.notna(df.iloc[9, COL_HOURS_DOC]) else 1.0
-    except:
+    except Exception:
         result['multipliers'] = {'layout': 1.0, 'detail': 1.0, 'documentation': 1.0}
 
     data_start_row = 11
@@ -713,8 +581,10 @@ def parse_cad_project_structured(file_stream):
         try:
             pos = str(df.iloc[row_idx, COL_POS]).strip() if pd.notna(df.iloc[row_idx, COL_POS]) else ""
             name = str(df.iloc[row_idx, COL_DESC]).strip() if pd.notna(df.iloc[row_idx, COL_DESC]) else ""
-            if not pos or pos in ['nan', 'None', '']: continue
-            if not name or name in ['nan', 'None']: name = f"[Pozycja {pos}]"
+            if not pos or pos in ['nan', 'None', '']: 
+                continue
+            if not name or name in ['nan', 'None']: 
+                name = f"[Pozycja {pos}]"
             comment = str(df.iloc[row_idx, COL_COMMENT]).strip() if pd.notna(df.iloc[row_idx, COL_COMMENT]) else ""
 
             hours_layout = float(df.iloc[row_idx, COL_HOURS_LAYOUT]) if pd.notna(df.iloc[row_idx, COL_HOURS_LAYOUT]) else 0.0
@@ -722,16 +592,19 @@ def parse_cad_project_structured(file_stream):
             hours_doc = float(df.iloc[row_idx, COL_HOURS_DOC]) if pd.notna(df.iloc[row_idx, COL_HOURS_DOC]) else 0.0
 
             is_summary = bool(re.match(r'^\d+,0$', pos) or pos.isdigit())
-
             subcomponents = parse_subcomponents_from_comment(comment)
 
             component = {
                 'id': pos, 'name': name, 'comment': comment,
                 'type': 'assembly' if is_summary else 'part',
                 'level': pos.count(','),
-                'parts': {'standard': int(float(df.iloc[row_idx, COL_STD_PARTS])) if pd.notna(df.iloc[row_idx, COL_STD_PARTS]) else 0,
-                          'special': int(float(df.iloc[row_idx, COL_SPEC_PARTS])) if pd.notna(df.iloc[row_idx, COL_SPEC_PARTS]) else 0},
-                'hours_3d_layout': hours_layout, 'hours_3d_detail': hours_detail, 'hours_2d': hours_doc,
+                'parts': {
+                    'standard': int(float(df.iloc[row_idx, COL_STD_PARTS])) if pd.notna(df.iloc[row_idx, COL_STD_PARTS]) else 0,
+                    'special': int(float(df.iloc[row_idx, COL_SPEC_PARTS])) if pd.notna(df.iloc[row_idx, COL_SPEC_PARTS]) else 0
+                },
+                'hours_3d_layout': hours_layout,
+                'hours_3d_detail': hours_detail,
+                'hours_2d': hours_doc,
                 'hours': hours_layout + hours_detail + hours_doc,
                 'is_summary': is_summary,
                 'subcomponents': subcomponents
@@ -761,13 +634,12 @@ def parse_cad_project_structured_with_xlsx_comments(file_like):
     - łączeniem komentarzy z całego wiersza.
     Zwraca strukturę identyczną jak parse_cad_project_structured.
     """
-    # Wczytaj bajty i utwórz dwa niezależne strumienie: dla pandas i openpyxl
+    # Wczytaj bytes i utwórz dwa niezależne strumienie
     if hasattr(file_like, "read"):
         content = file_like.read()
     elif isinstance(file_like, bytes):
         content = file_like
     else:
-        # zakładamy BytesIO
         file_like.seek(0)
         content = file_like.read()
 
@@ -777,7 +649,7 @@ def parse_cad_project_structured_with_xlsx_comments(file_like):
     # 1) Dane tabelaryczne
     df = pd.read_excel(bio_pd, header=None)
 
-    # 2) Komentarze komórek (openpyxl)
+    # 2) Komentarze komórek
     comments_map = {}
     try:
         wb = load_workbook(bio_xl, data_only=True)
@@ -787,11 +659,11 @@ def parse_cad_project_structured_with_xlsx_comments(file_like):
                 if cell.comment and cell.comment.text:
                     comments_map[(cell.row - 1, cell.column - 1)] = cell.comment.text.strip()
     except Exception as e:
-        logger.info(f"Brak lub nie udało się odczytać komentarzy z pliku xlsx: {e}")
+        logger.info(f"Brak/nie udało się odczytać komentarzy z xlsx: {e}")
 
     result = {'components': [], 'multipliers': {}, 'totals': {}, 'statistics': {}}
 
-    # Kolumny (spójne z istniejącym parserem)
+    # Kolumny zgodne z parserem podstawowym
     COL_POS, COL_DESC, COL_COMMENT = 0, 1, 2
     COL_STD_PARTS, COL_SPEC_PARTS = 3, 4
     COL_HOURS_LAYOUT, COL_HOURS_DETAIL, COL_HOURS_DOC = 7, 9, 11
@@ -817,9 +689,8 @@ def parse_cad_project_structured_with_xlsx_comments(file_like):
             # Tekst z kolumny "Komentarz"
             txt_comment_col = str(df.iloc[row_idx, COL_COMMENT]).strip() if pd.notna(df.iloc[row_idx, COL_COMMENT]) else ""
 
-            # Zbierz komentarze z całego wiersza (wszystkie kolumny)
+            # Zbierz komentarze z całego wiersza
             row_comments = []
-            # Używamy maksymalnej liczby kolumn z arkusza openpyxl jeśli dostępny
             try:
                 max_cols = max(c for (_, c) in comments_map.keys() if _ == row_idx) + 1 if comments_map else df.shape[1]
             except ValueError:
@@ -831,17 +702,13 @@ def parse_cad_project_structured_with_xlsx_comments(file_like):
                     row_comments.append(txt)
 
             joined_cell_comments = "; ".join([t for t in row_comments if t])
-            # Finalny komentarz = kolumna + wszystkie komentarze/note z wiersza
             comment = "; ".join([t for t in [txt_comment_col, joined_cell_comments] if t])
 
             hours_layout = float(df.iloc[row_idx, COL_HOURS_LAYOUT]) if pd.notna(df.iloc[row_idx, COL_HOURS_LAYOUT]) else 0.0
             hours_detail = float(df.iloc[row_idx, COL_HOURS_DETAIL]) if pd.notna(df.iloc[row_idx, COL_HOURS_DETAIL]) else 0.0
             hours_doc = float(df.iloc[row_idx, COL_HOURS_DOC]) if pd.notna(df.iloc[row_idx, COL_HOURS_DOC]) else 0.0
 
-            # Złożenia sumaryczne: "1,0" lub "1"
             is_summary = bool(re.match(r'^\d+,0$', pos) or pos.isdigit())
-
-            # Sub‑komponenty z komentarza (Twoja funkcja)
             subcomponents = parse_subcomponents_from_comment(comment)
 
             component = {
@@ -864,7 +731,6 @@ def parse_cad_project_structured_with_xlsx_comments(file_like):
             logger.warning(f"Błąd wiersz {row_idx + 1}: {e}")
             continue
 
-    # Podsumowania jak w oryginale
     parts_only = [
         c for c in result['components']
         if not c.get('is_summary', False) and c.get('hours', 0) > 0 and c.get('name') not in ['[part]', '[assembly]', '', ' ']
@@ -878,8 +744,8 @@ def parse_cad_project_structured_with_xlsx_comments(file_like):
     return result
 
 def process_excel(file):
+    """Wczytuje plik Excel (bytes) i próbuje parser z komentarzami, a potem fallback."""
     try:
-        # Wczytaj bytes raz i użyj dla obu parserów
         content = file.read()
         bio1 = BytesIO(content)
         bio2 = BytesIO(content)
@@ -907,7 +773,9 @@ def process_excel(file):
         logger.exception("Błąd parsowania Excel")
         return []
 
+# === PDF ===
 def extract_text_from_pdf(pdf_file):
+    """Lekki ekstraktor tekstu PDF (PyPDF2)."""
     try:
         reader = PdfReader(pdf_file)
         text = ""
@@ -923,6 +791,7 @@ def extract_text_from_pdf(pdf_file):
         logger.error(f"Błąd PDF: {e}")
         return f"[Błąd PDF: {e}]"
 
+# === KATEGORYZACJA & TIMELINE ===
 def categorize_component(name: str) -> str:
     categories = {
         "analiza": ["przegląd", "analiza", "normy"],
@@ -939,6 +808,7 @@ def categorize_component(name: str) -> str:
     return "inne"
 
 def show_project_timeline(components):
+    """Prosty wykres sekwencyjny (plotly) – suma godzin L/D/2D per komponent."""
     if not components:
         st.info("Brak komponentów do wyświetlenia")
         return
@@ -947,9 +817,9 @@ def show_project_timeline(components):
         st.info("Brak komponentów z godzinami")
         return
     timeline_data = []
-    cumulative = 0
+    cumulative = 0.0
     for comp in parts:
-        hours = comp.get('hours', 0)
+        hours = float(comp.get('hours', 0) or 0)
         timeline_data.append({
             'Task': comp['name'][:30] + "..." if len(comp['name']) > 30 else comp['name'],
             'Start': cumulative,
@@ -958,16 +828,19 @@ def show_project_timeline(components):
         })
         cumulative += hours
     df = pd.DataFrame(timeline_data)
-    fig = px.bar(df, x='Hours', y='Task', orientation='h', title="Harmonogram realizacji (sekwencyjnie)", labels={'Hours': 'Godziny', 'Task': 'Komponent'})
-    fig.update_layout(yaxis={'categoryorder':'total ascending'})
+    fig = px.bar(df, x='Hours', y='Task', orientation='h',
+                 title="Harmonogram realizacji (sekwencyjnie)",
+                 labels={'Hours': 'Godziny', 'Task': 'Komponent'})
+    fig.update_layout(yaxis={'categoryorder': 'total ascending'})
     st.plotly_chart(fig, use_container_width=True)
 
+# === EKSPORT DO EXCEL (dynamiczny engine) ===
 def export_quotation_to_excel(project_data):
     """
     Eksport bez twardej zależności:
     - preferuj xlsxwriter (jeśli zainstalowany),
     - fallback na openpyxl,
-    - jeśli brak obu — podnieś wyjątek z czytelnym komunikatem.
+    - jeśli brak obu — podnieś czytelny wyjątek.
     """
     output = BytesIO()
     engine = None
@@ -1000,82 +873,14 @@ def export_quotation_to_excel(project_data):
     output.seek(0)
     return output.getvalue()
 
-def save_project_version(conn, project_id, version, components, estimated_hours, layout_h, detail_h, doc_h, change_desc, changed_by):
-    with conn.cursor() as cur:
-        cur.execute("""
-        INSERT INTO project_versions (
-            project_id, version, components, estimated_hours,
-            estimated_hours_3d_layout, estimated_hours_3d_detail, estimated_hours_2d,
-            change_description, changed_by
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
-        """, (project_id, version, json.dumps(components, ensure_ascii=False),
-              estimated_hours, layout_h, detail_h, doc_h, change_desc, changed_by))
-        version_id = cur.fetchone()[0]
-        conn.commit()
-        return version_id
-
-def get_project_versions(conn, project_id):
-    with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute("""
-        SELECT id, version, estimated_hours, estimated_hours_3d_layout,
-               estimated_hours_3d_detail, estimated_hours_2d,
-               change_description, changed_by, is_approved, created_at
-        FROM project_versions WHERE project_id = %s ORDER BY created_at DESC
-        """, (project_id,))
-        return cur.fetchall()
-
-def find_similar_projects(conn, description, department, limit=3):
-    if not description:
-        return []
-    with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute("""
-        SELECT id, name, client, estimated_hours, actual_hours, department
-        FROM projects
-        WHERE department = %s
-        AND to_tsvector('simple', coalesce(name,'') || ' ' || coalesce(client,'') || ' ' || coalesce(description,'')) @@ websearch_to_tsquery('simple', %s)
-        ORDER BY created_at DESC LIMIT %s
-        """, (department, description, limit))
-        return cur.fetchall()
-
-def find_similar_projects_semantic(conn, description, department, limit=5):
-    if not description:
-        return []
-    emb = get_embedding_ollama(description)
-    if not emb:
-        return []
-    with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute("""
-        SELECT id, name, client, department, estimated_hours, actual_hours,
-               1 - (description_embedding <-> %s::vector) AS similarity
-        FROM projects
-        WHERE department = %s AND description_embedding IS NOT NULL
-        ORDER BY description_embedding <-> %s::vector
-        LIMIT %s
-        """, (to_pgvector(emb), department, to_pgvector(emb), limit))
-        return cur.fetchall()
-
-def find_similar_components(conn, name, department, limit=5):
-    key = canonicalize_name(name)
-    emb = get_embedding_ollama(key)
-    if not emb:
-        return []
-    with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute("""
-        SELECT name, avg_hours_total, avg_hours_3d_layout, avg_hours_3d_detail, avg_hours_2d,
-               confidence, occurrences, 1 - (name_embedding <-> %s::vector) AS similarity
-        FROM component_patterns
-        WHERE department=%s AND name_embedding IS NOT NULL
-        ORDER BY name_embedding <-> %s::vector
-        LIMIT %s
-        """, (to_pgvector(emb), department, to_pgvector(emb), limit))
-        return cur.fetchall()
-
-# === DB ===
+# === DB: POŁĄCZENIA I INICJALIZACJA ===
 @contextmanager
 def get_db_connection():
     conn = None
     try:
-        conn = psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASSWORD, port=5432)
+        conn = psycopg2.connect(
+            host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASSWORD, port=5432
+        )
         yield conn
     except psycopg2.OperationalError as e:
         logger.error(f"Błąd połączenia: {e}")
@@ -1092,12 +897,13 @@ def get_db_connection():
 
 @st.cache_resource
 def init_db():
+    """Tworzy rozszerzenia, tabele, indeksy oraz nowe kolumny (idempotentnie)."""
     try:
         with get_db_connection() as conn, conn.cursor() as cur:
             # Extension
             cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
 
-            # Tabele bazowe (jak w Twoim kodzie)
+            # Tabele
             cur.execute('''
             CREATE TABLE IF NOT EXISTS projects (
                 id SERIAL PRIMARY KEY,
@@ -1117,7 +923,11 @@ def init_db():
                 ai_analysis TEXT,
                 created_at TIMESTAMP DEFAULT NOW(),
                 updated_at TIMESTAMP DEFAULT NOW(),
-                description_embedding vector(%s)
+                description_embedding vector(%s),
+                is_historical BOOLEAN DEFAULT FALSE,
+                estimation_mode VARCHAR(30) DEFAULT 'ai',
+                totals_source VARCHAR(30) DEFAULT 'ai',
+                locked_totals BOOLEAN DEFAULT FALSE
             )
             ''', (EMBED_DIM,))
 
@@ -1188,7 +998,6 @@ def init_db():
             )
             ''')
 
-            # NOWA TABELA: relacje parent -> sub (bundles)
             cur.execute('''
             CREATE TABLE IF NOT EXISTS component_bundles (
                 id SERIAL PRIMARY KEY,
@@ -1205,46 +1014,112 @@ def init_db():
             )
             ''')
 
-            # Indeksy istniejące
+            # Indeksy
             cur.execute('CREATE INDEX IF NOT EXISTS idx_projects_created_at ON projects(created_at DESC)')
             cur.execute('CREATE INDEX IF NOT EXISTS idx_projects_department ON projects(department)')
             cur.execute('CREATE INDEX IF NOT EXISTS idx_patterns_department ON component_patterns(department)')
             cur.execute('CREATE INDEX IF NOT EXISTS idx_component_patterns_name ON component_patterns(name, department)')
             cur.execute('CREATE INDEX IF NOT EXISTS idx_versions_project ON project_versions(project_id, created_at DESC)')
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_projects_desc_embed_hnsw ON projects USING hnsw (description_embedding vector_l2_ops);")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_component_patterns_name_embed_hnsw ON component_patterns USING hnsw (name_embedding vector_l2_ops);")
-
-            # NOWE INDEXY dla bundles
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_projects_hist ON projects(is_historical)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_projects_estimation_mode ON projects(estimation_mode)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_projects_totals_source ON projects(totals_source)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_projects_locked_totals ON projects(locked_totals)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_projects_desc_embed_hnsw ON projects USING hnsw (description_embedding vector_l2_ops)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_component_patterns_name_embed_hnsw ON component_patterns USING hnsw (name_embedding vector_l2_ops)")
             cur.execute('CREATE INDEX IF NOT EXISTS idx_bundles_dept_parent ON component_bundles(department, parent_key)')
             cur.execute('CREATE INDEX IF NOT EXISTS idx_bundles_dept_parent_occ ON component_bundles(department, parent_key, occurrences DESC)')
 
-            # NOWE KOLUMNY w projects (bezpiecznie, idempotentnie)
-            cur.execute("ALTER TABLE projects ADD COLUMN IF NOT EXISTS is_historical BOOLEAN DEFAULT FALSE;")
-            cur.execute("ALTER TABLE projects ADD COLUMN IF NOT EXISTS estimation_mode VARCHAR(30) DEFAULT 'ai';")
-            cur.execute("ALTER TABLE projects ADD COLUMN IF NOT EXISTS totals_source VARCHAR(30) DEFAULT 'ai';")
-            cur.execute("ALTER TABLE projects ADD COLUMN IF NOT EXISTS locked_totals BOOLEAN DEFAULT FALSE;")
-
-            # Indeksy dla nowych kolumn
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_projects_hist ON projects(is_historical);")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_projects_estimation_mode ON projects(estimation_mode);")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_projects_totals_source ON projects(totals_source);")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_projects_locked_totals ON projects(locked_totals);")
-
             conn.commit()
-            logger.info("Baza zainicjalizowana + migracje (bundles, flagi projektów).")
+            logger.info("Baza zainicjalizowana + migracje/indeksy.")
             return True
     except Exception as e:
         logger.error(f"Błąd inicjalizacji: {e}")
         st.error(f"Błąd inicjalizacji: {e}")
         return False
 
-# === STATYSTYKA (WELFORD) ===
+# === OPERACJE NA WERSJACH I ZAPYTANIA PODOBIEŃSTWA ===
+def save_project_version(conn, project_id, version, components, estimated_hours, layout_h, detail_h, doc_h, change_desc, changed_by):
+    with conn.cursor() as cur:
+        cur.execute("""
+        INSERT INTO project_versions (
+            project_id, version, components, estimated_hours,
+            estimated_hours_3d_layout, estimated_hours_3d_detail, estimated_hours_2d,
+            change_description, changed_by
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+        """, (project_id, version, json.dumps(components, ensure_ascii=False),
+              estimated_hours, layout_h, detail_h, doc_h, change_desc, changed_by))
+        version_id = cur.fetchone()[0]
+        conn.commit()
+        return version_id
+
+def get_project_versions(conn, project_id):
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute("""
+        SELECT id, version, estimated_hours, estimated_hours_3d_layout,
+               estimated_hours_3d_detail, estimated_hours_2d,
+               change_description, changed_by, is_approved, created_at
+        FROM project_versions WHERE project_id = %s ORDER BY created_at DESC
+        """, (project_id,))
+        return cur.fetchall()
+
+def find_similar_projects(conn, description, department, limit=3):
+    if not description:
+        return []
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute("""
+        SELECT id, name, client, estimated_hours, actual_hours, department
+        FROM projects
+        WHERE department = %s
+        AND to_tsvector('simple', coalesce(name,'') || ' ' || coalesce(client,'') || ' ' || coalesce(description,'')) 
+            @@ websearch_to_tsquery('simple', %s)
+        ORDER BY created_at DESC LIMIT %s
+        """, (department, description, limit))
+        return cur.fetchall()
+
+def find_similar_projects_semantic(conn, description, department, limit=5):
+    if not description:
+        return []
+    emb = get_embedding_ollama(description)
+    if not emb:
+        return []
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute("""
+        SELECT id, name, client, department, estimated_hours, actual_hours,
+               1 - (description_embedding <-> %s::vector) AS similarity
+        FROM projects
+        WHERE department = %s AND description_embedding IS NOT NULL
+        ORDER BY description_embedding <-> %s::vector
+        LIMIT %s
+        """, (to_pgvector(emb), department, to_pgvector(emb), limit))
+        return cur.fetchall()
+
+def find_similar_components(conn, name, department, limit=5):
+    key = canonicalize_name(name)
+    emb = get_embedding_ollama(key)
+    if not emb:
+        return []
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute("""
+        SELECT name, avg_hours_total, avg_hours_3d_layout, avg_hours_3d_detail, avg_hours_2d,
+               confidence, occurrences, 1 - (name_embedding <-> %s::vector) AS similarity
+        FROM component_patterns
+        WHERE department=%s AND name_embedding IS NOT NULL
+        ORDER BY name_embedding <-> %s::vector
+        LIMIT %s
+        """, (to_pgvector(emb), department, to_pgvector(emb), limit))
+        return cur.fetchall()
+# === CAD Estimator Pro — main.py (Part 3/4) ==================================
+# Uczenie (patterns/bundles), heurystyki, propozycje dodatków,
+# Batch import oraz strona "Nowy projekt" z JSON/paste i Vision (llava/qwen2-vl)
+# ============================================================================
+
+# === STATYSTYKA (Welford) i dopasowanie kluczy ===
 def _welford_step(mean, m2, n, x):
-    """Algorytm Welforda - aktualizacja średniej i wariancji + odrzucanie outlierów po min prób."""
+    """Algorytm Welforda – aktualizacja średniej i wariancji z prostą detekcją outlierów (po min. 5 próbkach)."""
     if n and n >= 5:
         std = (m2 / max(n - 1, 1)) ** 0.5
         if mean and abs(x - mean) > 2.5 * std:
-            return mean, m2, n # outlier - odrzuć
+            return mean, m2, n  # outlier – odrzucamy
     n_new = (n or 0) + 1
     delta = x - (mean or 0)
     mean_new = (mean or 0) + delta / n_new
@@ -1253,6 +1128,7 @@ def _welford_step(mean, m2, n, x):
     return mean_new, m2_new, n_new
 
 def best_pattern_key(cur, dept: str, key: str, threshold: int = 88) -> str:
+    """Jeśli pattern_key nie istnieje – dopasuj fuzzy do istniejących w danym dziale."""
     cur.execute("SELECT pattern_key FROM component_patterns WHERE pattern_key=%s AND department=%s", (key, dept))
     if cur.fetchone():
         return key
@@ -1264,7 +1140,13 @@ def best_pattern_key(cur, dept: str, key: str, threshold: int = 88) -> str:
     return match if score >= threshold else key
 
 def update_pattern_smart(cur, name, dept, layout_h, detail_h, doc_h, source='actual'):
-    """Welford + outlier + confidence + fuzzy + embedding (n++ tylko raz)."""
+    """
+    Uczy/aktualizuje wzorzec komponentu:
+    - Welford (mean, m2, occurrences),
+    - confidence zależny od n i wariancji,
+    - fuzzy dopasowanie pattern_key,
+    - embedding nazwy.
+    """
     key = best_pattern_key(cur, dept, canonicalize_name(name))
     total = float(layout_h) + float(detail_h) + float(doc_h)
 
@@ -1304,7 +1186,9 @@ def update_pattern_smart(cur, name, dept, layout_h, detail_h, doc_h, source='act
                 avg_hours_3d_layout, avg_hours_3d_detail, avg_hours_2d, avg_hours_total,
                 m2_layout, m2_detail, m2_doc, m2_total,
                 occurrences, confidence, source, last_actual_sample_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, 0, 0, 0, 0, 1, 0.1, %s,
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s,
+                      0, 0, 0, 0,
+                      1, 0.1, %s,
                       CASE WHEN %s='actual' THEN NOW() ELSE NULL END)
         """, (name, key, dept, layout_h, detail_h, doc_h, total, source, source))
 
@@ -1312,7 +1196,7 @@ def update_pattern_smart(cur, name, dept, layout_h, detail_h, doc_h, source='act
     return True
 
 def update_category_baseline(cur, dept, category, layout_h, detail_h, doc_h):
-    """Aktualizuje baseline dla kategorii (n++ 1x)."""
+    """Aktualizuje baseline kategorii (średnie ruchome metodą Welforda)."""
     cur.execute("""
     SELECT mean_layout, mean_detail, mean_doc, m2_layout, m2_detail, m2_doc, occurrences
     FROM category_baselines WHERE department=%s AND category=%s
@@ -1326,7 +1210,6 @@ def update_category_baseline(cur, dept, category, layout_h, detail_h, doc_h):
         mc, m2c, _ = _welford_step(mc, m2c, n0, float(doc_h))
         n1 = (n0 or 0) + 1
         conf = min(1.0, n1 / 10.0)
-
         cur.execute("""
             UPDATE category_baselines
             SET mean_layout=%s, mean_detail=%s, mean_doc=%s,
@@ -1341,10 +1224,7 @@ def update_category_baseline(cur, dept, category, layout_h, detail_h, doc_h):
         """, (dept, category, layout_h, detail_h, doc_h))
 
 def update_bundle(cur, dept: str, parent_name: str, sub_name: str, qty: int):
-    """
-    Aktualizuje tabelę component_bundles: relacja parent -> sub,
-    liczy częstość współwystępowania i sumę ilości (qty).
-    """
+    """Relacja parent→sub w component_bundles + sumy ilości i occurrences."""
     try:
         pkey = canonicalize_name(parent_name or "")
         skey = canonicalize_name(sub_name or "")
@@ -1367,25 +1247,22 @@ def update_bundle(cur, dept: str, parent_name: str, sub_name: str, qty: int):
 def learn_from_historical_components(cur, dept: str, components: list, distribute: str = 'qty'):
     """
     Uczy:
-    - component_patterns: komponenty główne + sub-komponenty (proporcjonalnie do ilości lub po równo),
-    - component_bundles: relacje parent->sub z typową ilością.
-
-    distribute: 'qty' (waga = qty / sum_qty) lub 'equal' (po równo).
+    - component_patterns: komponenty główne + sub-komponenty (wg qty lub po równo),
+    - component_bundles: częste pary parent→sub.
     """
     for comp in components or []:
         try:
             name = comp.get('name', '')
             if not name:
                 continue
-
             is_summary = bool(comp.get('is_summary'))
             subs = comp.get('subcomponents', []) or []
 
-            # ZAWSZE: aktualizuj bundles (wiedza co z czym)
+            # Bundles – zawsze
             for sub in subs:
                 update_bundle(cur, dept, name, sub.get('name', ''), sub.get('quantity', 1))
 
-            # Komponent sumaryczny nie wnosi godzin - nie ucz wzorca godzin
+            # Pomijamy “sumaryczne”
             if is_summary:
                 continue
 
@@ -1394,11 +1271,11 @@ def learn_from_historical_components(cur, dept: str, components: list, distribut
             doc = float(comp.get('hours_2d', 0) or 0)
             total = layout + detail + doc
 
-            # 1) ucz wzorzec komponentu (jeśli są godziny)
+            # Wzorzec główny
             if total > 0:
                 update_pattern_smart(cur, name, dept, layout, detail, doc, source='historical_excel')
 
-            # 2) rozdziel godziny na sub-komponenty
+            # Rozdział na suby
             if subs and total > 0:
                 if distribute == 'qty':
                     total_qty = sum(int(s.get('quantity', 1) or 1) for s in subs) or len(subs)
@@ -1408,20 +1285,17 @@ def learn_from_historical_components(cur, dept: str, components: list, distribut
                         sl, sd, sdoc = layout * w, detail * w, doc * w
                         update_pattern_smart(cur, sub.get('name', ''), dept, sl, sd, sdoc, source='historical_excel_sub')
                 else:
-                    # equal
                     n = len(subs)
                     if n > 0:
                         w = 1.0 / n
                         for sub in subs:
                             sl, sd, sdoc = layout * w, detail * w, doc * w
                             update_pattern_smart(cur, sub.get('name', ''), dept, sl, sd, sdoc, source='historical_excel_sub')
-
         except Exception as e:
             logger.warning(f"learn_from_historical_components err for '{comp.get('name','?')}': {e}")
 
-# === HEURYSTYKI I PROPOZYCJE Z KOMENTARZY ===
+# === HEURYSTYKI ===
 HEURISTIC_LIBRARY = [
-    # keywords, per-piece hours L/D/2D
     (['docisk', 'clamp'], 0.5, 1.5, 0.5),
     (['śruba trapezowa', 'trapez'], 0.2, 0.8, 0.3),
     (['konsola', 'bracket'], 0.3, 1.0, 0.4),
@@ -1435,20 +1309,15 @@ def heuristic_estimate_for_name(name: str):
             return l, d, doc, f"Heurystyka: {', '.join(keys)}"
     return 0.0, 0.0, 0.0, ""
 
+# === PROPOZYCJE DODATKÓW (patterns + heurystyki) ===
 def propose_adjustments_for_components(conn, components, department, conservativeness=1.0, sim_threshold=0.6):
-    """
-    Dla każdego komponentu z sub-komponentami proponuje dodatki godzin:
-    - najpierw wzorce (embedding),
-    - jeśli brak, heurystyki,
-    - zwraca listę {"parent": name, "adds": [{name, qty, layout_add, detail_add, doc_add, reason, source, confidence}]}
-    """
     proposals = []
     for comp in components:
         subs = comp.get('subcomponents', [])
         if not subs:
             continue
 
-        # Agregacja
+        # agregacja qty
         agg = {}
         for s in subs:
             qty = int(s.get('quantity', 1) or 1)
@@ -1474,17 +1343,15 @@ def propose_adjustments_for_components(conn, components, department, conservativ
                 if sim >= sim_threshold:
                     l = float(s0.get('avg_hours_3d_layout') or 0.0)
                     d = float(s0.get('avg_hours_3d_detail') or 0.0)
-                    doc = float(s0.get('avg_hours_2d') or 0.0)
-                    tot = float(s0.get('avg_hours_total') or (l + d + doc))
-                    if tot > 0 and (l + d + doc) == 0:
-                        l = tot * 0.3
-                        d = tot * 0.5
-                        doc = tot * 0.2
+                    dc = float(s0.get('avg_hours_2d') or 0.0)
+                    tot = float(s0.get('avg_hours_total') or (l + d + dc))
+                    if tot > 0 and (l + d + dc) == 0:
+                        l, d, dc = tot * 0.3, tot * 0.5, tot * 0.2
                     adds.append({
                         "name": display_name, "qty": qty,
                         "layout_add": l * qty * conservativeness,
                         "detail_add": d * qty * conservativeness,
-                        "doc_add": doc * qty * conservativeness,
+                        "doc_add": dc * qty * conservativeness,
                         "reason": f"Wzorzec: {s0.get('name')} (sim={sim*100:.0f}%)",
                         "source": "pattern",
                         "confidence": float(s0.get('confidence') or 0.5)
@@ -1493,13 +1360,13 @@ def propose_adjustments_for_components(conn, components, department, conservativ
 
             # 2) heurystyka
             if not used:
-                l, d, doc, why = heuristic_estimate_for_name(display_name)
-                if l + d + doc > 0:
+                l, d, dc, why = heuristic_estimate_for_name(display_name)
+                if l + d + dc > 0:
                     adds.append({
                         "name": display_name, "qty": qty,
                         "layout_add": l * qty * conservativeness,
                         "detail_add": d * qty * conservativeness,
-                        "doc_add": doc * qty * conservativeness,
+                        "doc_add": dc * qty * conservativeness,
                         "reason": why or "Heurystyka ogólna",
                         "source": "heuristic",
                         "confidence": 0.4
@@ -1508,18 +1375,10 @@ def propose_adjustments_for_components(conn, components, department, conservativ
             proposals.append({"parent": comp.get('name', 'bez nazwy'), "adds": adds})
     return proposals
 
+# === PROPOZYCJE Z HISTORII (bundles) ===
 def propose_bundles_for_component(conn, parent_name: str, department: str,
                                   conservativeness: float = 1.0,
                                   top_k: int = 5, min_occ: int = 2) -> list:
-    """
-    Zwraca listę dodatków bazujących na historii (component_bundles):
-    - wybiera typowe sub-komponenty dla parent_name,
-    - próbuje dociągnąć średnie godziny z component_patterns (embedding),
-    - fallback do heurystyk,
-    - skaluje konserwatywnością.
-
-    Zwrót: list[{"name","qty","layout_add","detail_add","doc_add","reason","source","confidence"}]
-    """
     pkey = canonicalize_name(parent_name or "")
     if not pkey:
         return []
@@ -1559,7 +1418,6 @@ def propose_bundles_for_component(conn, parent_name: str, department: str,
             dc = float(s0.get('avg_hours_2d') or 0.0)
             tot = float(s0.get('avg_hours_total') or (l + d + dc))
             if tot > 0 and (l + d + dc) == 0:
-                # rozbicie domyślne, jeśli tylko total dostępny
                 l, d, dc = tot * 0.3, tot * 0.5, tot * 0.2
 
             proposals.append({
@@ -1589,200 +1447,58 @@ def propose_bundles_for_component(conn, parent_name: str, department: str,
 
     return proposals
 
-# === DEMO / PRÓBNE DANE ===
-def generate_sample_excel() -> bytes:
+# === Batch import historycznych Exceli (z opcją uczenia) ===
+def batch_import_excels(files, department: str, learn_from_import: bool = False, distribute: str = 'qty'):
     """
-    Generuje przykładowy Excel pasujący do parsera:
-    - Multipliers w wierszu 10 (index 9): kolumny H, J, L (7,9,11)
-    - Dane od wiersza 12 (index 11)
+    Batch import:
+    - parsuje wartości + komentarze/note (openpyxl),
+    - zapisuje projekt jako Excel-only (is_historical/locked),
+    - opcjonalnie uczy wzorce i bundles.
     """
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        # utwórz pusty arkusz
-        pd.DataFrame().to_excel(writer, sheet_name='Dane', index=False)
-        ws = writer.sheets['Dane']
+    results = []
+    with get_db_connection() as conn, conn.cursor() as cur:
+        for f in files:
+            try:
+                fname = getattr(f, "name", "import.xlsx")
+                proj_name = os.path.splitext(os.path.basename(fname))[0]
 
-        # Multipliers (wiersz 10 zero-based -> index 9)
-        ws.write(9, 7, 1.0)   # Layout
-        ws.write(9, 9, 1.0)   # Detail
-        ws.write(9, 11, 1.0)  # Doc
+                parsed = parse_cad_project_structured_with_xlsx_comments(f)
+                comps_full = parsed.get('components', []) or []
+                totals = parsed.get('totals', {}) or {}
 
-        # Nagłówki (opcjonalnie)
-        headers = ["Pozycja", "Opis", "Komentarz", "Części std", "Części spec", "", "", "Layout [h]", "", "Detail [h]", "", "Doc [h]"]
-        for col, h in enumerate(headers):
-            ws.write(10, col, h)  # wiersz 11 (index 10)
+                est_l = float(totals.get('layout', 0) or 0)
+                est_d = float(totals.get('detail', 0) or 0)
+                est_doc = float(totals.get('documentation', 0) or 0)
+                est_total = float(totals.get('total', est_l + est_d + est_doc) or 0)
 
-        # Dane od wiersza 12 (index 11)
-        row = 11
-        # Złożenie główne (sumaryczne)
-        ws.write(row, 0, "1,0"); ws.write(row, 1, "Stacja dociskania omega (złożenie)"); row += 1
-
-        # Komponent 1: z komentarzem z sub-komponentami
-        ws.write(row, 0, "1,1")
-        ws.write(row, 1, "Dociski omega boczna; blachy")
-        ws.write(row, 2, "2x - docisk śrubowy odrzucany; śruba trapezowa; konsola docisku")
-        ws.write(row, 7, 2.0)  # Layout
-        ws.write(row, 9, 6.0)  # Detail
-        ws.write(row, 11, 3.0) # Doc
-        row += 1
-
-        # Komponent 2
-        ws.write(row, 0, "1,2")
-        ws.write(row, 1, "Konsola główna")
-        ws.write(row, 2, "płyta montażowa; 4x wspornik; osłona boczna")
-        ws.write(row, 7, 1.0); ws.write(row, 9, 4.0); ws.write(row, 11, 2.0)
-        row += 1
-
-        # Komponent 3
-        ws.write(row, 0, "1,3")
-        ws.write(row, 1, "Płyta bazowa z otworami")
-        ws.write(row, 2, "8x otwór M12; fazowanie")
-        ws.write(row, 7, 0.5); ws.write(row, 9, 2.5); ws.write(row, 11, 1.0)
-        row += 1
-
-    output.seek(0)
-    return output.getvalue()
-
-def generate_sample_pdf() -> bytes:
-    """
-    Generuje prosty PDF (wymaga reportlab). Jeśli brak, zwraca None.
-    """
-    try:
-        from reportlab.pdfgen import canvas
-        from reportlab.lib.pagesizes import A4
-        buf = BytesIO()
-        c = canvas.Canvas(buf, pagesize=A4)
-        textobject = c.beginText(40, 800)
-        lines = [
-            "Specyfikacja: Stacja dociskania omega (boczna)",
-            "- Wymagane dociski śrubowe z mechanizmem odrzucania",
-            "- Konsola docisku i płyta bazowa",
-            "- Śruby trapezowe w mechanizmie odrzutu",
-            "Normy: ISO 12100, EN 1090",
-            "Uwagi: kinematyka docisku, docisk boczny, kontrola luzu"
-        ]
-        for l in lines:
-            textobject.textLine(l)
-        c.drawText(textobject)
-        c.showPage()
-        c.save()
-        buf.seek(0)
-        return buf.getvalue()
-    except Exception as e:
-        logger.warning(f"Nie można wygenerować PDF (brak reportlab?): {e}")
-        return None
-
-def generate_sample_image() -> bytes:
-    """
-    Generuje prosty obraz PNG (schemat blokowy) dla testu multimodalnego.
-    """
-    w, h = 800, 400
-    img = Image.new("RGB", (w, h), (245, 245, 245))
-    draw = ImageDraw.Draw(img)
-    # Ramka
-    draw.rectangle([20, 20, w-20, h-20], outline=(50, 50, 50), width=3)
-    # Elementy
-    draw.rectangle([60, 150, 220, 250], outline="navy", width=3) # baza
-    draw.text((70, 260), "Płyta bazowa", fill="navy")
-    draw.rectangle([300, 120, 520, 180], outline="darkgreen", width=3) # docisk
-    draw.text((310, 185), "Docisk śrubowy", fill="darkgreen")
-    draw.line([520, 150, 700, 150], fill="black", width=3) # odrzut
-    draw.text((600, 160), "Odrzut", fill="black")
-    # Tekst tytułu
-    draw.text((30, 30), "Stacja dociskania omega (schemat poglądowy)", fill=(0, 0, 0))
-    buf = BytesIO()
-    img.save(buf, format='PNG')
-    buf.seek(0)
-    return buf.getvalue()
-
-def fill_demo_fields():
-    """
-    Wypełnia formularz przykładowymi danymi w sesji.
-    """
-    st.session_state['project_name'] = "Stacja dociskania omega - DEMO"
-    st.session_state['client'] = "Klient Demo sp. z o.o."
-    st.session_state['description'] = (
-        "Stacja dociskania detalu typu omega z dociskami bocznymi. "
-        "Wymagania: mechanizm odrzutu docisku śrubowego, konsola docisku, płyta bazowa. "
-        "Normy: ISO 12100, EN 1090. Złożoność średnia, kinematyka docisków."
-    )
-    st.success("Wypełniono formularz przykładowymi danymi.")
-
-# === UI: Dashboard, Nowy projekt, Historia ===
-def render_dashboard_page():
-    st.header("📊 Dashboard")
-    with get_db_connection() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute("SELECT COUNT(*) as count FROM projects")
-        project_count = cur.fetchone()['count']
-        cur.execute("SELECT AVG(accuracy) as avg FROM projects WHERE accuracy IS NOT NULL")
-        avg_accuracy = (cur.fetchone() or {}).get('avg') or 0
-        cur.execute("""
-        SELECT department, COUNT(*) as count
-        FROM projects WHERE department IS NOT NULL
-        GROUP BY department ORDER BY department
-        """)
-        dept_stats = cur.fetchall()
-
-    col1, col2 = st.columns(2)
-    col1.metric("Projekty", project_count)
-    col2.metric("Średnia dokładność", f"{avg_accuracy*100:.1f}%")
-
-    if dept_stats:
-        st.subheader("Projekty wg działów")
-        df_dept = pd.DataFrame(dept_stats)
-        df_dept['department_name'] = df_dept['department'].map(DEPARTMENTS)
-        st.bar_chart(df_dept.set_index('department_name')['count'])
-
-    st.header("🔍 Wyszukaj projekty")
-    search_dept = st.selectbox("Dział", options=[''] + list(DEPARTMENTS.keys()),
-                               format_func=lambda x: 'Wszystkie' if x == '' else f"{x} - {DEPARTMENTS[x]}")
-    search_query = st.text_input("Słowa kluczowe")
-    if search_query:
-        with get_db_connection() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
-            if search_dept:
                 cur.execute("""
-                    SELECT id, name, client, department, estimated_hours, description
-                    FROM projects WHERE department = %s
-                    AND to_tsvector('simple', coalesce(name,'') || ' ' || coalesce(client,'') || ' ' || coalesce(description,'')) @@ websearch_to_tsquery('simple', %s)
-                    ORDER BY created_at DESC LIMIT 10
-                """, (search_dept, search_query))
-            else:
-                cur.execute("""
-                    SELECT id, name, client, department, estimated_hours, description
-                    FROM projects
-                    WHERE to_tsvector('simple', coalesce(name,'') || ' ' || coalesce(client,'') || ' ' || coalesce(description,'')) @@ websearch_to_tsquery('simple', %s)
-                    ORDER BY created_at DESC LIMIT 10
-                """, (search_query,))
-            results = cur.fetchall()
-        if results:
-            st.write(f"Znaleziono {len(results)} projektów:")
-            df_results = pd.DataFrame(results)
-            df_results['department_name'] = df_results['department'].map(DEPARTMENTS)
-            st.dataframe(df_results, use_container_width=True)
+                    INSERT INTO projects (
+                        name, client, department, description, components,
+                        estimated_hours_3d_layout, estimated_hours_3d_detail, estimated_hours_2d,
+                        estimated_hours, ai_analysis,
+                        is_historical, estimation_mode, totals_source, locked_totals
+                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                             TRUE, 'excel_only', 'excel', TRUE)
+                    RETURNING id
+                """, (
+                    proj_name, None, department, None,
+                    json.dumps(comps_full, ensure_ascii=False),
+                    est_l, est_d, est_doc, est_total, '[HISTORICAL_IMPORT]'
+                ))
+                pid = cur.fetchone()[0]
 
-            selected_project = st.selectbox(
-                "Historia wersji",
-                options=results,
-                format_func=lambda p: f"{p['name']} ({p['department']})"
-            )
-            if selected_project:
-                with get_db_connection() as conn:
-                    versions = get_project_versions(conn, selected_project['id'])
-                if versions:
-                    st.subheader(f"📜 Historia: {selected_project['name']}")
-                    for v in versions:
-                        with st.expander(f"{v['version']} - {v['created_at'].strftime('%Y-%m-%d %H:%M')} {'✅' if v['is_approved'] else ''}", expanded=(v == versions[0])):
-                            col1, col2, col3 = st.columns(3)
-                            col1.metric("Layout", f"{v['estimated_hours_3d_layout']:.1f}h")
-                            col2.metric("Detail", f"{v['estimated_hours_3d_detail']:.1f}h")
-                            col3.metric("2D", f"{v['estimated_hours_2d']:.1f}h")
-                            st.metric("TOTAL", f"{v['estimated_hours']:.1f}h")
-                            if v['change_description']:
-                                st.text_area("Opis", v['change_description'], height=100, disabled=True, key=f"d_{v['id']}")
-                            st.caption(f"Autor: {v['changed_by']}")
-        else:
-            st.info("Nie znaleziono")
+                if learn_from_import and comps_full:
+                    learn_from_historical_components(cur, department, comps_full, distribute=distribute)
 
+                conn.commit()
+                results.append({"file": fname, "status": "success", "project_id": pid, "hours": est_total})
+            except Exception as e:
+                conn.rollback()
+                logger.exception("Batch import error")
+                results.append({"file": getattr(f, 'name', 'unknown'), "status": "error", "error": str(e)})
+    return results
+
+# === Strona: Nowy projekt (z JSON/paste i Vision llava/qwen2-vl) ===
 def render_new_project_page(selected_model):
     st.header("🆕 Nowy Projekt")
 
@@ -1800,7 +1516,6 @@ def render_new_project_page(selected_model):
         st.text_input("Nazwa projektu*", key="project_name")
         st.text_input("Klient", key="client")
         st.text_area("Opis", height=200, key="description")
-   
     with col2:
         excel_file = st.file_uploader("Excel", type=['xlsx', 'xls'])
         image_files = st.file_uploader("Zdjęcia/Rysunki", type=['jpg', 'png'], accept_multiple_files=True)
@@ -1812,19 +1527,15 @@ def render_new_project_page(selected_model):
     st.subheader("📝 AI: Opis zadania i checklista")
     if st.button("📝 Generuj opis zadania (AI)", use_container_width=True):
         try:
-            # Zbuduj wejście (bez wywoływania pełnej analizy)
+            # Komponenty z Excela (przykłady)
             components_for_brief = []
             if excel_file is not None:
-                # Parsuj bez side-effectów UI
                 try:
                     components_for_brief = parse_cad_project_structured_with_xlsx_comments(BytesIO(excel_file.getvalue()))['components']
                 except Exception:
                     components_for_brief = []
 
-            pdf_text_for_brief = ""
-            if pdf_files:
-                pdf_text_for_brief = "\n".join([extract_text_from_pdf(pf) for pf in pdf_files])
-
+            # Komponenty z JSON (doc-converter/AI)
             components_from_json_for_brief = []
             if json_files:
                 for jf in json_files:
@@ -1833,24 +1544,20 @@ def render_new_project_page(selected_model):
                         components_from_json_for_brief += parse_components_from_docconv_json(data)
                     except Exception:
                         pass
-            
-            pdf_text_for_brief_extra = (st.session_state.get("pasted_text") or "")
-            if pdf_text_for_brief_extra:
-                pdf_text_for_brief = (pdf_text_for_brief + "\n\n" + pdf_text_for_brief_extra).strip()
+
+            pdf_text_for_brief = ""
+            if pdf_files:
+                pdf_text_for_brief = "\n".join([extract_text_from_pdf(pf) for pf in pdf_files])
+
+            if st.session_state.get("pasted_text"):
+                pdf_text_for_brief = (pdf_text_for_brief + "\n\n" + st.session_state.get("pasted_text")).strip()
 
             prompt_brief = build_brief_prompt(
                 st.session_state.get("description", ""),
-                components_for_brief,
-                pdf_text_for_brief,
-                department
-            )
-            prompt_brief = build_brief_prompt(
-                st.session_state.get("description",""),
                 components_for_brief + components_from_json_for_brief,
                 pdf_text_for_brief,
                 department
             )
-            
 
             ai_model_brief = selected_model or "llama3:latest"
             resp = query_ollama(prompt_brief, model=ai_model_brief, format_json=True)
@@ -1861,7 +1568,7 @@ def render_new_project_page(selected_model):
             logger.exception("Brief generation failed")
             st.error(f"Nie udało się wygenerować opisu: {e}")
 
-    # Wyświetl brief (jeśli jest w sesji)
+    # Wyświetl brief (jeśli jest)
     if "ai_brief" in st.session_state:
         b = st.session_state["ai_brief"]
         if b.get("brief_md"):
@@ -1917,23 +1624,24 @@ def render_new_project_page(selected_model):
 
     # Parametry sugestii
     st.subheader("⚙️ Uwzględnianie komentarzy")
-    use_comments = st.checkbox("Uwzględnij sub-komponenty z komentarzy w estymacji", value=True)
+    use_comments = st.checkbox("Uwzględnij sub‑komponenty z komentarzy w estymacji", value=True)
     conserv = st.slider("Konserwatywność proponowanych dodatków", min_value=0.5, max_value=1.5, value=1.0, step=0.1)
     enable_bundles = st.checkbox("Włącz podpowiedzi z historii (bundles)", value=True,
                                  help="Podpowiada typowe sub‑komponenty dla podobnych pozycji na bazie importów historycznych")
 
-
     if st.button("🤖 Analizuj z AI", use_container_width=True):
-        if not st.session_state.get("description") and not excel_file and not image_files and not pdf_files:
+        if not st.session_state.get("description") and not excel_file and not image_files and not pdf_files and not json_files and not pasted_text:
             st.warning("Podaj opis lub wgraj pliki")
         else:
             progress_bar = st.progress(0, text="Startuję...")
             try:
+                # Excel
                 components_from_excel = []
                 if excel_file:
                     progress_bar.progress(15, text="Wczytuję Excel...")
                     components_from_excel = process_excel(excel_file)
 
+                # JSON
                 components_from_json = []
                 if json_files:
                     progress_bar.progress(20, text="Czytam JSON...")
@@ -1944,24 +1652,22 @@ def render_new_project_page(selected_model):
                         except Exception:
                             pass
 
+                # Obrazy
                 images_b64 = []
                 if image_files:
                     progress_bar.progress(25, text="Analizuję obrazy...")
                     for img in image_files:
                         images_b64.append(encode_image_b64(img))
 
+                # PDF (+ tekst wklejony)
                 pdf_text = ""
                 if pdf_files:
                     progress_bar.progress(30, text="PDF...")
                     pdf_text = "\n".join([extract_text_from_pdf(pf) for pf in pdf_files])
+                if pasted_text:
+                    pdf_text = (pdf_text + "\n\n" + pasted_text).strip()
 
-                # + wklejany tekst
-                if st.session_state.get("pasted_text"):
-                    pdf_text = (pdf_text + "\n\n" + st.session_state.get("pasted_text")).strip()
-                
-                # wzorce z DB (bez zmian)
-
-                # Wzorce
+                # Wzorce z DB
                 with get_db_connection() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
                     cur.execute("""
                         SELECT name, avg_hours_total, avg_hours_3d_layout,
@@ -1974,8 +1680,8 @@ def render_new_project_page(selected_model):
                     learned_patterns = cur.fetchall()
 
                 st.write(f"🧠 {len(learned_patterns)} wzorców z działu {department}")
-                
-                # Zbuduj prompt – przekaż komponenty z excela + JSON (przykłady)
+
+                # Zbuduj prompt – pokazuj przykłady z Excela + JSON (okrojone do 30)
                 components_for_prompt = (components_from_excel or []) + components_from_json
                 prompt = build_analysis_prompt(
                     st.session_state.get("description", ""),
@@ -1985,10 +1691,7 @@ def render_new_project_page(selected_model):
                     department
                 )
 
-                prompt = build_analysis_prompt(st.session_state.get("description", ""), components_from_excel, learned_patterns, pdf_text, department)
-
-            
-
+                # Wybór modelu: Vision → llava / qwen2-vl, inaczej tekstowy
                 if images_b64:
                     if model_available("llava"):
                         ai_model = "llava:13b" if model_available("llava:13b") else "llava:latest"
@@ -2004,13 +1707,13 @@ def render_new_project_page(selected_model):
 
                 progress_bar.progress(80, text="Parsuję...")
                 parsed = parse_ai_response(ai_text, components_from_excel=components_from_excel)
+
                 # Dołącz komponenty z JSON (deduplikacja po canonicalize_name)
                 if components_from_json:
                     parsed['components'] = merge_components(parsed.get('components', []), components_from_json)
-                    # uaktualnij sumy po merge
-                    parsed['total_layout'] = sum(c.get('hours_3d_layout',0) for c in parsed['components'])
-                    parsed['total_detail'] = sum(c.get('hours_3d_detail',0) for c in parsed['components'])
-                    parsed['total_2d'] = sum(c.get('hours_2d',0) for c in parsed['components'])
+                    parsed['total_layout'] = sum(c.get('hours_3d_layout', 0) for c in parsed['components'])
+                    parsed['total_detail'] = sum(c.get('hours_3d_detail', 0) for c in parsed['components'])
+                    parsed['total_2d'] = sum(c.get('hours_2d', 0) for c in parsed['components'])
 
                 # Kategoryzacja
                 if parsed.get('components'):
@@ -2022,7 +1725,7 @@ def render_new_project_page(selected_model):
                 st.session_state["base_components"] = parsed.get('components', [])
                 st.session_state["ai_adjustments"] = parsed.get('ai_adjustments', [])
 
-                # Propozycje wzorce/heurystyki (zależnie od checkboxa i suwaka)
+                # Propozycje z komentarzy (patterns/heurystyki)
                 if use_comments:
                     with get_db_connection() as conn:
                         proposals = propose_adjustments_for_components(conn, st.session_state["base_components"], department, conserv)
@@ -2038,6 +1741,7 @@ def render_new_project_page(selected_model):
                 logger.exception("Analiza failed")
                 st.error(f"Błąd: {e}")
 
+    # Wyniki analizy i edycja
     if "ai_analysis" in st.session_state:
         analysis = st.session_state["ai_analysis"]
         base_components = st.session_state.get("base_components", [])
@@ -2049,16 +1753,12 @@ def render_new_project_page(selected_model):
         if enable_bundles and base_components:
             with get_db_connection() as conn:
                 for comp in base_components:
-                    if comp.get('is_summary'):
-                        continue
-                    # Preferencyjnie sugeruj dla tych BEZ komentarzy/subkomponentów
-                    if comp.get('subcomponents'):
+                    if comp.get('is_summary') or comp.get('subcomponents'):
                         continue
                     adds = propose_bundles_for_component(conn, comp.get('name',''), department, conservativeness=conserv)
                     if adds:
                         bundle_adjustments.append({"parent": comp.get('name',''), "adds": adds})
 
-        # Połącz do jednego źródła “regułowego”
         combined_rule_adjustments = (rule_adjustments or []) + (bundle_adjustments or [])
 
         st.subheader("Wynik analizy")
@@ -2097,7 +1797,7 @@ def render_new_project_page(selected_model):
         else:
             st.caption("Brak propozycji AI lub model nie zwrócił 'adjustments'.")
 
-        # Proponowane dodatki (Wzorce/Heurystyki)
+        # Proponowane dodatki (Wzorce/Heurystyki/Historia)
         st.subheader("🧠 Proponowane dodatki (wzorce/heurystyki + historia bundles)")
         rule_selected = []
         if combined_rule_adjustments:
@@ -2106,7 +1806,6 @@ def render_new_project_page(selected_model):
                 with st.expander(f"Wzorce/Heurystyki/Historia: {parent}"):
                     for j, add in enumerate(adj.get("adds", [])):
                         key = f"rule_adj_{i}_{j}"
-                        # domyślnie zaznacz: wzorzec z patterns (wyższa pewność); bundle/heurystyczne odznaczone
                         default = True if add.get("source") == "pattern" else False
                         checked = st.checkbox(
                             f"{add['qty']}x {add['name']} → +L {add['layout_add']:.1f}h, +D {add['detail_add']:.1f}h, +2D {add['doc_add']:.1f}h  ({add.get('source','')}, conf={add.get('confidence',0):.2f})",
@@ -2200,7 +1899,7 @@ def render_new_project_page(selected_model):
         st.subheader("🗂️ Harmonogram")
         show_project_timeline(combined_components)
 
-        # Podobne projekty
+        # Podobne projekty (keyword i semantycznie)
         with get_db_connection() as conn:
             similar = find_similar_projects(conn, st.session_state.get("description"), department)
         st.subheader(f"📊 Podobne projekty ({department})")
@@ -2225,6 +1924,7 @@ def render_new_project_page(selected_model):
         else:
             st.caption("Brak embeddingów — dodaj projekty i uruchom przeliczanie")
 
+        # Eksport do Excel
         st.subheader("📤 Eksport")
         if st.button("📥 Export do Excel"):
             excel_data = export_quotation_to_excel({
@@ -2238,6 +1938,7 @@ def render_new_project_page(selected_model):
                                file_name=f"wycena_{st.session_state.get('project_name','p')}_{datetime.now().strftime('%Y%m%d')}.xlsx",
                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
+        # Zapis projektu
         st.subheader("💾 Zapisz projekt")
         c1, c2 = st.columns([3,1])
         with c1:
@@ -2316,74 +2017,208 @@ def render_new_project_page(selected_model):
 
                         logger.info(f"Zapisano: {project_id} - {st.session_state.get('project_name')}")
                         st.balloons()
-                        time.sleep(1.2)
+                        time.sleep(1.0)
                         st.rerun()
                 except Exception as e:
                     st.error(f"Błąd: {e}")
                     logger.exception("Zapis failed")
+# === CAD Estimator Pro — main.py (Part 4/4) ==================================
+# Dashboard, Historia i Uczenie, Generatory demo, Sidebar i main()
+# ============================================================================
 
-def batch_import_excels(files, department: str, learn_from_import: bool = False, distribute: str = 'qty'):
+# === GENERATORY DEMO ===
+def generate_sample_excel() -> bytes:
     """
-    Batch import historycznych plików Excel:
-    - parsuje wartości + komentarze/note (openpyxl),
-    - zapisuje projekt jako Excel-only (is_historical/locked),
-    - opcjonalnie uczy wzorce (komponenty + sub-komponenty) oraz bundles.
-
-    distribute: 'qty' lub 'equal' (dotyczy podziału godzin na sub-komponenty jeśli learn_from_import=True).
-    Zwraca listę wyników {file, status, project_id?, hours?, error?}.
+    Generuje przykładowy Excel pasujący do parsera:
+    - Multipliers w wierszu 10 (index 9): kolumny H, J, L (7,9,11)
+    - Dane od wiersza 12 (index 11)
     """
-    results = []
-    with get_db_connection() as conn, conn.cursor() as cur:
-        for f in files:
-            try:
-                # Nazwa projektu z nazwy pliku
-                fname = getattr(f, "name", "import.xlsx")
-                proj_name = os.path.splitext(os.path.basename(fname))[0]
+    output = BytesIO()
+    try:
+        # preferuj xlsxwriter (jeśli dostępny)
+        import xlsxwriter  # noqa
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            pd.DataFrame().to_excel(writer, sheet_name='Dane', index=False)
+            ws = writer.sheets['Dane']
 
-                # Parsuj (wartości + komentarze komórek)
-                parsed = parse_cad_project_structured_with_xlsx_comments(f)
-                comps_full = parsed.get('components', []) or []
-                totals = parsed.get('totals', {}) or {}
+            # Multipliers (wiersz 10 zero-based -> index 9)
+            ws.write(9, 7, 1.0)   # Layout
+            ws.write(9, 9, 1.0)   # Detail
+            ws.write(9, 11, 1.0)  # Doc
 
-                est_l = float(totals.get('layout', 0) or 0)
-                est_d = float(totals.get('detail', 0) or 0)
-                est_doc = float(totals.get('documentation', 0) or 0)
-                est_total = float(totals.get('total', est_l + est_d + est_doc) or 0)
+            # Nagłówki (opcjonalnie, wiersz 11 -> index 10)
+            headers = ["Pozycja", "Opis", "Komentarz", "Części std", "Części spec", "", "", "Layout [h]", "", "Detail [h]", "", "Doc [h]"]
+            for col, h in enumerate(headers):
+                ws.write(10, col, h)
 
-                # Zapisz projekt jako historyczny, zablokowany dla AI
+            # Dane od wiersza 12 (index 11)
+            row = 11
+            ws.write(row, 0, "1,0"); ws.write(row, 1, "Stacja dociskania omega (złożenie)"); row += 1
+
+            ws.write(row, 0, "1,1")
+            ws.write(row, 1, "Dociski omega boczna; blachy")
+            ws.write(row, 2, "2x - docisk śrubowy odrzucany; śruba trapezowa; konsola docisku")
+            ws.write(row, 7, 2.0); ws.write(row, 9, 6.0); ws.write(row, 11, 3.0); row += 1
+
+            ws.write(row, 0, "1,2")
+            ws.write(row, 1, "Konsola główna")
+            ws.write(row, 2, "płyta montażowa; 4x wspornik; osłona boczna")
+            ws.write(row, 7, 1.0); ws.write(row, 9, 4.0); ws.write(row, 11, 2.0); row += 1
+
+            ws.write(row, 0, "1,3")
+            ws.write(row, 1, "Płyta bazowa z otworami")
+            ws.write(row, 2, "8x otwór M12; fazowanie")
+            ws.write(row, 7, 0.5); ws.write(row, 9, 2.5); ws.write(row, 11, 1.0)
+    except Exception:
+        # fallback: openpyxl (minimalny)
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df = pd.DataFrame([
+                ["1,0", "Stacja dociskania omega (złożenie)", None, None, None, None, None, None, None, None, None, None],
+                ["1,1", "Dociski omega boczna; blachy", "2x - docisk śrubowy odrzucany; śruba trapezowa; konsola docisku",
+                 0, 0, None, None, 2.0, None, 6.0, None, 3.0],
+                ["1,2", "Konsola główna", "płyta montażowa; 4x wspornik; osłona boczna",
+                 0, 0, None, None, 1.0, None, 4.0, None, 2.0],
+                ["1,3", "Płyta bazowa z otworami", "8x otwór M12; fazowanie",
+                 0, 0, None, None, 0.5, None, 2.5, None, 1.0],
+            ])
+            df.to_excel(writer, sheet_name='Dane', header=False, index=False)
+    output.seek(0)
+    return output.getvalue()
+
+def generate_sample_pdf() -> bytes | None:
+    """Generuje prosty PDF (wymaga reportlab). Jeśli brak, zwraca None."""
+    try:
+        from reportlab.pdfgen import canvas
+        from reportlab.lib.pagesizes import A4
+        buf = BytesIO()
+        c = canvas.Canvas(buf, pagesize=A4)
+        textobject = c.beginText(40, 800)
+        lines = [
+            "Specyfikacja: Stacja dociskania omega (boczna)",
+            "- Wymagane dociski śrubowe z mechanizmem odrzucania",
+            "- Konsola docisku i płyta bazowa",
+            "- Śruby trapezowe w mechanizmie odrzutu",
+            "Normy: ISO 12100, EN 1090",
+            "Uwagi: kinematyka docisku, docisk boczny, kontrola luzu"
+        ]
+        for l in lines:
+            textobject.textLine(l)
+        c.drawText(textobject)
+        c.showPage()
+        c.save()
+        buf.seek(0)
+        return buf.getvalue()
+    except Exception as e:
+        logger.warning(f"Nie można wygenerować PDF (brak reportlab?): {e}")
+        return None
+
+def generate_sample_image() -> bytes:
+    """Generuje prosty obraz PNG (schemat poglądowy) do testu."""
+    w, h = 800, 400
+    img = Image.new("RGB", (w, h), (245, 245, 245))
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([20, 20, w-20, h-20], outline=(50, 50, 50), width=3)
+    draw.rectangle([60, 150, 220, 250], outline="navy", width=3); draw.text((70, 260), "Płyta bazowa", fill="navy")
+    draw.rectangle([300, 120, 520, 180], outline="darkgreen", width=3); draw.text((310, 185), "Docisk śrubowy", fill="darkgreen")
+    draw.line([520, 150, 700, 150], fill="black", width=3); draw.text((600, 160), "Odrzut", fill="black")
+    draw.text((30, 30), "Stacja dociskania omega (schemat poglądowy)", fill=(0, 0, 0))
+    buf = BytesIO(); img.save(buf, format='PNG'); buf.seek(0)
+    return buf.getvalue()
+
+def fill_demo_fields():
+    st.session_state['project_name'] = "Stacja dociskania omega - DEMO"
+    st.session_state['client'] = "Klient Demo sp. z o.o."
+    st.session_state['description'] = (
+        "Stacja dociskania detalu typu omega z dociskami bocznymi. "
+        "Wymagania: mechanizm odrzutu docisku śrubowego, konsola docisku, płyta bazowa. "
+        "Normy: ISO 12100, EN 1090. Złożoność średnia, kinematyka docisków."
+    )
+    st.success("Wypełniono formularz przykładowymi danymi.")
+
+# === UI: Dashboard ===
+def render_dashboard_page():
+    st.header("📊 Dashboard")
+    with get_db_connection() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute("SELECT COUNT(*) as count FROM projects")
+        project_count = cur.fetchone()['count']
+        cur.execute("SELECT AVG(accuracy) as avg FROM projects WHERE accuracy IS NOT NULL")
+        avg_accuracy = (cur.fetchone() or {}).get('avg') or 0
+        cur.execute("""
+        SELECT department, COUNT(*) as count
+        FROM projects WHERE department IS NOT NULL
+        GROUP BY department ORDER BY department
+        """)
+        dept_stats = cur.fetchall()
+
+    c1, c2 = st.columns(2)
+    c1.metric("Projekty", project_count)
+    c2.metric("Średnia dokładność", f"{avg_accuracy*100:.1f}%")
+
+    if dept_stats:
+        st.subheader("Projekty wg działów")
+        df_dept = pd.DataFrame(dept_stats)
+        df_dept['department_name'] = df_dept['department'].map(DEPARTMENTS)
+        st.bar_chart(df_dept.set_index('department_name')['count'])
+
+    st.header("🔍 Wyszukaj projekty")
+    search_dept = st.selectbox("Dział", options=[''] + list(DEPARTMENTS.keys()),
+                               format_func=lambda x: 'Wszystkie' if x == '' else f"{x} - {DEPARTMENTS[x]}")
+    search_query = st.text_input("Słowa kluczowe")
+    if search_query:
+        with get_db_connection() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if search_dept:
                 cur.execute("""
-                    INSERT INTO projects (
-                        name, client, department, description, components,
-                        estimated_hours_3d_layout, estimated_hours_3d_detail, estimated_hours_2d,
-                        estimated_hours, ai_analysis,
-                        is_historical, estimation_mode, totals_source, locked_totals
-                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
-                             TRUE, 'excel_only', 'excel', TRUE)
-                    RETURNING id
-                """, (
-                    proj_name, None, department, None,
-                    json.dumps(comps_full, ensure_ascii=False),
-                    est_l, est_d, est_doc, est_total,
-                    '[HISTORICAL_IMPORT]'
-                ))
-                pid = cur.fetchone()[0]
+                    SELECT id, name, client, department, estimated_hours, description
+                    FROM projects WHERE department = %s
+                    AND to_tsvector('simple', coalesce(name,'') || ' ' || coalesce(client,'') || ' ' || coalesce(description,'')) 
+                        @@ websearch_to_tsquery('simple', %s)
+                    ORDER BY created_at DESC LIMIT 10
+                """, (search_dept, search_query))
+            else:
+                cur.execute("""
+                    SELECT id, name, client, department, estimated_hours, description
+                    FROM projects
+                    WHERE to_tsvector('simple', coalesce(name,'') || ' ' || coalesce(client,'') || ' ' || coalesce(description,'')) 
+                        @@ websearch_to_tsquery('simple', %s)
+                    ORDER BY created_at DESC LIMIT 10
+                """, (search_query,))
+            results = cur.fetchall()
+        if results:
+            st.write(f"Znaleziono {len(results)} projektów:")
+            df_results = pd.DataFrame(results)
+            df_results['department_name'] = df_results['department'].map(DEPARTMENTS)
+            st.dataframe(df_results, use_container_width=True)
 
-                # Uczenie z importu (opcjonalnie)
-                if learn_from_import and comps_full:
-                    learn_from_historical_components(cur, department, comps_full, distribute=distribute)
+            selected_project = st.selectbox(
+                "Historia wersji",
+                options=results,
+                format_func=lambda p: f"{p['name']} ({p['department']})"
+            )
+            if selected_project:
+                with get_db_connection() as conn:
+                    versions = get_project_versions(conn, selected_project['id'])
+                if versions:
+                    st.subheader(f"📜 Historia: {selected_project['name']}")
+                    for v in versions:
+                        with st.expander(f"{v['version']} - {v['created_at'].strftime('%Y-%m-%d %H:%M')} {'✅' if v['is_approved'] else ''}",
+                                         expanded=(v == versions[0])):
+                            col1, col2, col3 = st.columns(3)
+                            col1.metric("Layout", f"{v['estimated_hours_3d_layout']:.1f}h")
+                            col2.metric("Detail", f"{v['estimated_hours_3d_detail']:.1f}h")
+                            col3.metric("2D", f"{v['estimated_hours_2d']:.1f}h")
+                            st.metric("TOTAL", f"{v['estimated_hours']:.1f}h")
+                            if v['change_description']:
+                                st.text_area("Opis", v['change_description'], height=100, disabled=True, key=f"d_{v['id']}")
+                            st.caption(f"Autor: {v['changed_by']}")
+        else:
+            st.info("Nie znaleziono")
 
-                conn.commit()
-                results.append({"file": fname, "status": "success", "project_id": pid, "hours": est_total})
-            except Exception as e:
-                conn.rollback()
-                logger.exception("Batch import error")
-                results.append({"file": getattr(f, 'name', 'unknown'), "status": "error", "error": str(e)})
-    return results
-
+# === UI: Historia i Uczenie ===
 def render_history_page():
     st.header("📚 Historia i Uczenie")
     tab1, tab2, tab3 = st.tabs(["✏️ Feedback", "🧠 Wzorce", "📦 Batch Import"])
 
+    # Feedback: rzeczywiste godziny -> ucz wzorce i baseline
     with tab1:
         st.subheader("Dodaj feedback")
         feedback_dept = st.selectbox("Dział", options=[''] + list(DEPARTMENTS.keys()),
@@ -2402,7 +2237,7 @@ def render_history_page():
 
         if pending:
             proj = st.selectbox("Projekt", options=pending,
-                               format_func=lambda p: f"[{p['department']}] {p['name']} (ID: {p['id']}) | est: {p['estimated_hours']:.1f}h")
+                                format_func=lambda p: f"[{p['department']}] {p['name']} (ID: {p['id']}) | est: {p['estimated_hours']:.1f}h")
             actual_hours = st.number_input("Rzeczywiste godziny", min_value=0.0, step=0.5, value=float(proj['estimated_hours']))
 
             if st.button("💾 Zapisz feedback", type="primary"):
@@ -2412,73 +2247,66 @@ def render_history_page():
                     with get_db_connection() as conn, conn.cursor() as cur:
                         estimated = float(proj['estimated_hours'])
                         accuracy = 1 - abs(estimated - actual_hours) / estimated if estimated > 0 else 0
-
                         cur.execute("UPDATE projects SET actual_hours = %s, accuracy = %s WHERE id = %s",
-                                  (actual_hours, accuracy, proj['id']))
+                                    (actual_hours, accuracy, proj['id']))
 
-                        cur.execute("SELECT components FROM projects WHERE id = %s", (proj['id'],))
-                        components_data = (cur.fetchone() or [None])[0] or []
+                        cur.execute("SELECT components, department FROM projects WHERE id = %s", (proj['id'],))
+                        row = cur.fetchone()
+                        components_data = (row[0] or [])
+                        dept = row[1]
 
                         if components_data:
                             ratio = actual_hours / estimated if estimated > 0 else 1.0
+                            # ucz wzorce komp. głównych + subów
                             for comp in components_data:
                                 if comp.get('is_summary'):
                                     continue
-
                                 layout_est = float(comp.get('hours_3d_layout', 0))
                                 detail_est = float(comp.get('hours_3d_detail', 0))
                                 doc_est = float(comp.get('hours_2d', 0))
                                 total_est = float(comp.get('hours', 0))
-
                                 if total_est > 0:
                                     update_pattern_smart(
-                                        cur, comp.get('name', 'nieznany'), proj['department'],
-                                        layout_est * ratio, detail_est * ratio,
-                                        doc_est * ratio, source='actual'
+                                        cur, comp.get('name', 'nieznany'), dept,
+                                        layout_est * ratio, detail_est * ratio, doc_est * ratio, source='actual'
                                     )
-
-                                    subcomponents = comp.get('subcomponents', [])
-                                    if subcomponents:
-                                        total_qty = sum(s.get('quantity', 1) for s in subcomponents)
-                                        for sub in subcomponents:
+                                    subs = comp.get('subcomponents', [])
+                                    if subs:
+                                        total_qty = sum(s.get('quantity', 1) for s in subs)
+                                        for sub in subs:
                                             qty = sub.get('quantity', 1)
-                                            weight = qty / total_qty if total_qty > 0 else 1.0 / len(subcomponents)
+                                            weight = qty / total_qty if total_qty > 0 else 1.0 / len(subs)
                                             sub_layout = layout_est * ratio * weight
                                             sub_detail = detail_est * ratio * weight
                                             sub_doc = doc_est * ratio * weight
-                                            update_pattern_smart(cur, sub['name'], proj['department'], sub_layout, sub_detail, sub_doc, source='subcomponent')
-                                            logger.info(f"  └─ Sub: {qty}x {sub['name']}")
+                                            update_pattern_smart(cur, sub['name'], dept, sub_layout, sub_detail, sub_doc, source='subcomponent')
 
-                        # Aktualizuj baseline kategorii
-                        agg_cat = {}
-                        for comp in components_data:
-                            if comp.get('is_summary'):
-                                continue
-                            layout_act = float(comp.get('hours_3d_layout', 0)) * ratio
-                            detail_act = float(comp.get('hours_3d_detail', 0)) * ratio
-                            doc_act = float(comp.get('hours_2d', 0)) * ratio
-
-                            cat = comp.get('category') or categorize_component(comp.get('name',''))
-                            agg_cat.setdefault(cat, [0.0,0.0,0.0])
-                            agg_cat[cat][0] += layout_act
-                            agg_cat[cat][1] += detail_act
-                            agg_cat[cat][2] += doc_act
-
-                        for cat, (l,d,dc) in agg_cat.items():
-                            update_category_baseline(cur, proj['department'], cat, l, d, dc)
+                            # baseline kategorii
+                            agg_cat = {}
+                            for comp in components_data:
+                                if comp.get('is_summary'):
+                                    continue
+                                layout_act = float(comp.get('hours_3d_layout', 0)) * ratio
+                                detail_act = float(comp.get('hours_3d_detail', 0)) * ratio
+                                doc_act = float(comp.get('hours_2d', 0)) * ratio
+                                cat = comp.get('category') or categorize_component(comp.get('name',''))
+                                agg_cat.setdefault(cat, [0.0, 0.0, 0.0])
+                                agg_cat[cat][0] += layout_act; agg_cat[cat][1] += detail_act; agg_cat[cat][2] += doc_act
+                            for cat, (l, d, dc) in agg_cat.items():
+                                update_category_baseline(cur, dept, cat, l, d, dc)
 
                         conn.commit()
-                    st.success("Dziękuję! System zaktualizowany.")
-                    time.sleep(1)
+                    st.success("Dzięki! System się zaktualizował.")
+                    time.sleep(1.0)
                     st.rerun()
         else:
             st.info("🎉 Wszystkie projekty mają feedback!")
 
+    # Wzorce: podgląd patterns
     with tab2:
         st.subheader("Wzorce komponentów")
         pattern_dept = st.selectbox("Filtruj", options=[''] + list(DEPARTMENTS.keys()),
-                                   format_func=lambda x: 'Wszystkie' if x == '' else f"{x} - {DEPARTMENTS[x]}")
-
+                                    format_func=lambda x: 'Wszystkie' if x == '' else f"{x} - {DEPARTMENTS[x]}")
         with get_db_connection() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
             if pattern_dept:
                 cur.execute("""
@@ -2497,7 +2325,6 @@ def render_history_page():
                     ORDER BY department, occurrences DESC
                 """)
             patterns = cur.fetchall()
-
         if patterns:
             df = pd.DataFrame(patterns)
             df['department_name'] = df['department'].map(DEPARTMENTS)
@@ -2514,10 +2341,8 @@ def render_history_page():
                 with get_db_connection() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
                     cur.execute("SELECT id, description FROM projects WHERE description IS NOT NULL")
                     projects_to_embed = cur.fetchall()
-
                     cur.execute("SELECT pattern_key, department, name FROM component_patterns WHERE pattern_key IS NOT NULL")
                     patterns_to_embed = cur.fetchall()
-
                     total_items = len(projects_to_embed) + len(patterns_to_embed)
                     if total_items == 0:
                         st.warning("Brak danych do przeliczenia")
@@ -2533,13 +2358,12 @@ def render_history_page():
                         progress.empty()
                         st.success(f"✅ Przeliczono {len(projects_to_embed)} projektów + {len(patterns_to_embed)} wzorców")
 
+    # Batch import
     with tab3:
         st.subheader("📦 Batch Import")
         st.info("Import wielu plików Excel naraz")
-
         batch_dept = st.selectbox("Dział dla importu", options=list(DEPARTMENTS.keys()),
-                                 format_func=lambda x: f"{x} - {DEPARTMENTS[x]}", key="batch_dept")
-
+                                  format_func=lambda x: f"{x} - {DEPARTMENTS[x]}", key="batch_dept")
         excel_files = st.file_uploader("Excel (wiele)", type=['xlsx', 'xls'], accept_multiple_files=True, key="batch")
         if excel_files:
             st.write(f"📁 {len(excel_files)} plików")
@@ -2547,16 +2371,11 @@ def render_history_page():
                 st.write(f"• {f.name}")
             if len(excel_files) > 10:
                 st.write(f"... +{len(excel_files) - 10}")
-
-            # NOWE OPCJE: uczenie z importu + metoda podziału godzin
             learn_from_import = st.checkbox("Ucz wzorce z importu (komponenty + sub‑komponenty z komentarzy)", value=True)
-            distribute_method = st.radio(
-                "Rozdział godzin na sub‑komponenty",
-                options=['qty', 'equal'],
-                format_func=lambda v: "Proporcjonalnie do ilości (qty)" if v == 'qty' else "Po równo",
-                horizontal=True
-            )
-
+            distribute_method = st.radio("Rozdział godzin na sub‑komponenty",
+                                         options=['qty', 'equal'],
+                                         format_func=lambda v: "Proporcjonalnie do ilości (qty)" if v == 'qty' else "Po równo",
+                                         horizontal=True)
             if st.button("🚀 Importuj", type="primary", use_container_width=True):
                 st.info(f"Import {len(excel_files)} do {batch_dept}...")
                 results = batch_import_excels(excel_files, batch_dept,
@@ -2575,15 +2394,18 @@ def render_history_page():
                 if errors > 0:
                     st.warning(f"⚠️ {errors} błędów")
 
+# === MAIN ===
 def main():
     st.title("🚀 CAD Estimator Pro")
 
     if not init_db():
         st.stop()
 
+    # Sidebar: nawigacja
     st.sidebar.title("Menu")
     page = st.sidebar.radio("Nawigacja", ["Dashboard", "Nowy projekt", "Historia i Uczenie"])
 
+    # Sidebar: ustawienia AI
     st.sidebar.subheader("Ustawienia AI")
     available_models = [m for m in list_local_models() if "embed" not in m]
     selected_model = st.sidebar.selectbox(
@@ -2609,7 +2431,7 @@ def main():
         except Exception:
             pass
         st.rerun()
-    
+
     st.sidebar.subheader("Embedding (diagnostyka)")
     detected_dim = detect_embed_dim(EMBED_MODEL)
     if detected_dim and detected_dim != EMBED_DIM:
@@ -2619,12 +2441,13 @@ def main():
     else:
         st.sidebar.info("Nie udało się pobrać embeddingu (sprawdź OLLAMA_URL / model).")
 
-    # DEMO / PRÓBNE DANE
+    # Demo/próbne dane
     with st.sidebar.expander("🧪 Demo / Próbne dane", expanded=False):
         if st.button("Wypełnij formularz przykładowymi danymi"):
             fill_demo_fields()
         demo_excel = generate_sample_excel()
-        st.download_button("📥 Pobierz przykładowy Excel", demo_excel, file_name="demo_estymacja.xlsx",
+        st.download_button("📥 Pobierz przykładowy Excel", demo_excel,
+                           file_name="demo_estymacja.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         demo_pdf = generate_sample_pdf()
         if demo_pdf:
@@ -2634,6 +2457,7 @@ def main():
         demo_img = generate_sample_image()
         st.download_button("📥 Pobierz przykładowy obraz (PNG)", demo_img, file_name="demo_schemat.png", mime="image/png")
 
+    # Routing stron
     if page == "Dashboard":
         render_dashboard_page()
     elif page == "Nowy projekt":
