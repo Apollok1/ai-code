@@ -1446,14 +1446,18 @@ def propose_bundles_for_component(conn, parent_name: str, department: str,
                 })
 
     return proposals
-
-# === Batch import historycznych Exceli (z opcją uczenia) ===
-def batch_import_excels(files, department: str, learn_from_import: bool = False, distribute: str = 'qty'):
+# === Batch import historycznych Exceli (z opcją uczenia) ===                                      
+def batch_import_excels(files, department: str,
+                        learn_from_import: bool = False,
+                        distribute: str = 'qty'):
     """
-    Batch import:
-    - parsuje wartości + komentarze/note (openpyxl),
+    Batch import historycznych plików Excel:
+    - parsuje komponenty + komentarze (openpyxl comments),
+    - opis pobierany AUTOMATYCZNIE z A1 pierwszej zakładki,
     - zapisuje projekt jako Excel-only (is_historical/locked),
-    - opcjonalnie uczy wzorce i bundles.
+    - od razu generuje embedding opisu (pgvector),
+    - opcjonalnie uczy wzorce (patterns) i bundles.
+    Zwraca listę wyników: {file, status, project_id?, hours?, desc?, error?}
     """
     results = []
     with get_db_connection() as conn, conn.cursor() as cur:
@@ -1462,7 +1466,13 @@ def batch_import_excels(files, department: str, learn_from_import: bool = False,
                 fname = getattr(f, "name", "import.xlsx")
                 proj_name = os.path.splitext(os.path.basename(fname))[0]
 
-                parsed = parse_cad_project_structured_with_xlsx_comments(f)
+                # Wczytaj bytes raz i wykorzystaj dwa razy (parser + A1)
+                content = f.read()
+                bio_parse = BytesIO(content)
+                bio_a1 = BytesIO(content)
+
+                # 1) Parser (wartości + komentarze/note)
+                parsed = parse_cad_project_structured_with_xlsx_comments(bio_parse)
                 comps_full = parsed.get('components', []) or []
                 totals = parsed.get('totals', {}) or {}
 
@@ -1471,6 +1481,12 @@ def batch_import_excels(files, department: str, learn_from_import: bool = False,
                 est_doc = float(totals.get('documentation', 0) or 0)
                 est_total = float(totals.get('total', est_l + est_d + est_doc) or 0)
 
+                # 2) Opis z A1 (pierwsza zakładka)
+                description = extract_scope_from_excel_a1_first_sheet(bio_a1).strip()
+                if not description:
+                    description = f"Projekt historyczny: {proj_name}."
+
+                # 3) Zapisz projekt jako historyczny, zablokowany dla AI
                 cur.execute("""
                     INSERT INTO projects (
                         name, client, department, description, components,
@@ -1481,17 +1497,28 @@ def batch_import_excels(files, department: str, learn_from_import: bool = False,
                              TRUE, 'excel_only', 'excel', TRUE)
                     RETURNING id
                 """, (
-                    proj_name, None, department, None,
+                    proj_name, None, department, description,
                     json.dumps(comps_full, ensure_ascii=False),
-                    est_l, est_d, est_doc, est_total, '[HISTORICAL_IMPORT]'
+                    est_l, est_d, est_doc, est_total,
+                    '[HISTORICAL_IMPORT]'
                 ))
                 pid = cur.fetchone()[0]
 
+                # 4) Embedding opisu (pgvector)
+                ensure_project_embedding(cur, pid, description)
+
+                # 5) Uczenie wzorców/bundles (opcjonalnie)
                 if learn_from_import and comps_full:
                     learn_from_historical_components(cur, department, comps_full, distribute=distribute)
 
                 conn.commit()
-                results.append({"file": fname, "status": "success", "project_id": pid, "hours": est_total})
+                results.append({
+                    "file": fname,
+                    "status": "success",
+                    "project_id": pid,
+                    "hours": est_total,
+                    "desc": (description[:120] + ("..." if len(description) > 120 else ""))
+                })
             except Exception as e:
                 conn.rollback()
                 logger.exception("Batch import error")
@@ -2218,7 +2245,7 @@ def render_history_page():
     st.header("📚 Historia i Uczenie")
     tab1, tab2, tab3 = st.tabs(["✏️ Feedback", "🧠 Wzorce", "📦 Batch Import"])
 
-    # Feedback: rzeczywiste godziny -> ucz wzorce i baseline
+    # === TAB 1: Feedback (rzeczywiste godziny → uczenie wzorców) ===
     with tab1:
         st.subheader("Dodaj feedback")
         feedback_dept = st.selectbox("Dział", options=[''] + list(DEPARTMENTS.keys()),
@@ -2232,7 +2259,12 @@ def render_history_page():
                     ORDER BY created_at DESC
                 """, (feedback_dept,))
             else:
-                cur.execute("SELECT id, name, department, estimated_hours FROM projects WHERE actual_hours IS NULL ORDER BY created_at DESC")
+                cur.execute("""
+                    SELECT id, name, department, estimated_hours 
+                    FROM projects 
+                    WHERE actual_hours IS NULL 
+                    ORDER BY created_at DESC
+                """)
             pending = cur.fetchall()
 
         if pending:
@@ -2247,6 +2279,7 @@ def render_history_page():
                     with get_db_connection() as conn, conn.cursor() as cur:
                         estimated = float(proj['estimated_hours'])
                         accuracy = 1 - abs(estimated - actual_hours) / estimated if estimated > 0 else 0
+
                         cur.execute("UPDATE projects SET actual_hours = %s, accuracy = %s WHERE id = %s",
                                     (actual_hours, accuracy, proj['id']))
 
@@ -2302,11 +2335,12 @@ def render_history_page():
         else:
             st.info("🎉 Wszystkie projekty mają feedback!")
 
-    # Wzorce: podgląd patterns
+    # === TAB 2: Wzorce komponentów (podgląd + narzędzia admina) ===
     with tab2:
         st.subheader("Wzorce komponentów")
         pattern_dept = st.selectbox("Filtruj", options=[''] + list(DEPARTMENTS.keys()),
                                     format_func=lambda x: 'Wszystkie' if x == '' else f"{x} - {DEPARTMENTS[x]}")
+
         with get_db_connection() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
             if pattern_dept:
                 cur.execute("""
@@ -2325,6 +2359,7 @@ def render_history_page():
                     ORDER BY department, occurrences DESC
                 """)
             patterns = cur.fetchall()
+
         if patterns:
             df = pd.DataFrame(patterns)
             df['department_name'] = df['department'].map(DEPARTMENTS)
@@ -2358,12 +2393,16 @@ def render_history_page():
                         progress.empty()
                         st.success(f"✅ Przeliczono {len(projects_to_embed)} projektów + {len(patterns_to_embed)} wzorców")
 
-    # Batch import
+    # === TAB 3: Batch Import (A1 → opis) + Edycja po imporcie ===
     with tab3:
-        st.subheader("📦 Batch Import")
-        st.info("Import wielu plików Excel naraz")
+        st.subheader("📦 Batch Import (opis z A1 pierwszej zakładki)")
+        st.info("Podczas importu opis projektu zostanie automatycznie pobrany z komórki A1 pierwszego arkusza. "
+                "Jeśli A1 jest puste, zapisze się placeholder 'Projekt historyczny: <nazwa>'. "
+                "Po imporcie możesz opisy edytować niżej.")
+
         batch_dept = st.selectbox("Dział dla importu", options=list(DEPARTMENTS.keys()),
                                   format_func=lambda x: f"{x} - {DEPARTMENTS[x]}", key="batch_dept")
+
         excel_files = st.file_uploader("Excel (wiele)", type=['xlsx', 'xls'], accept_multiple_files=True, key="batch")
         if excel_files:
             st.write(f"📁 {len(excel_files)} plików")
@@ -2371,11 +2410,15 @@ def render_history_page():
                 st.write(f"• {f.name}")
             if len(excel_files) > 10:
                 st.write(f"... +{len(excel_files) - 10}")
-            learn_from_import = st.checkbox("Ucz wzorce z importu (komponenty + sub‑komponenty z komentarzy)", value=True)
-            distribute_method = st.radio("Rozdział godzin na sub‑komponenty",
-                                         options=['qty', 'equal'],
-                                         format_func=lambda v: "Proporcjonalnie do ilości (qty)" if v == 'qty' else "Po równo",
-                                         horizontal=True)
+
+            learn_from_import = st.checkbox("Ucz wzorce z importu (komponenty + sub‑komponenty)", value=True)
+            distribute_method = st.radio(
+                "Rozdział godzin na sub‑komponenty",
+                options=['qty', 'equal'],
+                format_func=lambda v: "Proporcjonalnie do ilości (qty)" if v == 'qty' else "Po równo",
+                horizontal=True
+            )
+
             if st.button("🚀 Importuj", type="primary", use_container_width=True):
                 st.info(f"Import {len(excel_files)} do {batch_dept}...")
                 results = batch_import_excels(excel_files, batch_dept,
@@ -2393,6 +2436,37 @@ def render_history_page():
                     st.success(f"🎉 {success} projektów!")
                 if errors > 0:
                     st.warning(f"⚠️ {errors} błędów")
+
+        st.markdown("---")
+        st.subheader("✏️ Uzupełnij/edytuj opisy po imporcie")
+        st.caption("Poniżej widzisz ostatnie projekty historyczne bez opisu lub z opisem zastępczym. Uzupełnij i zapisz.")
+
+        with get_db_connection() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT id, name, department, coalesce(description,'') AS description
+                FROM projects
+                WHERE is_historical = TRUE
+                  AND (description IS NULL OR trim(description) = '' OR description LIKE 'Projekt historyczny:%')
+                ORDER BY created_at DESC
+                LIMIT 50
+            """)
+            missing = cur.fetchall()
+
+        if missing:
+            for p in missing:
+                st.markdown(f"**[{p['department']}] {p['name']}**")
+                new_desc = st.text_area("Opis", value=p['description'], key=f"d_{p['id']}", height=100)
+                save_col, _ = st.columns([1,3])
+                if save_col.button("💾 Zapisz opis", key=f"save_{p['id']}"):
+                    with get_db_connection() as conn, conn.cursor() as cur:
+                        cur.execute("UPDATE projects SET description=%s WHERE id=%s", (new_desc.strip(), p['id']))
+                        ensure_project_embedding(cur, p['id'], new_desc.strip())
+                        conn.commit()
+                    st.success("Zapisano opis ✔️")
+                    time.sleep(0.5)
+                    st.rerun()
+        else:
+            st.caption("Brak pozycji do uzupełnienia – wszystkie mają opis.")
 
 # === MAIN ===
 def main():
