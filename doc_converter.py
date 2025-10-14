@@ -91,7 +91,20 @@ IMAGE_MODE_MAP = {
     "OCR + Vision opis": "ocr_plus_vision_desc",
 }
 
-
+def remap_speakers(text_with_speakers: str, speaker_map: dict) -> str:
+    """
+    Zamienia domyślne etykiety (np. 'SPEAKER_00') na podane przez użytkownika.
+    """
+    if not speaker_map:
+        return text_with_speakers
+    
+    output_text = text_with_speakers
+    # Sortuj klucze od najdłuższego, aby uniknąć problemów (np. SPEAKER_1 vs SPEAKER_10)
+    for old_speaker in sorted(speaker_map.keys(), key=len, reverse=True):
+        new_name = speaker_map.get(old_speaker)
+        if new_name:
+            output_text = output_text.replace(old_speaker, new_name)
+    return output_text
 # === OFFLINE GUARD ===
 def is_private_host(host: str) -> bool:
     try:
@@ -1377,6 +1390,39 @@ if uploaded_files:
                 # Podgląd
                 with st.expander(f"Preview: {file.name}"):
                     st.text(extracted_text[:2000] + ("..." if len(extracted_text) > 2000 else ""))
+
+                # === SEKCJA PRZYPISYWANIA IMION MÓWCÓW ===
+                if isinstance(meta, dict) and meta.get("has_speakers"):
+                    st.markdown("##### 🎤 Przypisz imiona mówcom")
+                    
+                    # Znajdź unikalne etykiety SPEAKER_XX z tekstu
+                    unique_speakers = sorted(list(set(re.findall(r'SPEAKER_\d+', extracted_text))))
+                    
+                    if unique_speakers:
+                        speaker_map = {}
+                        cols = st.columns(len(unique_speakers))
+                        for i, speaker_id in enumerate(unique_speakers):
+                            with cols[i]:
+                                # Użyj unikalnego klucza dla każdego pola, łącząc nazwę pliku i ID mówcy
+                                input_key = f"speaker_name_{safe_filename(file.name)}_{speaker_id}"
+                                speaker_map[speaker_id] = st.text_input(
+                                    f"Imię dla {speaker_id}",
+                                    value=speaker_id, # Domyślnie zostawiamy oryginalną nazwę
+                                    key=input_key
+                                )
+                        
+                        # Przycisk do zastosowania zmian
+                        remap_key = f"remap_button_{safe_filename(file.name)}"
+                        if st.button("Zastosuj imiona", key=remap_key):
+                            # Zaktualizuj tekst w `st.session_state`
+                            # Znajdź odpowiedni wynik w sesji
+                            for result in st.session_state["results"]:
+                                if result["name"] == file.name:
+                                    # Zastosuj mapowanie i zaktualizuj tekst
+                                    result["text"] = remap_speakers(result["text"], speaker_map)
+                                    st.success(f"Zaktualizowano imiona dla pliku: {file.name}")
+                                    # Wymuś odświeżenie interfejsu, aby pokazać zmiany
+                                    st.rerun()
 
                 # Audio → do podsumowań
                 if isinstance(meta, dict) and meta.get("type") == "audio":
