@@ -26,6 +26,7 @@ from PyPDF2 import PdfReader
 from rapidfuzz import fuzz, process
 from openpyxl import load_workbook
 
+
 # === LOGGING ===
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("cad-estimator")
@@ -94,7 +95,32 @@ COMPONENT_ALIASES = {
     # Śruby / bolty
     'śruba': 'screw', 'schraube': 'screw', 'bolt': 'bolt',
 }
-
+def extract_scope_from_excel_a1_first_sheet(file_like) -> str:
+    """
+    Zwraca opis z komórki A1 pierwszego arkusza (pierwszej zakładki).
+    Obsługuje UploadedFile/bytes/file-like. Zwraca "" jeśli brak.
+    """
+    try:
+        # spłaszcz do bytes
+        if hasattr(file_like, "read"):
+            content = file_like.read()
+        elif isinstance(file_like, bytes):
+            content = file_like
+        else:
+            try:
+                pos = file_like.tell()
+                file_like.seek(0)
+                content = file_like.read()
+                file_like.seek(pos)
+            except Exception:
+                return ""
+        wb = load_workbook(BytesIO(content), data_only=True)
+        ws = wb.worksheets[0]
+        val = ws.cell(row=1, column=1).value
+        return str(val).strip() if val is not None else ""
+    except Exception as e:
+        logger.info(f"Nie udało się odczytać A1 z Excela: {e}")
+        return ""
 # === PROMPTY ===
 MASTER_PROMPT = """Jesteś senior konstruktorem CAD z 20-letnim doświadczeniem w:
 
