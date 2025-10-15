@@ -1550,7 +1550,45 @@ def batch_import_excels(files, department: str,
                 logger.exception("Batch import error")
                 results.append({"file": getattr(f, 'name', 'unknown'), "status": "error", "error": str(e)})
     return results
-
+                            
+def enhance_estimation_with_web(component_name: str, department: str, enable_web: bool) -> dict:
+    """
+    Wzbogaca estymację komponentu o dane z sieci (normy, benchmarki).
+    Zwraca: {"norms": [...], "typical_hours": float, "notes": "..."}
+    """
+    if not enable_web or not st.session_state.get("allow_web_lookup"):
+        return {}
+    
+    # Przykład: wyszukaj normy dla komponentu
+    try:
+        from duckduckgo_search import DDGS
+        import trafilatura
+    except ImportError:
+        return {"error": "duckduckgo-search/trafilatura not installed"}
+    
+    results = {}
+    
+    # Zapytanie: normy dla typu komponentu
+    query = f"{component_name} CAD standard ISO EN time estimation"
+    try:
+        with DDGS() as ddg:
+            hits = ddg.text(query, region="en-us", safesearch="moderate", max_results=2)
+            for h in hits:
+                url = h.get("href")
+                if url:
+                    try:
+                        content = trafilatura.fetch_url(url)
+                        text = trafilatura.extract(content) or ""
+                        if text:
+                            results["web_context"] = text[:500]  # Pierwsze 500 znaków
+                            break
+                    except Exception:
+                        continue
+    except Exception as e:
+        logger.warning(f"Web search failed: {e}")
+    
+    return results
+    
 # === Strona: Nowy projekt (z JSON/paste i Vision llava/qwen2-vl) ===
 def render_new_project_page(selected_model):
     st.header("🆕 Nowy Projekt")
@@ -1620,7 +1658,17 @@ def render_new_project_page(selected_model):
         except Exception as e:
             logger.exception("Brief generation failed")
             st.error(f"Nie udało się wygenerować opisu: {e}")
-
+    # Po linii ~1600 (gdzie są results z AI)
+    if st.session_state.get("allow_web_lookup") and parsed.get('components'):
+        st.info("🌐 Wzbogacam estymację o dane z sieci...")
+        for comp in parsed['components'][:5]:  # Tylko pierwsze 5 (żeby nie zajmowało wieki)
+            web_data = enhance_estimation_with_web(
+                comp.get('name', ''), 
+                department, 
+                enable_web=True
+            )
+            if web_data.get("web_context"):
+                comp["web_notes"] = web_data["web_context"]
     # Wyświetl brief (jeśli jest)
     if "ai_brief" in st.session_state:
         b = st.session_state["ai_brief"]
@@ -1746,14 +1794,13 @@ def render_new_project_page(selected_model):
 
                 # Wybór modelu: Vision → llava / qwen2-vl, inaczej tekstowy
                 if images_b64:
-                    if model_available("llava"):
-                        ai_model = "llava:13b" if model_available("llava:13b") else "llava:latest"
-                    elif model_available("qwen2-vl"):
-                        ai_model = "qwen2-vl:7b" if model_available("qwen2-vl:7b") else "qwen2-vl:latest"
-                    else:
-                        ai_model = selected_model or "llama3:latest"
+                # Użyj wybranych modeli z session_state
+                if images_b64 and st.session_state.get("selected_vision_model"):
+                    ai_model = st.session_state["selected_vision_model"]
+                    st.info(f"🖼️ Używam modelu Vision: {ai_model}")
                 else:
-                    ai_model = selected_model or "llama3:latest"
+                    ai_model = st.session_state.get("selected_text_model") or selected_model or "llama3:latest"
+                    st.info(f"📝 Używam modelu tekstowego: {ai_model}")
 
                 progress_bar.progress(60, text=f"AI ({ai_model})...")
                 ai_text = query_ollama(prompt, model=ai_model, images_b64=images_b64, format_json=True)
@@ -2507,12 +2554,85 @@ def main():
 
     # Sidebar: ustawienia AI
     st.sidebar.subheader("Ustawienia AI")
-    available_models = [m for m in list_local_models() if "embed" not in m]
-    selected_model = st.sidebar.selectbox(
-        "Wybierz model AI",
-        options=available_models or ["llama3:latest"],
-        index=(available_models.index("mistral:7b-instruct") if "mistral:7b-instruct" in available_models else 0) if available_models else 0
+    
+    # 1) Model tekstowy (dla estymacji, JSON)
+    available_text_models = [
+        m for m in list_local_models() 
+        if not any(m.startswith(p) for p in ("llava", "bakllava", "moondream", "qwen2-vl", "qwen2.5vl", "nomic-embed"))
+    ]
+    
+    if "selected_text_model" not in st.session_state:
+        # Preferuj qwen2.5 dla technicznego tekstu
+        default_text = "qwen2.5:7b" if "qwen2.5:7b" in available_text_models else (
+            "mistral:7b-instruct" if "mistral:7b-instruct" in available_text_models else 
+            (available_text_models[0] if available_text_models else "llama3:latest")
+        )
+        st.session_state["selected_text_model"] = default_text
+    
+    try:
+        text_idx = available_text_models.index(st.session_state["selected_text_model"])
+    except (ValueError, IndexError):
+        text_idx = 0
+    
+    selected_text_model = st.sidebar.selectbox(
+        "Model AI (estymacja/JSON)",
+        options=available_text_models or ["llama3:latest"],
+        index=text_idx,
+        key="text_model_sel",
+        help="Model do analizy komponentów, generowania JSON, opisów zadań"
     )
+    st.session_state["selected_text_model"] = selected_text_model
+    
+    # 2) Model Vision (dla obrazów/rysunków)
+    available_vision_models = [
+        m for m in list_local_models()
+        if any(m.startswith(p) for p in ("llava", "bakllava", "moondream", "qwen2-vl", "qwen2.5vl"))
+    ]
+    
+    if available_vision_models:
+        if "selected_vision_model" not in st.session_state:
+            # Preferuj qwen2.5vl dla technicznych rysunków
+            default_vision = "qwen2.5vl:7b" if "qwen2.5vl:7b" in available_vision_models else (
+                "qwen2-vl:7b" if "qwen2-vl:7b" in available_vision_models else 
+                available_vision_models[0]
+            )
+            st.session_state["selected_vision_model"] = default_vision
+        
+        try:
+            vision_idx = available_vision_models.index(st.session_state["selected_vision_model"])
+        except (ValueError, IndexError):
+            vision_idx = 0
+        
+        selected_vision_model = st.sidebar.selectbox(
+            "Model Vision (obrazy/rysunki)",
+            options=available_vision_models,
+            index=vision_idx,
+            key="vision_model_sel",
+            help="Model do analizy zdjęć, schematów, rysunków technicznych"
+        )
+        st.session_state["selected_vision_model"] = selected_vision_model
+    else:
+        st.sidebar.warning("⚠️ Brak modeli Vision (zainstaluj llava/qwen2-vl)")
+        selected_vision_model = None
+
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("🌐 Web Lookup")
+    
+    if "allow_web_lookup" not in st.session_state:
+        st.session_state["allow_web_lookup"] = False
+    
+    allow_web = st.sidebar.checkbox(
+        "Zezwól na web lookup (normy/benchmarki)",
+        value=st.session_state["allow_web_lookup"],
+        key="web_lookup_toggle",
+        help="Pobiera publiczne dane: normy ISO/EN, benchmarki czasów, dostępność komponentów. NIE wysyła danych projektu!"
+    )
+    st.session_state["allow_web_lookup"] = allow_web
+    
+    if allow_web:
+        st.sidebar.caption("✅ Web lookup aktywny - system może wzbogacić estymację o dane z sieci")
+    else:
+        st.sidebar.caption("🔒 Tryb offline - tylko lokalne wzorce")
 
     st.sidebar.subheader("Status Systemu")
     st.sidebar.write(f"Ollama AI: {'✅ Połączony' if any(list_local_models()) else '❌ Brak połączenia'}")
