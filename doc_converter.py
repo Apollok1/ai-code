@@ -1448,77 +1448,6 @@ if uploaded_files:
                 with st.expander(f"Preview: {file.name}"):
                     st.text(extracted_text[:2000] + ("..." if len(extracted_text) > 2000 else ""))
 
-                # === SEKCJA PRZYPISYWANIA IMION MÓWCÓW (zapisująca stan w sesji) ===
-                if isinstance(meta, dict) and meta.get("has_speakers"):
-                    st.markdown("##### 🎤 Przypisz imiona mówcom")
-                    
-                    # Unikalny klucz dla mapy mówców w sesji, oparty na nazwie pliku
-                    session_key_map = f"speaker_map_{safe_filename(file.name)}"
-                
-                    # Inicjalizuj mapę w sesji, jeśli jeszcze nie istnieje
-                    if session_key_map not in st.session_state:
-                        st.session_state[session_key_map] = {}
-                
-                    # Znajdź unikalne etykiety SPEAKER_XX z oryginalnego tekstu
-                    # (zawsze bazujemy na oryginalnym tekście, aby uniknąć problemów po re-mapowaniu)
-                    original_text = next((r["original_text"] for r in st.session_state["results"] if r["name"] == file.name), extracted_text)
-                    unique_speakers = sorted(list(set(re.findall(r'SPEAKER_\d+', original_text))))
-                    
-                    if unique_speakers:
-                        # Aktualizuj mapę w sesji o nowo znalezionych mówców
-                        for speaker_id in unique_speakers:
-                            if speaker_id not in st.session_state[session_key_map]:
-                                st.session_state[session_key_map][speaker_id] = speaker_id
-                
-                        # Wyświetl pola tekstowe
-                        cols = st.columns(len(unique_speakers))
-                        for i, speaker_id in enumerate(unique_speakers):
-                            with cols[i]:
-                                # Klucz dla pola tekstowego jest unikalny
-                                input_key = f"speaker_name_input_{safe_filename(file.name)}_{speaker_id}"
-                                
-                                # Użyj funkcji zwrotnej `on_change`, aby aktualizować sesję natychmiast po zmianie
-                                def update_speaker_name(sid, key):
-                                    st.session_state[session_key_map][sid] = st.session_state[key]
-                
-                                st.text_input(
-                                    f"Imię dla {speaker_id}",
-                                    value=st.session_state[session_key_map][speaker_id],
-                                    key=input_key,
-                                    on_change=update_speaker_name,
-                                    args=(speaker_id, input_key) # Przekaż argumenty do funkcji zwrotnej
-                                )
-                        
-                        # Przycisk do zastosowania zmian
-                        remap_key = f"remap_button_{safe_filename(file.name)}"
-                        if st.button("Zastosuj i zapisz imiona", key=remap_key):
-                            # Zastosuj mapowanie do tekstu w st.session_state
-                            for result in st.session_state["results"]:
-                                if result["name"] == file.name:
-                                    # Użyj oryginalnego tekstu jako bazy, aby uniknąć wielokrotnego mapowania
-                                    result["text"] = remap_speakers(
-                                        result.get("original_text", extracted_text), 
-                                        st.session_state[session_key_map]
-                                    )
-                                    st.success(f"Zaktualizowano imiona dla pliku: {file.name}")
-                                    # Nie potrzebujemy st.rerun(), bo przycisk i tak go powoduje
-                            
-                            # Odśwież widok, aby pokazać zmiany
-                            st.rerun()
-                
-                # --- Ważna zmiana: Przechowaj oryginalny tekst ---
-                # W głównej pętli, tam gdzie dodajesz wyniki do st.session_state, dodaj pole "original_text"
-                # To jest kluczowe, aby wielokrotne mapowanie nie zepsuło etykiet.
-                # Zmień ten fragment:
-                # st.session_state["results"].append({ ... })
-                # na:
-                # st.session_state["results"].append({
-                #     "name": file.name,
-                #     "text": extracted_text,
-                #     "original_text": extracted_text, # <-- DODAJ TĘ LINIĘ
-                #     "meta": meta,
-                #     "pages": pages
-                # })
 
                 # Audio → do podsumowań
                 if isinstance(meta, dict) and meta.get("type") == "audio":
@@ -1535,15 +1464,34 @@ if uploaded_files:
 
 # === SEKCJA WYNIKÓW ===
 if st.session_state.get("converted"):
-    st.success(f"✅ Przetworzono: {st.session_state['stats']['processed']} plików")
-    st.metric("Strony/sekcje", st.session_state["stats"]["pages"])
-
+    st.success(f"✅ Przetworzono: {st.session_state['stats']['processed']} plików | Sekcji: {st.session_state['stats']['pages']}")
+    
+    # Wyświetl wyniki z możliwością edycji imion mówców
+    for res in st.session_state["results"]:
+        name = res["name"]
+        text = res["text"]
+        meta = res["meta"]
+        
+        st.subheader(f"📄 {name}")
+        with st.expander("Podgląd", expanded=True):
+            st.text_area(f"prev_{safe_filename(name)}", text, height=240, key=f"preview_{safe_filename(name)}")
+        
+        # FORMULARZ DO NADAWANIA IMION – nie wywołuje rerunu podczas pisania
+        if isinstance(meta, dict) and meta.get("has_speakers"):
+            st.markdown("##### 🎤 Przypisz imiona mówcom")
+            new_text = speaker_mapper_form(name, res.get("original_text", text), text)
+            if new_text is not None:
+                # tylko gdy klikniesz Zastosuj – podmiana tekstu i rerun
+                res["text"] = new_text
+                st.rerun()
+    
+    # Przyciski eksportu
     st.download_button(
-        "⬇️ Pobierz TXT",
-        st.session_state["combined_text"].encode('utf-8'),
+        "⬇️ Pobierz wszystko w TXT",
+        ("\n".join([f"\n{'='*60}\nPLIK: {r['name']}\n{'='*60}\n{r['text']}" for r in st.session_state['results']])).encode("utf-8"),
         file_name=f"converted_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
         mime="text/plain",
-        key="dl_combined_txt"
+        key="dl_all_txt"
     )
 
     c1, c2, c3, c4 = st.columns(4)
@@ -1585,7 +1533,7 @@ if st.session_state.get("converted"):
                         )
                         summary_md = build_meeting_summary_markdown(summary_json)
                         st.session_state["audio_summaries"].append({"name": aname, "md": summary_md, "json": summary_json})
-                st.success("Gotowe podsumowania — poniżej do pobrania/zapisania.")
+                st.success("Gotowe podsumowania – poniżej do pobrania/zapisania.")
             else:
                 st.info("Brak plików audio do podsumowania.")
 
@@ -1599,168 +1547,6 @@ if st.session_state.get("converted"):
                     st.error(msg)
         else:
             st.caption("AnythingLLM wyłączone lub brak config/tryb offline")
-
-    # Audio summaries output
-    if st.session_state["audio_summaries"]:
-        st.subheader("🧠 Podsumowania rozmów audio")
-        for s in st.session_state["audio_summaries"]:
-            aname = s["name"]
-            summary_md = s["md"]
-            summary_json = s["json"]
-
-            st.markdown(f"### 🎧 {aname}")
-            st.markdown(summary_md)
-
-            col_a, col_b, col_c = st.columns(3)
-            with col_a:
-                st.download_button(
-                    "⬇️ MD",
-                    summary_md.encode("utf-8"),
-                    file_name=f"{os.path.splitext(safe_filename(aname))[0]}_summary.md",
-                    mime="text/markdown",
-                    key=f"dl_md_{aname}"
-                )
-            with col_b:
-                st.download_button(
-                    "⬇️ JSON",
-                    json.dumps(summary_json, ensure_ascii=False, indent=2).encode("utf-8"),
-                    file_name=f"{os.path.splitext(safe_filename(aname))[0]}_summary.json",
-                    mime="application/json",
-                    key=f"dl_json_{aname}"
-                )
-            with col_c:
-                if st.button("💾 Zapisz (MD+JSON) na dysk", key=f"btn_save_sum_{aname}"):
-                    out_dir = st.session_state["run_dir"] or create_run_dir("outputs")
-                    st.session_state["run_dir"] = out_dir
-                    base = os.path.splitext(safe_filename(aname))[0]
-                    save_text(os.path.join(out_dir, f"{base}.summary.md"), summary_md)
-                    save_text(os.path.join(out_dir, f"{base}.summary.json"), json.dumps(summary_json, ensure_ascii=False, indent=2))
-                    st.success(f"Zapisano do: {out_dir}")
-
-# === PROJECT BRAIN (UI) ===
-if st.session_state.get("converted") and enable_project_brain:
-    st.markdown("---")
-    st.subheader("🧭 Project Brain (zadania, ryzyka, brief)")
-
-    if st.button("▶️ Analizuj dokumenty (Project Brain)", key="btn_run_project_brain"):
-        per_doc = []
-        all_tasks = []
-        all_risks = []
-        all_assumptions = []
-        all_rfis = []
-
-        pb_model = summarize_model if summarize_model_candidates else "llama3:latest"
-
-        with st.spinner("Analizuję dokumenty pod kątem zadań/ryzyk..."):
-            for it in st.session_state["results"]:
-                name, text = it["name"], it["text"]
-                doctype = classify_document(text, model=pb_model)
-                tasks = extract_tasks_from_text(text, model=pb_model)
-                for t in tasks:
-                    t["source"] = name
-                risks_pack = extract_risks_from_text(text, model=pb_model)
-
-                per_doc.append({"name": name, "type": doctype, "tasks": tasks, **risks_pack})
-                all_tasks.extend(tasks)
-                all_risks.extend(risks_pack.get("risks", []))
-                all_assumptions.extend(risks_pack.get("assumptions", []))
-                all_rfis.extend(risks_pack.get("rfis", []))
-
-        brief_input = [{"name": x["name"], "type": x["type"], "tasks": x["tasks"],
-                        "risks": x.get("risks", []), "assumptions": x.get("assumptions", []), "rfis": x.get("rfis", [])}
-                       for x in per_doc]
-        project_brief = build_project_brief(brief_input, model=pb_model)
-
-        st.session_state["project_brain"] = {
-            "per_doc": per_doc,
-            "tasks": all_tasks,
-            "risks": all_risks,
-            "assumptions": all_assumptions,
-            "rfis": all_rfis,
-            "brief": project_brief
-        }
-        st.success("Analiza zakończona.")
-
-    # Prezentacja wyników Project Brain (jeśli są)
-    pb = st.session_state.get("project_brain")
-    if pb:
-        st.markdown("### ✅ Zadania (edytuj)")
-        if pb["tasks"]:
-            if pd is not None:
-                df_tasks = pd.DataFrame(pb["tasks"])
-                # Upewnij się o kolumnach
-                for col in ["owner","task","due","priority","tags","source"]:
-                    if col not in df_tasks.columns: df_tasks[col] = ""
-                edited = st.data_editor(df_tasks, num_rows="dynamic", use_container_width=True, key="tasks_editor")
-                st.session_state["project_tasks"] = edited
-                st.download_button("⬇️ Eksport zadań (CSV)", edited.to_csv(index=False).encode("utf-8"), "project_tasks.csv", "text/csv")
-            else:
-                st.info("pandas nie jest zainstalowany — edycja tabeli niedostępna. Wyświetlam JSON.")
-                st.json(pb["tasks"])
-        else:
-            st.info("Brak wykrytych zadań.")
-
-        cpr1, cpr2, cpr3 = st.columns(3)
-        with cpr1:
-            st.markdown("### ⚠️ Ryzyka")
-            if pb["risks"]:
-                st.json(pb["risks"])
-            else:
-                st.write("- brak")
-        with cpr2:
-            st.markdown("### ❓ RFI (pytania do klienta)")
-            if pb["rfis"]:
-                st.write("\n".join([f"- {x}" for x in pb["rfis"]]))
-            else:
-                st.write("- brak")
-        with cpr3:
-            st.markdown("### 📌 Założenia")
-            if pb["assumptions"]:
-                st.write("\n".join([f"- {x}" for x in pb["assumptions"]]))
-            else:
-                st.write("- brak")
-
-        st.markdown("### 📝 Project Brief")
-        st.json(pb["brief"])
-
-        # Zapisy na dysk
-        col_save1, col_save2 = st.columns(2)
-        with col_save1:
-            if st.button("💾 Zapisz Brief (JSON)", key="btn_save_brief_json"):
-                out_dir = st.session_state["run_dir"] or create_run_dir("outputs")
-                st.session_state["run_dir"] = out_dir
-                save_text(os.path.join(out_dir, "project_brief.json"), json.dumps(pb["brief"], ensure_ascii=False, indent=2))
-                st.success(f"Zapisano: {out_dir}/project_brief.json")
-        with col_save2:
-            if st.button("💾 Zapisz zadania (CSV)", key="btn_save_tasks_csv"):
-                if pd is not None and "project_tasks" in st.session_state:
-                    out_dir = st.session_state["run_dir"] or create_run_dir("outputs")
-                    st.session_state["run_dir"] = out_dir
-                    st.session_state["project_tasks"].to_csv(os.path.join(out_dir, "project_tasks.csv"), index=False)
-                    st.success(f"Zapisano: {out_dir}/project_tasks.csv")
-                else:
-                    st.info("Brak edytowalnej tabeli zadań lub brak pandas.")
-
-        # Web lookup (opcjonalnie)
-        st.markdown("### 🌐 Uzupełnienie wiedzy z sieci (opcjonalne)")
-        if st.session_state.get("ALLOW_WEB", False):
-            combined_preview = st.session_state["combined_text"][:8000]
-            pb_model = summarize_model if summarize_model_candidates else "llama3:latest"
-            queries = propose_web_queries(combined_preview, model=pb_model)
-            max_hits = st.slider("Ile wyników ściągnąć", 1, 10, 4)
-            st.write("Zapytania:", queries or "—")
-            if st.button("🔎 Szukaj i streść"):
-                with st.spinner("Pobieram i streszczam..."):
-                    webres = web_search_and_summarize(queries, max_hits, model=pb_model)
-                if webres.get("items"):
-                    for it in webres["items"]:
-                        st.markdown(f"- [{it['title']}]({it['url']})")
-                        st.write(it["summary"])
-                else:
-                    st.info("Brak wyników lub brak modułów duckduckgo-search/trafilatura.")
-        else:
-            st.caption("Web lookup wyłączony (odblokuj w panelu bocznym).")
-
 # Reset sesji (nie rusza plików na dysku)
 st.markdown("---")
 if st.button("♻️ Reset sesji (wyczyść wyniki)", type="secondary", key="btn_reset_session"):
