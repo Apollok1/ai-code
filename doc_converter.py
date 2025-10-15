@@ -20,7 +20,6 @@ from urllib.parse import urlparse
 from datetime import datetime
 from PIL import Image
 import numpy as np
-import subprocess
 import tempfile
 
 # Parsery/formaty
@@ -851,7 +850,7 @@ def extract_eml(file):
         logger.error(f"EML error: {e}")
         return f"[BŁĄD EML: {e}]", 0, {"type": "email", "error": str(e)}
 
-def extract_msg(file):
+def parse_msg_email(file):
     """MSG (Outlook): nagłówki + treść. Wymaga extract_msg (fallback na surowy tekst)."""
     try:
         if extract_msg is None:
@@ -903,7 +902,7 @@ def process_file(file, use_vision: bool, vision_model: str, ocr_limit: int, imag
     elif name.endswith('.eml'):
         return extract_eml(file)
     elif name.endswith('.msg'):
-        return extract_msg(file)
+        return parse_msg_email(file)
     elif name.endswith('.txt'):
         file.seek(0)
         content = file.read().decode('utf-8', errors='ignore')
