@@ -94,12 +94,30 @@ ALLOW_WEB = False  # UI może to zmienić (web lookup)
 # === STAŁE ===
 MIN_TEXT_FOR_OCR_SKIP = 100
 VISION_TRANSCRIBE_PROMPT = (
-    "Przepisz DOKŁADNIE cały tekst z obrazu. Zachowaj pisownię, układ, symbole. "
-    "Nie tłumacz, nie interpretuj - tylko przepisz. Jeśli coś nieczytelne - wpisz [NIECZYTELNE]."
+    "Przepisz DOKŁADNIE cały tekst z obrazu. Zachowaj pisownię, układ, symbole, formatowanie. "
+    "ZASADY:\n"
+    "- Nie tłumacz, nie interpretuj - tylko przepisz\n"
+    "- Zachowaj podział na akapity i linie\n"
+    "- Jeśli coś nieczytelne - wpisz [NIECZYTELNE]\n"
+    "- Jeśli nie ma tekstu - napisz [BRAK TEKSTU]\n"
+    "- Przepisuj cyfry, daty, nazwy dokładnie jak są\n"
+    "Pisz TYLKO po polsku (lub w oryginalnym języku jeśli tekst nie jest polski)."
 )
 VISION_DESCRIBE_PROMPT = (
-    "Opisz ten obraz: co na nim widać? Wymień kluczowe elementy, teksty, wykresy lub diagramy, "
-    "ogólny kontekst i ewentualny przekaz."
+    "Przeprowadź szczegółową analizę techniczną tego obrazu po polsku.\n\n"
+    "STRUKTURA ODPOWIEDZI:\n"
+    "1. TYP OBIEKTU: Podaj nazwę techniczną i kategorię (np. łożysko kulkowe, silnik, narzędzie)\n"
+    "2. MATERIAŁ: Określ z czego wykonany (stal, aluminium, plastik, drewno, itp.)\n"
+    "3. BUDOWA: Wymień wszystkie widoczne części składowe i ich rozmieszczenie\n"
+    "4. KSZTAŁT I WYMIARY: Opisz geometrię, proporcje, charakterystyczne cechy\n"
+    "5. FUNKCJA: Do czego służy ten obiekt\n"
+    "6. ZASTOSOWANIE: Gdzie jest typowo używany\n\n"
+    "ZASADY:\n"
+    "- Używaj precyzyjnej terminologii inżynieryjnej i technicznej\n"
+    "- Opisuj TYLKO to co faktycznie widzisz na obrazie\n"
+    "- Nie zgaduj, nie domyślaj się - jeśli czegoś nie widać, nie wymyślaj\n"
+    "- Jeśli widzisz tekst/napisy - przepisz je dokładnie\n"
+    "Pisz wyłącznie po polsku."
 )
 IMAGE_MODE_MAP = {
     "OCR": "ocr",
@@ -794,7 +812,120 @@ def extract_docx(file):
     except Exception as e:
         logger.error(f"DOCX error: {e}")
         return f"[BŁĄD DOCX: {e}]", 0, {"type": "docx", "error": str(e)}
+# === ENHANCED VISION Z WEB SEARCH ===
+def extract_keywords_from_vision(vision_text: str, max_keywords: int = 5) -> list:
+    """Wyciąga kluczowe słowa z opisu Vision dla wyszukiwania."""
+    # Usuń polskie stopwords
+    stopwords = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
+                 'jest', 'są', 'to', 'w', 'z', 'na', 'do', 'i', 'że', 'się', 'oraz'}
+    
+    # Wyciągnij słowa (tylko alfanumeryczne, min 3 znaki)
+    words = re.findall(r'\b[a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]{3,}\b', vision_text.lower())
+    
+    # Filtruj stopwords i zduplikowane
+    keywords = [w for w in words if w not in stopwords]
+    unique = list(dict.fromkeys(keywords))  # zachowaj kolejność
+    
+    # Preferuj słowa techniczne (długie słowa zwykle są bardziej specyficzne)
+    sorted_by_length = sorted(unique, key=len, reverse=True)
+    
+    return sorted_by_length[:max_keywords]
 
+def enhanced_vision_with_web_search(
+    image_b64: str, 
+    prompt: str, 
+    vision_model: str,
+    enable_web: bool = False
+) -> str:
+    """
+    Vision + weryfikacja przez web search (opcjonalna).
+    
+    Args:
+        image_b64: Obraz w base64
+        prompt: Prompt dla Vision
+        vision_model: Nazwa modelu (np. llava:13b)
+        enable_web: Czy używać wyszukiwania web (wymaga ALLOW_WEB=True)
+    
+    Returns:
+        Ulepszona odpowiedź Vision (z kontekstem z sieci jeśli enable_web=True)
+    """
+    # 1. Podstawowa analiza Vision
+    logger.info(f"Vision analysis using {vision_model}...")
+    vision_response = query_ollama_vision(prompt, image_b64, vision_model)
+    
+    # Jeśli web search wyłączony - zwróć podstawową odpowiedź
+    if not enable_web or not st.session_state.get("ALLOW_WEB", False):
+        return vision_response
+    
+    # 2. Wyciągnij keywords z opisu Vision
+    logger.info("Extracting keywords from vision response...")
+    keywords = extract_keywords_from_vision(vision_response, max_keywords=3)
+    
+    if not keywords:
+        logger.warning("No keywords extracted, returning basic vision response")
+        return vision_response
+    
+    logger.info(f"Keywords for web search: {keywords}")
+    
+    # 3. Wyszukaj w sieci
+    try:
+        search_query = " ".join(keywords)
+        logger.info(f"Searching web for: '{search_query}'")
+        
+        web_results = web_search_and_summarize(
+            queries=[search_query],
+            max_results=2,
+            model="llama3:latest"
+        )
+        
+        # Sprawdź czy są wyniki
+        if not web_results.get("items"):
+            logger.warning("No web results found, returning basic vision response")
+            return vision_response
+        
+        # 4. Połącz Vision + Web context
+        web_context = "\n\n".join([
+            f"Źródło {i+1}: {item.get('title', 'N/A')}\n{item.get('summary', '')}"
+            for i, item in enumerate(web_results["items"][:2])
+        ])
+        
+        enhancement_prompt = f"""Masz dwa źródła informacji o obiekcie z obrazu:
+
+ANALIZA OBRAZU (AI Vision):
+{vision_response}
+
+DODATKOWY KONTEKST Z INTERNETU:
+{web_context}
+
+ZADANIE:
+Stwórz OSTATECZNY, PRECYZYJNY opis obiektu z obrazu, używając:
+1. Informacji z analizy obrazu (najważniejsze - to co faktycznie widać)
+2. Kontekstu z internetu (uzupełnienie, weryfikacja terminologii)
+
+ZASADY:
+- Zachowaj strukturę 6-punktową z opisu Vision
+- Popraw błędy terminologiczne jeśli znajdziesz w kontekście internetowym
+- Dodaj dodatkowe szczegóły TYLKO jeśli potwierdzają to co widać na obrazie
+- Nie dodawaj informacji których nie ma na obrazie
+- Pisz po polsku
+
+Podaj ostateczny, ulepszony opis:"""
+        
+        logger.info("Enhancing vision response with web context...")
+        enhanced = query_ollama_text(
+            enhancement_prompt, 
+            model="llama3:latest",
+            json_mode=False,
+            timeout=120
+        )
+        
+        return enhanced
+        
+    except Exception as e:
+        logger.error(f"Web search enhancement failed: {e}")
+        # Fallback - zwróć podstawową odpowiedź Vision
+        return vision_response
+        
 def extract_image(file, use_vision: bool, vision_model: str, image_mode: str):
     """Obraz: OCR / Vision (przepisz) / Vision (opisz) / OCR+opis."""
     try:
@@ -811,10 +942,25 @@ def extract_image(file, use_vision: bool, vision_model: str, image_mode: str):
             if use_vision and vision_model:
                 img_b64 = base64.b64encode(img_bytes).decode()
                 prompt = VISION_TRANSCRIBE_PROMPT if image_mode == "vision_transcribe" else VISION_DESCRIBE_PROMPT
-                vis = query_ollama_vision(prompt, img_b64, vision_model)
+                
+                # STARA WERSJA (usuń):
+                # vis = query_ollama_vision(prompt, img_b64, vision_model)
+                
+                # NOWA WERSJA (dodaj):
+                # Sprawdź czy użytkownik włączył web enhancement
+                enable_web_enhancement = st.session_state.get("ALLOW_WEB", False) and image_mode == "vision_describe"
+                
+                vis = enhanced_vision_with_web_search(
+                    img_b64, 
+                    prompt, 
+                    vision_model,
+                    enable_web=enable_web_enhancement
+                )
+                
                 tag = "Vision (transkrypcja)" if image_mode == "vision_transcribe" else "Vision (opis)"
                 results.append(f"=== {tag} ===\n{vis}")
                 meta["vision_model"] = vision_model
+                meta["web_enhanced"] = enable_web_enhancement
             else:
                 results.append("[Vision niedostępne]")
 
@@ -1290,6 +1436,12 @@ with st.sidebar:
         help="Nie wysyła treści dokumentów na zewnątrz. Pobiera tylko publiczne strony dla uzupełnienia wiedzy.",
         disabled=st.session_state.get("converting", False)
     )
+    # Web enhancement dla Vision
+    if st.session_state.get("ALLOW_WEB", False):
+        st.caption("🔍 Web search będzie używany do weryfikacji opisów obrazów (tylko dla trybu 'Vision: opisz obraz')")
+    else:
+        st.caption("🔒 Web search wyłączony - Vision działa tylko lokalnie")
+   
 
     # Status adresów
     def _status_url(name, url):
