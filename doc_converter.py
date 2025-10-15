@@ -452,7 +452,11 @@ def query_ollama_vision(prompt: str, image_b64: str, model: str):
         logger.error(f"Vision model error: {e}")
         return f"[BŁĄD VISION: {e}]"
 
-def query_ollama_text(prompt: str, model: str = "qwen2.5:7b", json_mode: bool = False, timeout: int = 120) -> str:
+def query_ollama_text(prompt: str, model: str = None, json_mode: bool = False, timeout: int = 120) -> str:
+    # Użyj wybranego modelu z session_state jeśli nie podano
+    if model is None:
+        model = st.session_state.get("selected_main_text_model", "qwen2.5:7b")
+    
     try:
         payload = {"model": model, "prompt": prompt, "stream": False}
         if json_mode:
@@ -880,7 +884,7 @@ def enhanced_vision_with_web_search(
         web_results = web_search_and_summarize(
             queries=[search_query],
             max_results=2,
-            model="qwen2.5:7b"
+            model=st.session_state.get("selected_main_text_model", "qwen2.5:7b")  # ✅ Dynamiczny
         )
         
         # Sprawdź czy są wyniki
@@ -919,7 +923,7 @@ Podaj ostateczny, ulepszony opis:"""
         logger.info("Enhancing vision response with web context...")
         enhanced = query_ollama_text(
             enhancement_prompt, 
-            model="qwen2.5:7b",
+            model=st.session_state.get("selected_main_text_model"),  # ✅ Dynamiczny (None = użyje default)
             json_mode=False,
             timeout=120
         )
@@ -1428,6 +1432,39 @@ st.caption("Konwersja PDF/DOCX/PPTX/IMG/AUDIO/EMAIL → TXT z OCR, Vision lub Wh
 
 with st.sidebar:
     st.header("⚙️ Ustawienia")
+    # === MODELE AI ===
+    st.subheader("🤖 Modele AI")
+    
+    # 1) Model tekstowy (główny - dla wszystkich operacji tekstowych)
+    available_text_models = [
+        m for m in list_ollama_models() 
+        if not any(m.startswith(p) for p in ("llava", "bakllava", "moondream", "qwen2-vl", "qwen2.5vl", "nomic-embed"))
+    ]
+    
+    if "selected_main_text_model" not in st.session_state:
+        # Preferuj qwen2.5 dla technicznego tekstu
+        default_text = "qwen2.5:7b" if "qwen2.5:7b" in available_text_models else (
+            available_text_models[0] if available_text_models else "llama3:latest"
+        )
+        st.session_state["selected_main_text_model"] = default_text
+    
+    try:
+        text_idx = available_text_models.index(st.session_state["selected_main_text_model"])
+    except (ValueError, IndexError):
+        text_idx = 0
+        st.session_state["selected_main_text_model"] = available_text_models[0] if available_text_models else "llama3:latest"
+    
+    main_text_model = st.selectbox(
+        "Model tekstowy (główny)",
+        options=available_text_models or ["llama3:latest"],
+        index=text_idx,
+        key="main_text_sel",
+        help="Używany do: web search enhancement, Project Brain, wszystkich operacji tekstowych",
+        disabled=st.session_state.get("converting", False)
+    )
+    st.session_state["selected_main_text_model"] = main_text_model
+    
+    st.markdown("---")  # Separator
 
     # Tryb offline
     OFFLINE_MODE = st.checkbox(
@@ -1466,21 +1503,33 @@ with st.sidebar:
         value=True if vision_models else False,
         disabled=st.session_state.get("converting", False)
     )
+    
     if vision_models and use_vision:
-        # Znajdź index qwen2.5vl:7b, jeśli nie ma - użyj pierwszego
-        default_vision = "qwen2.5vl:7b"
+        # Inicjalizacja domyślnego modelu Vision
+        if "selected_vision_model" not in st.session_state:
+            default_vision = "qwen2.5vl:7b"
+            st.session_state["selected_vision_model"] = (
+                default_vision if default_vision in vision_models else 
+                next((m for m in vision_models if m.startswith("qwen")), vision_models[0])
+            )
+        
+        # Znajdź index
         try:
-            default_idx = vision_models.index(default_vision)
-        except ValueError:
-            # Szukaj innych wariantów qwen
-            default_idx = next((i for i, m in enumerate(vision_models) if m.startswith("qwen")), 0)
+            vision_idx = vision_models.index(st.session_state["selected_vision_model"])
+        except (ValueError, IndexError):
+            vision_idx = 0
+            st.session_state["selected_vision_model"] = vision_models[0]
         
         selected_vision = st.selectbox(
-            "Model wizyjny", vision_models, 
-            index=default_idx,  # ✅ Preferuje qwen2.5vl:7b
+            "Model wizyjny (obrazy/rysunki)",
+            vision_models,
+            index=vision_idx,
+            key="vision_model_sel",  # ✅ DODAJ KEY
+            help="Model do analizy zdjęć, schematów, rysunków technicznych",
             disabled=st.session_state.get("converting", False)
         )
-        
+        st.session_state["selected_vision_model"] = selected_vision  # ✅ ZAPISZ
+            
    
     else:
         selected_vision = None
@@ -1495,12 +1544,19 @@ with st.sidebar:
 
     st.subheader("Obrazy (IMG)")
     if use_vision and selected_vision:
+        # Inicjalizacja domyślnego trybu
+        if "image_mode_idx" not in st.session_state:
+            st.session_state["image_mode_idx"] = 2  # "Vision: opisz obraz"
+        
         image_mode_label = st.selectbox(
             "Tryb dla obrazów",
             options=["OCR", "Vision: przepisz tekst", "Vision: opisz obraz", "OCR + Vision opis"],
-            index=2,
+            index=st.session_state["image_mode_idx"],
+            key="img_mode_sel",  # ⬅️ DODAJ
             disabled=st.session_state.get("converting", False)
         )
+        # Zapisz wybór
+        st.session_state["image_mode_idx"] = ["OCR", "Vision: przepisz tekst", "Vision: opisz obraz", "OCR + Vision opis"].index(image_mode_label)
     else:
         image_mode_label = st.selectbox(
             "Tryb dla obrazów",
@@ -1547,10 +1603,26 @@ with st.sidebar:
         m for m in list_ollama_models()
         if not any(m.startswith(p) for p in ("llava", "bakllava", "moondream", "llava-phi", "nomic-embed", "qwen2-vl"))
     ]
+    
+    if "selected_summary_model" not in st.session_state:
+        default = "qwen2.5:7b"
+        st.session_state["selected_summary_model"] = default if default in summarize_model_candidates else (summarize_model_candidates[0] if summarize_model_candidates else "llama3:latest")
+
+    # Znajdź index
+    try:
+        sum_idx = summarize_model_candidates.index(st.session_state["selected_summary_model"])
+    except (ValueError, IndexError):
+        sum_idx = 0
+    
+    # Selectbox z zapisem
     summarize_model = st.selectbox(
-        "Model do podsumowania", options=summarize_model_candidates or ["llama3:latest"],
+        "Model do podsumowania",
+        options=summarize_model_candidates or ["llama3:latest"],
+        index=sum_idx,
+        key="sum_model_sel",  # ⬅️ DODAJ
         disabled=st.session_state.get("converting", False)
     )
+    
     chunk_chars = st.slider(
         "Rozmiar chunku (znaki)", min_value=2000, max_value=8000, value=6000, step=500,
         disabled=st.session_state.get("converting", False)
