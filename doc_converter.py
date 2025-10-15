@@ -452,7 +452,7 @@ def query_ollama_vision(prompt: str, image_b64: str, model: str):
         logger.error(f"Vision model error: {e}")
         return f"[BŁĄD VISION: {e}]"
 
-def query_ollama_text(prompt: str, model: str = "llama3:latest", json_mode: bool = False, timeout: int = 120) -> str:
+def query_ollama_text(prompt: str, model: str = "qwen2.5:7b", json_mode: bool = False, timeout: int = 120) -> str:
     try:
         payload = {"model": model, "prompt": prompt, "stream": False}
         if json_mode:
@@ -880,7 +880,7 @@ def enhanced_vision_with_web_search(
         web_results = web_search_and_summarize(
             queries=[search_query],
             max_results=2,
-            model="llama3:latest"
+            model="qwen2.5:7b"
         )
         
         # Sprawdź czy są wyniki
@@ -919,7 +919,7 @@ Podaj ostateczny, ulepszony opis:"""
         logger.info("Enhancing vision response with web context...")
         enhanced = query_ollama_text(
             enhancement_prompt, 
-            model="llama3:latest",
+            model="qwen2.5:7b",
             json_mode=False,
             timeout=120
         )
@@ -1437,7 +1437,7 @@ with st.sidebar:
     )
     st.session_state["ALLOW_WEB"] = st.checkbox(
         "Zezwól na web lookup (pobieranie publicznych stron)",
-        value=st.session_state.get("ALLOW_WEB", False),
+        value=st.session_state.get("ALLOW_WEB", True),
         help="Nie wysyła treści dokumentów na zewnątrz. Pobiera tylko publiczne strony dla uzupełnienia wiedzy.",
         disabled=st.session_state.get("converting", False)
     )
@@ -1467,6 +1467,21 @@ with st.sidebar:
         disabled=st.session_state.get("converting", False)
     )
     if vision_models and use_vision:
+        # Znajdź index qwen2.5vl:7b, jeśli nie ma - użyj pierwszego
+        default_vision = "qwen2.5vl:7b"
+        try:
+            default_idx = vision_models.index(default_vision)
+        except ValueError:
+            # Szukaj innych wariantów qwen
+            default_idx = next((i for i, m in enumerate(vision_models) if m.startswith("qwen")), 0)
+        
+        selected_vision = st.selectbox(
+            "Model wizyjny", vision_models, 
+            index=default_idx,  # ✅ Preferuje qwen2.5vl:7b
+            disabled=st.session_state.get("converting", False)
+        )
+        
+    if vision_models and use_vision:
         selected_vision = st.selectbox(
             "Model wizyjny", vision_models, index=0,
             disabled=st.session_state.get("converting", False)
@@ -1487,7 +1502,7 @@ with st.sidebar:
         image_mode_label = st.selectbox(
             "Tryb dla obrazów",
             options=["OCR", "Vision: przepisz tekst", "Vision: opisz obraz", "OCR + Vision opis"],
-            index=3,
+            index=2,
             disabled=st.session_state.get("converting", False)
         )
     else:
