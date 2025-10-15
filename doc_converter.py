@@ -1253,6 +1253,24 @@ def web_search_and_summarize(queries: List[str], max_results: int, model: str) -
 # Część 3/3: UI — sidebar, uploader, konwersja, zapisy, podsumowania audio,
 #            Project Brain (zadania/ryzyka/brief) + opcjonalny web lookup
 
+# === FLAGI BIEGU / STOP ===
+def init_run_flags():
+    ss = st.session_state
+    ss.setdefault("converting", False)
+    ss.setdefault("cancel_requested", False)
+
+def start_conversion():
+    st.session_state["converting"] = True
+    st.session_state["cancel_requested"] = False
+
+def request_cancel():
+    st.session_state["cancel_requested"] = True
+
+def end_conversion():
+    st.session_state["converting"] = False
+
+init_run_flags()
+
 # === UI / SIDEBAR ===
 st.title("📄 Document Converter Pro")
 st.caption("Konwersja PDF/DOCX/PPTX/IMG/AUDIO/EMAIL → TXT z OCR, Vision lub Whisper (offline-first)")
@@ -1261,11 +1279,16 @@ with st.sidebar:
     st.header("⚙️ Ustawienia")
 
     # Tryb offline
-    OFFLINE_MODE = st.checkbox("Tryb offline (blokuj internet poza lokalnymi usługami)", value=OFFLINE_MODE)
+    OFFLINE_MODE = st.checkbox(
+        "Tryb offline (blokuj internet poza lokalnymi usługami)",
+        value=OFFLINE_MODE,
+        disabled=st.session_state.get("converting", False)
+    )
     st.session_state["ALLOW_WEB"] = st.checkbox(
         "Zezwól na web lookup (pobieranie publicznych stron)",
         value=st.session_state.get("ALLOW_WEB", False),
-        help="Nie wysyła treści dokumentów na zewnątrz. Pobiera tylko publiczne strony dla uzupełnienia wiedzy."
+        help="Nie wysyła treści dokumentów na zewnątrz. Pobiera tylko publiczne strony dla uzupełnienia wiedzy.",
+        disabled=st.session_state.get("converting", False)
     )
 
     # Status adresów
@@ -1281,23 +1304,34 @@ with st.sidebar:
 
     # Vision
     vision_models = list_vision_models()
-    use_vision = st.checkbox("Użyj modelu wizyjnego (Ollama Vision)", value=True if vision_models else False)
+    use_vision = st.checkbox(
+        "Użyj modelu wizyjnego (Ollama Vision)",
+        value=True if vision_models else False,
+        disabled=st.session_state.get("converting", False)
+    )
     if vision_models and use_vision:
-        selected_vision = st.selectbox("Model wizyjny", vision_models, index=0)
+        selected_vision = st.selectbox(
+            "Model wizyjny", vision_models, index=0,
+            disabled=st.session_state.get("converting", False)
+        )
     else:
         selected_vision = None
         if use_vision:
             st.warning("⚠️ Brak modeli Vision w Ollama (np. llava:13b / qwen2-vl:7b)")
 
     st.subheader("OCR")
-    ocr_pages_limit = st.slider("Limit stron OCR", 5, 50, 20)
+    ocr_pages_limit = st.slider(
+        "Limit stron OCR", 5, 50, 20,
+        disabled=st.session_state.get("converting", False)
+    )
 
     st.subheader("Obrazy (IMG)")
     if use_vision and selected_vision:
         image_mode_label = st.selectbox(
             "Tryb dla obrazów",
             options=["OCR", "Vision: przepisz tekst", "Vision: opisz obraz", "OCR + Vision opis"],
-            index=3
+            index=3,
+            disabled=st.session_state.get("converting", False)
         )
     else:
         image_mode_label = st.selectbox(
@@ -1316,8 +1350,14 @@ with st.sidebar:
 
     # Zapis lokalny
     st.subheader("Zapis lokalny")
-    enable_local_save = st.checkbox("Zapisz wyniki lokalnie (folder)", value=False)
-    base_output_dir = st.text_input("Katalog wyjściowy", value="outputs")
+    enable_local_save = st.checkbox(
+        "Zapisz wyniki lokalnie (folder)", value=False,
+        disabled=st.session_state.get("converting", False)
+    )
+    base_output_dir = st.text_input(
+        "Katalog wyjściowy", value="outputs",
+        disabled=st.session_state.get("converting", False)
+    )
 
     # AnythingLLM
     st.subheader("AnythingLLM")
@@ -1331,21 +1371,33 @@ with st.sidebar:
 
     # Podsumowania audio
     st.subheader("🧠 Podsumowanie audio (AI)")
-    summarize_audio_enabled = st.checkbox("Włącz podsumowanie rozmów audio", value=True)
+    summarize_audio_enabled = st.checkbox(
+        "Włącz podsumowanie rozmów audio", value=True,
+        disabled=st.session_state.get("converting", False)
+    )
     summarize_model_candidates = [
         m for m in list_ollama_models()
         if not any(m.startswith(p) for p in ("llava", "bakllava", "moondream", "llava-phi", "nomic-embed", "qwen2-vl"))
     ]
-    summarize_model = st.selectbox("Model do podsumowania", options=summarize_model_candidates or ["llama3:latest"])
-    chunk_chars = st.slider("Rozmiar chunku (znaki)", min_value=2000, max_value=8000, value=6000, step=500)
+    summarize_model = st.selectbox(
+        "Model do podsumowania", options=summarize_model_candidates or ["llama3:latest"],
+        disabled=st.session_state.get("converting", False)
+    )
+    chunk_chars = st.slider(
+        "Rozmiar chunku (znaki)", min_value=2000, max_value=8000, value=6000, step=500,
+        disabled=st.session_state.get("converting", False)
+    )
 
     # Project Brain toggle
     st.subheader("🧭 Project Brain (PM)")
-    enable_project_brain = st.checkbox("Włącz Project Brain (zadania/ryzyka/brief)", value=True)
+    enable_project_brain = st.checkbox(
+        "Włącz Project Brain (zadania/ryzyka/brief)", value=True,
+        disabled=st.session_state.get("converting", False)
+    )
 
     # Diagnostyka
     st.subheader("🔧 Diagnostyka środowiska")
-    if st.button("Skanuj środowisko"):
+    if st.button("Skanuj środowisko", disabled=st.session_state.get("converting", False)):
         st.session_state["diag"] = run_diagnostics()
     if st.session_state.get("diag"):
         diag = st.session_state["diag"]
@@ -1368,12 +1420,24 @@ with st.sidebar:
 uploaded_files = st.file_uploader(
     "Wgraj dokumenty",
     type=['pdf','docx','pptx','ppt','jpg','jpeg','png','txt','mp3','wav','m4a','ogg','flac'],
-    accept_multiple_files=True
+    accept_multiple_files=True,
+    disabled=st.session_state.get("converting", False)
 )
+
+# STOP podczas konwersji
+if st.session_state.get("converting", False):
+    st.info("⏳ Trwa konwersja. Pozostałe akcje są zablokowane.")
+    if st.button("🟥 STOP konwersji", type="primary"):
+        request_cancel()
+
 # === KONWERSJA → zapis do session_state (bez resetu przy zapisie) ===
 if uploaded_files:
     st.info(f"📁 {len(uploaded_files)} plików")
-    if st.button("🚀 Konwertuj wszystkie", type="primary", key="btn_convert_all"):
+    if st.button("🚀 Konwertuj wszystkie", type="primary", key="btn_convert_all",
+                 disabled=st.session_state.get("converting", False)):
+        # Start
+        start_conversion()
+
         # Reset stanu dla nowego przebiegu
         st.session_state["results"] = []
         st.session_state["combined_text"] = ""
@@ -1390,6 +1454,11 @@ if uploaded_files:
         all_texts = []
 
         for idx, file in enumerate(uploaded_files):
+            # Obsługa STOP
+            if st.session_state.get("cancel_requested"):
+                st.warning("⛔ Przerwano na żądanie użytkownika.")
+                break
+
             try:
                 progress.progress((idx + 1) / len(uploaded_files), text=f"Przetwarzam: {file.name}")
             except TypeError:
@@ -1404,11 +1473,10 @@ if uploaded_files:
                 st.session_state["results"].append({
                     "name": file.name,
                     "text": extracted_text,
-                    "original_text": extracted_text, # <-- DODAJ TĘ LINIĘ
+                    "original_text": extracted_text,  # ważne do remap mówców
                     "meta": meta,
                     "pages": pages
                 })
-               
 
                 # Tekst łączny
                 all_texts.append(f"\n{'='*80}\n")
@@ -1426,7 +1494,6 @@ if uploaded_files:
                 with st.expander(f"Preview: {file.name}"):
                     st.text(extracted_text[:2000] + ("..." if len(extracted_text) > 2000 else ""))
 
-
                 # Audio → do podsumowań
                 if isinstance(meta, dict) and meta.get("type") == "audio":
                     st.session_state["audio_items"].append((file.name, extracted_text, meta))
@@ -1440,20 +1507,23 @@ if uploaded_files:
         st.session_state["combined_text"] = "\n".join(all_texts)
         st.session_state["converted"] = True
 
+        # Koniec
+        end_conversion()
+
 # === SEKCJA WYNIKÓW ===
 if st.session_state.get("converted"):
     st.success(f"✅ Przetworzono: {st.session_state['stats']['processed']} plików | Sekcji: {st.session_state['stats']['pages']}")
-    
+
     # Wyświetl wyniki z możliwością edycji imion mówców
     for res in st.session_state["results"]:
         name = res["name"]
         text = res["text"]
         meta = res["meta"]
-        
+
         st.subheader(f"📄 {name}")
         with st.expander("Podgląd", expanded=True):
             st.text_area(f"prev_{safe_filename(name)}", text, height=240, key=f"preview_{safe_filename(name)}")
-        
+
         # FORMULARZ DO NADAWANIA IMION – nie wywołuje rerunu podczas pisania
         if isinstance(meta, dict) and meta.get("has_speakers"):
             st.markdown("##### 🎤 Przypisz imiona mówcom")
@@ -1462,20 +1532,22 @@ if st.session_state.get("converted"):
                 # tylko gdy klikniesz Zastosuj – podmiana tekstu i rerun
                 res["text"] = new_text
                 st.rerun()
-    
-    # Przyciski eksportu
+
+    # Przyciski eksportu (zablokowane w trakcie konwersji)
     st.download_button(
         "⬇️ Pobierz wszystko w TXT",
         ("\n".join([f"\n{'='*60}\nPLIK: {r['name']}\n{'='*60}\n{r['text']}" for r in st.session_state['results']])).encode("utf-8"),
         file_name=f"converted_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
         mime="text/plain",
-        key="dl_all_txt"
+        key="dl_all_txt",
+        disabled=st.session_state.get("converting", False)
     )
 
     c1, c2, c3, c4 = st.columns(4)
 
     with c1:
-        if st.button("💾 Zapisz połączony TXT na dysk", key="btn_save_combined_txt"):
+        if st.button("💾 Zapisz połączony TXT na dysk", key="btn_save_combined_txt",
+                     disabled=st.session_state.get("converting", False)):
             out_dir = st.session_state["run_dir"] or create_run_dir("outputs")
             st.session_state["run_dir"] = out_dir
             combined_path = os.path.join(out_dir, f"converted_{datetime.now().strftime('%Y%m%d_%H%M')}.txt")
@@ -1483,7 +1555,8 @@ if st.session_state.get("converted"):
             st.success(f"Zapisano: {combined_path}")
 
     with c2:
-        if st.button("💾 Zapisz wszystkie SRT (audio)", key="btn_save_all_srt"):
+        if st.button("💾 Zapisz wszystkie SRT (audio)", key="btn_save_all_srt",
+                     disabled=st.session_state.get("converting", False)):
             out_dir = st.session_state["run_dir"] or create_run_dir("outputs")
             st.session_state["run_dir"] = out_dir
             saved = 0
@@ -1497,7 +1570,8 @@ if st.session_state.get("converted"):
             st.success(f"Zapisano SRT dla {saved} plików audio w: {out_dir}")
 
     with c3:
-        if st.button("🧠 Generuj podsumowania audio (MD+JSON)", key="btn_make_summaries"):
+        if st.button("🧠 Generuj podsumowania audio (MD+JSON)", key="btn_make_summaries",
+                     disabled=st.session_state.get("converting", False)):
             st.session_state["audio_summaries"] = []
             if st.session_state["audio_items"]:
                 for (aname, atext, ameta) in st.session_state["audio_items"]:
@@ -1517,7 +1591,8 @@ if st.session_state.get("converted"):
 
     with c4:
         if has_anythingllm:
-            if st.button("📤 Wyślij do AnythingLLM", key="btn_send_anythingllm"):
+            if st.button("📤 Wyślij do AnythingLLM", key="btn_send_anythingllm",
+                         disabled=st.session_state.get("converting", False)):
                 success, msg = send_to_anythingllm(st.session_state["combined_text"], "converted_docs.txt")
                 if success:
                     st.success(msg)
@@ -1526,11 +1601,11 @@ if st.session_state.get("converted"):
         else:
             st.caption("AnythingLLM wyłączone lub brak config/tryb offline")
 
-    # === WYŚWIETLANIE PODSUMOWAŃ AUDIO ===
+    # === WYŚWIETLANIE PODSUMOWAŃ AUDIO (z pobieraniem) ===
     if st.session_state.get("audio_summaries"):
         st.markdown("---")
         st.subheader("🧠 Podsumowania rozmów audio")
-        
+
         for s in st.session_state["audio_summaries"]:
             aname = s["name"]
             summary_md = s["md"]
@@ -1546,7 +1621,8 @@ if st.session_state.get("converted"):
                     summary_md.encode("utf-8"),
                     file_name=f"{safe_filename(aname).replace('.mp3', '').replace('.wav', '')}_summary.md",
                     mime="text/markdown",
-                    key=f"dl_md_{safe_filename(aname)}"
+                    key=f"dl_md_{safe_filename(aname)}",
+                    disabled=st.session_state.get("converting", False)
                 )
             with col_b:
                 st.download_button(
@@ -1554,26 +1630,28 @@ if st.session_state.get("converted"):
                     json.dumps(summary_json, ensure_ascii=False, indent=2).encode("utf-8"),
                     file_name=f"{safe_filename(aname).replace('.mp3', '').replace('.wav', '')}_summary.json",
                     mime="application/json",
-                    key=f"dl_json_{safe_filename(aname)}"
+                    key=f"dl_json_{safe_filename(aname)}",
+                    disabled=st.session_state.get("converting", False)
                 )
             with col_c:
-                if st.button("💾 Zapisz (MD+JSON) na dysk", key=f"btn_save_sum_{safe_filename(aname)}"):
+                if st.button("💾 Zapisz (MD+JSON) na dysk", key=f"btn_save_sum_{safe_filename(aname)}",
+                             disabled=st.session_state.get("converting", False)):
                     out_dir = st.session_state.get("run_dir") or create_run_dir("outputs")
                     st.session_state["run_dir"] = out_dir
                     base = safe_filename(aname).replace('.mp3', '').replace('.wav', '')
-                    
+
                     md_path = os.path.join(out_dir, f"{base}_summary.md")
                     json_path = os.path.join(out_dir, f"{base}_summary.json")
-                    
+
                     save_text(md_path, summary_md)
                     save_text(json_path, json.dumps(summary_json, ensure_ascii=False, indent=2))
-                    
+
                     st.success(f"Zapisano podsumowanie do: {out_dir}")
 
 # Reset sesji (nie rusza plików na dysku)
-# Reset sesji (nie rusza plików na dysku)
 st.markdown("---")
-if st.button("♻️ Reset sesji (wyczyść wyniki)", type="secondary", key="btn_reset_session"):
+if st.button("♻️ Reset sesji (wyczyść wyniki)", type="secondary", key="btn_reset_session",
+             disabled=st.session_state.get("converting", False)):
     for k in ["results", "combined_text", "audio_items", "audio_summaries", "run_dir", "project_brain", "project_tasks"]:
         st.session_state[k] = [] if isinstance(st.session_state.get(k), list) else None
     st.session_state["stats"] = {'processed': 0, 'errors': 0, 'pages': 0}
