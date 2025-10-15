@@ -1588,14 +1588,21 @@ if st.session_state.get("converting", False):
         request_cancel()
 
 # === KONWERSJA → zapis do session_state (bez resetu przy zapisie) ===
+# === KONWERSJA → zapis do session_state ===
 if uploaded_files:
     st.info(f"📁 {len(uploaded_files)} plików")
+    
+    # PRZYCISK START
     if st.button("🚀 Konwertuj wszystkie", type="primary", key="btn_convert_all",
                  disabled=st.session_state.get("converting", False)):
-        # Start
         start_conversion()
+        st.rerun()  # ⬅️ KLUCZOWE - wymusza rerun z UI pokazującym STOP
 
-        # Reset stanu dla nowego przebiegu
+# PĘTLA KONWERSJI (wykonuje się gdy converting=True)
+if st.session_state.get("converting", False):
+    # Inicjalizacja (tylko raz)
+    if "conversion_started" not in st.session_state:
+        st.session_state["conversion_started"] = True
         st.session_state["results"] = []
         st.session_state["combined_text"] = ""
         st.session_state["audio_items"] = []
@@ -1607,65 +1614,72 @@ if uploaded_files:
         if enable_local_save:
             st.info(f"💾 Wyniki będą zapisane w: {st.session_state['run_dir']}")
 
-        progress = st.progress(0)
-        all_texts = []
+    progress = st.progress(0)
+    all_texts = []
 
-        for idx, file in enumerate(uploaded_files):
-            # Obsługa STOP
-            if st.session_state.get("cancel_requested"):
-                st.warning("⛔ Przerwano na żądanie użytkownika.")
-                break
+    for idx, file in enumerate(uploaded_files):
+        # Obsługa STOP
+        if st.session_state.get("cancel_requested"):
+            st.warning("⛔ Przerwano na żądanie użytkownika.")
+            end_conversion()
+            if "conversion_started" in st.session_state:
+                del st.session_state["conversion_started"]
+            st.rerun()
 
-            try:
-                progress.progress((idx + 1) / len(uploaded_files), text=f"Przetwarzam: {file.name}")
-            except TypeError:
-                progress.progress((idx + 1) / len(uploaded_files))
+        try:
+            progress.progress((idx + 1) / len(uploaded_files), text=f"Przetwarzam: {file.name}")
+        except TypeError:
+            progress.progress((idx + 1) / len(uploaded_files))
 
-            st.subheader(f"📄 {file.name}")
+        st.subheader(f"📄 {file.name}")
 
-            try:
-                extracted_text, pages, meta = process_file(file, use_vision, selected_vision, ocr_pages_limit, image_mode)
+        try:
+            extracted_text, pages, meta = process_file(file, use_vision, selected_vision, ocr_pages_limit, image_mode)
 
-                # Do sesji
-                st.session_state["results"].append({
-                    "name": file.name,
-                    "text": extracted_text,
-                    "original_text": extracted_text,  # ważne do remap mówców
-                    "meta": meta,
-                    "pages": pages
-                })
+            # Do sesji
+            st.session_state["results"].append({
+                "name": file.name,
+                "text": extracted_text,
+                "original_text": extracted_text,
+                "meta": meta,
+                "pages": pages
+            })
 
-                # Tekst łączny
-                all_texts.append(f"\n{'='*80}\n")
-                all_texts.append(f"PLIK: {file.name}\n")
-                all_texts.append(f"Typ: {getattr(file, 'type', 'unknown')}, Rozmiar: {getattr(file, 'size', 0)/1024:.1f} KB\n")
-                all_texts.append(f"{'='*80}\n")
-                all_texts.append(extracted_text)
-                all_texts.append(f"\n[Stron/sekcji: {pages}]\n")
+            # Tekst łączny
+            all_texts.append(f"\n{'='*80}\n")
+            all_texts.append(f"PLIK: {file.name}\n")
+            all_texts.append(f"Typ: {getattr(file, 'type', 'unknown')}, Rozmiar: {getattr(file, 'size', 0)/1024:.1f} KB\n")
+            all_texts.append(f"{'='*80}\n")
+            all_texts.append(extracted_text)
+            all_texts.append(f"\n[Stron/sekcji: {pages}]\n")
 
-                # Statystyki
-                st.session_state["stats"]["processed"] += 1
-                st.session_state["stats"]["pages"] += pages
+            # Statystyki
+            st.session_state["stats"]["processed"] += 1
+            st.session_state["stats"]["pages"] += pages
 
-                # Podgląd
-                with st.expander(f"Preview: {file.name}"):
-                    st.text(extracted_text[:2000] + ("..." if len(extracted_text) > 2000 else ""))
+            # Podgląd
+            with st.expander(f"Preview: {file.name}"):
+                st.text(extracted_text[:2000] + ("..." if len(extracted_text) > 2000 else ""))
 
-                # Audio → do podsumowań
-                if isinstance(meta, dict) and meta.get("type") == "audio":
-                    st.session_state["audio_items"].append((file.name, extracted_text, meta))
+            # Audio → do podsumowań
+            if isinstance(meta, dict) and meta.get("type") == "audio":
+                st.session_state["audio_items"].append((file.name, extracted_text, meta))
 
-            except Exception as e:
-                st.error(f"❌ Błąd: {e}")
-                logger.exception(f"Error processing {file.name}")
-                st.session_state["stats"]["errors"] += 1
+        except Exception as e:
+            st.error(f"❌ Błąd: {e}")
+            logger.exception(f"Error processing {file.name}")
+            st.session_state["stats"]["errors"] += 1
 
-        progress.empty()
-        st.session_state["combined_text"] = "\n".join(all_texts)
-        st.session_state["converted"] = True
-
+    # Zakończenie
+    progress.empty()
+    st.session_state["combined_text"] = "\n".join(all_texts)
+    st.session_state["converted"] = True
+    end_conversion()
+    if "conversion_started" in st.session_state:
+        del st.session_state["conversion_started"]
+    st.rerun()
         # Koniec
-        end_conversion()
+       
 
 # === SEKCJA WYNIKÓW ===
 if st.session_state.get("converted"):
