@@ -1525,6 +1525,52 @@ if st.session_state.get("converted"):
                     st.error(msg)
         else:
             st.caption("AnythingLLM wyłączone lub brak config/tryb offline")
+
+    # === WYŚWIETLANIE PODSUMOWAŃ AUDIO ===
+    if st.session_state.get("audio_summaries"):
+        st.markdown("---")
+        st.subheader("🧠 Podsumowania rozmów audio")
+        
+        for s in st.session_state["audio_summaries"]:
+            aname = s["name"]
+            summary_md = s["md"]
+            summary_json = s["json"]
+
+            st.markdown(f"### 🎧 {aname}")
+            st.markdown(summary_md)
+
+            col_a, col_b, col_c = st.columns(3)
+            with col_a:
+                st.download_button(
+                    "⬇️ Pobierz MD",
+                    summary_md.encode("utf-8"),
+                    file_name=f"{safe_filename(aname).replace('.mp3', '').replace('.wav', '')}_summary.md",
+                    mime="text/markdown",
+                    key=f"dl_md_{safe_filename(aname)}"
+                )
+            with col_b:
+                st.download_button(
+                    "⬇️ Pobierz JSON",
+                    json.dumps(summary_json, ensure_ascii=False, indent=2).encode("utf-8"),
+                    file_name=f"{safe_filename(aname).replace('.mp3', '').replace('.wav', '')}_summary.json",
+                    mime="application/json",
+                    key=f"dl_json_{safe_filename(aname)}"
+                )
+            with col_c:
+                if st.button("💾 Zapisz (MD+JSON) na dysk", key=f"btn_save_sum_{safe_filename(aname)}"):
+                    out_dir = st.session_state.get("run_dir") or create_run_dir("outputs")
+                    st.session_state["run_dir"] = out_dir
+                    base = safe_filename(aname).replace('.mp3', '').replace('.wav', '')
+                    
+                    md_path = os.path.join(out_dir, f"{base}_summary.md")
+                    json_path = os.path.join(out_dir, f"{base}_summary.json")
+                    
+                    save_text(md_path, summary_md)
+                    save_text(json_path, json.dumps(summary_json, ensure_ascii=False, indent=2))
+                    
+                    st.success(f"Zapisano podsumowanie do: {out_dir}")
+
+# Reset sesji (nie rusza plików na dysku)
 # Reset sesji (nie rusza plików na dysku)
 st.markdown("---")
 if st.button("♻️ Reset sesji (wyczyść wyniki)", type="secondary", key="btn_reset_session"):
