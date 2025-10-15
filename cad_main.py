@@ -1799,7 +1799,8 @@ def render_new_project_page(selected_model):
                     ai_model = st.session_state["selected_vision_model"]
                     st.info(f"🖼️ Używam modelu Vision: {ai_model}")
                 else:
-                    ai_model = st.session_state.get("selected_text_model") or selected_model or "llama3:latest"
+                    # Użyj wybranego modelu tekstowego z session_state (lub domyślny)
+                    ai_model = st.session_state.get("selected_text_model", "qwen2.5:7b")
                     st.info(f"📝 Używam modelu tekstowego: {ai_model}")
 
                 progress_bar.progress(60, text=f"AI ({ai_model})...")
@@ -2681,7 +2682,7 @@ def main():
     if page == "Dashboard":
         render_dashboard_page()
     elif page == "Nowy projekt":
-        render_new_project_page(selected_model)
+        render_new_project_page(selected_text_model)
     elif page == "Historia i Uczenie":
         render_history_page()
 
