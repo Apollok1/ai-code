@@ -1443,7 +1443,7 @@ with st.sidebar:
     
     if "selected_main_text_model" not in st.session_state:
         # Preferuj qwen2.5 dla technicznego tekstu
-        default_text = "qwen2.5:7b" if "qwen2.5:7b" in available_text_models else (
+        default_text = "qwen2.5:14b" if "qwen2.5:14b" in available_text_models else (
             available_text_models[0] if available_text_models else "llama3:latest"
         )
         st.session_state["selected_main_text_model"] = default_text
