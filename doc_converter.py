@@ -84,8 +84,8 @@ st.set_page_config(page_title="📄 Document Converter", layout="wide", page_ico
 
 # === CONFIG (domyślnie localhost; offline mode ON) ===
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
-ANYTHINGLLM_URL = os.getenv("ANYTHINGLLM_URL", "")  # puste = wyłączone
-ANYTHINGLLM_API_KEY = os.getenv("ANYTHINGLLM_API_KEY", "")
+ANYTHINGLLM_URL = os.getenv("ANYTHINGLLM_URL", "http://127.0.0.1:3001")  # puste = wyłączone
+ANYTHINGLLM_API_KEY = os.getenv("ANYTHINGLLM_API_KEY", "M2CCA9E-ARP41Y7-PZKT1G3-CK5SV2B")
 WHISPER_URL = os.getenv("WHISPER_URL", "http://127.0.0.1:9000")
 PYANNOTE_URL = os.getenv("PYANNOTE_URL", "http://127.0.0.1:8000")
 OFFLINE_MODE = os.getenv("STRICT_OFFLINE", "1").lower() in ("1", "true", "yes")
