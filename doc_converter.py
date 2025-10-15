@@ -54,10 +54,28 @@ try:
     import pandas as pd
 except Exception:
     pd = None
+    
+def init_dc_state():
+    """Inicjalizuje stan sesji – wyniki będą trwałe między rerunami."""
+    ss = st.session_state
+    ss.setdefault("converted", False)  # czy mamy już gotowe wyniki
+    ss.setdefault("results", [])  # lista dict: {name, text, original_text, meta, pages}
+    ss.setdefault("audio_items", [])  # lista: (name, text, meta)
+    ss.setdefault("audio_summaries", [])  # opcjonalne podsumowania
+    ss.setdefault("stats", {'processed': 0, 'errors': 0, 'pages': 0})
+    ss.setdefault("file_sig", None)  # sygnatura zestawu plików (nazwa+rozmiar)
+    ss.setdefault("speaker_maps", {})  # mapy imion per plik: {file_key: {SPEAKER_00:"Michał", ...}}
 
+def files_signature(files) -> int:
+    """Sygnatura zestawu plików – pomaga nie przeliczać ponownie po rerunie."""
+    try:
+        items = [(f.name, getattr(f, 'size', None) or len(f.getvalue())) for f in files]
+        return hash(tuple(items))
+    except Exception:
+        return 0
 
-
-
+init_dc_state()
+# === SESSION STATE INIT ===
 
 # Logging
 logging.basicConfig(level=logging.INFO)
@@ -91,20 +109,58 @@ IMAGE_MODE_MAP = {
     "OCR + Vision opis": "ocr_plus_vision_desc",
 }
 
+import re
+
 def remap_speakers(text_with_speakers: str, speaker_map: dict) -> str:
     """
-    Zamienia domyślne etykiety (np. 'SPEAKER_00') na podane przez użytkownika.
+    Zamienia etykiety 'SPEAKER_00'... na podane imiona/role.
+    Działa bezpiecznie, nie modyfikuje innych fragmentów.
     """
-    if not speaker_map:
+    if not text_with_speakers or not speaker_map:
         return text_with_speakers
     
-    output_text = text_with_speakers
-    # Sortuj klucze od najdłuższego, aby uniknąć problemów (np. SPEAKER_1 vs SPEAKER_10)
-    for old_speaker in sorted(speaker_map.keys(), key=len, reverse=True):
-        new_name = speaker_map.get(old_speaker)
-        if new_name:
-            output_text = output_text.replace(old_speaker, new_name)
-    return output_text
+    out = text_with_speakers
+    # sortuj po długości klucza malejąco (żeby 'SPEAKER_1' nie nadpisał 'SPEAKER_10')
+    for old in sorted(speaker_map.keys(), key=len, reverse=True):
+        new = speaker_map.get(old, "").strip()
+        if new and new != old:
+            out = out.replace(old, new)
+    return out
+
+def speaker_mapper_form(file_name: str, original_text: str, current_text: str) -> str | None:
+    """
+    Rysuje formularz do nadania imion mówcom dla jednego pliku.
+    Zwraca nowy tekst (po remap) albo None, jeśli nie kliknięto submit.
+    """
+    file_key = safe_filename(file_name)
+    
+    # wyciągnij mówców z ORYGINALNEGO tekstu (zachowuje SPEAKER_XX)
+    unique = sorted(list(set(re.findall(r"SPEAKER_\d+", original_text))))
+    if not unique:
+        return None
+    
+    # mapa imion w sesji
+    if file_key not in st.session_state["speaker_maps"]:
+        st.session_state["speaker_maps"][file_key] = {}
+    smap = st.session_state["speaker_maps"][file_key]
+    
+    with st.form(key=f"form_map_{file_key}"):
+        cols = st.columns(len(unique))
+        for i, spk in enumerate(unique):
+            with cols[i]:
+                smap[spk] = st.text_input(
+                    f"Imię dla {spk}",
+                    value=smap.get(spk, spk),
+                    key=f"in_{file_key}_{spk}"
+                )
+        submitted = st.form_submit_button("Zastosuj imiona")
+        if submitted:
+            # zapisz mapę do sesji, zbuduj nowy tekst po remap
+            st.session_state["speaker_maps"][file_key] = {k: v.strip() or k for k in smap.keys() for v in [smap[k]]}
+            new_text = remap_speakers(original_text, st.session_state["speaker_maps"][file_key])
+            st.success(f"Zastosowano imiona dla: {file_name}")
+            return new_text
+    return None
 # === OFFLINE GUARD ===
 def is_private_host(host: str) -> bool:
     try:
@@ -1333,10 +1389,9 @@ with st.sidebar:
 # === FILE UPLOADER ===
 uploaded_files = st.file_uploader(
     "Wgraj dokumenty",
-    type=['pdf', 'docx', 'pptx', 'ppt', 'jpg', 'jpeg', 'png', 'txt', 'mp3', 'wav', 'm4a', 'ogg', 'flac', 'eml', 'msg'],
+    type=['pdf','docx','pptx','ppt','jpg','jpeg','png','txt','mp3','wav','m4a','ogg','flac'],
     accept_multiple_files=True
 )
-
 # === KONWERSJA → zapis do session_state (bez resetu przy zapisie) ===
 if uploaded_files:
     st.info(f"📁 {len(uploaded_files)} plików")
