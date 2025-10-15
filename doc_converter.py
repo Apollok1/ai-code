@@ -1481,11 +1481,7 @@ with st.sidebar:
             disabled=st.session_state.get("converting", False)
         )
         
-    if vision_models and use_vision:
-        selected_vision = st.selectbox(
-            "Model wizyjny", vision_models, index=0,
-            disabled=st.session_state.get("converting", False)
-        )
+   
     else:
         selected_vision = None
         if use_vision:
