@@ -454,28 +454,7 @@ def ocr_image_bytes(img_bytes: bytes, lang: str = 'pol+eng') -> str:
         logger.warning(f"OCR error: {e}")
         return ""
 
-# === SESSION STATE INIT ===
-def init_state():
-    ss = st.session_state
-    ss.setdefault("results", [])           # lista: {name, text, meta, pages}
-    ss.setdefault("combined_text", "")
-    ss.setdefault("audio_items", [])       # lista: (name, text, meta)
-    ss.setdefault("audio_summaries", [])   # lista: {name, md, json}
-    ss.setdefault("run_dir", None)         # stały katalog dla tego przebiegu
-    ss.setdefault("stats", {'processed': 0, 'errors': 0, 'pages': 0})
-    ss.setdefault("converted", False)      # czy mamy gotowe wyniki na ekranie
-    ss.setdefault("files_sig", None)       # sygnatura zestawu plików (nazwa+rozmiar)
-    ss.setdefault("diag", None)            # wyniki diagnostyki
-    ss.setdefault("ALLOW_WEB", False)      # toggle do web lookupu
 
-def files_signature(files) -> int:
-    try:
-        items = [(f.name, getattr(f, 'size', None) or len(f.getvalue())) for f in files]
-        return hash(tuple(items))
-    except Exception:
-        return 0
-
-init_state()
 
 # KONIEC CZĘŚCI 1/3 — daj znać, kiedy wysłać Część 2/3 (ekstraktory, audio/pyannote, podsumowania, Project Brain)
 # app.py — Document Converter Pro (Part 2/3)
