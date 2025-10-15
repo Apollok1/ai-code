@@ -434,8 +434,13 @@ def list_ollama_models():
 
 def list_vision_models():
     all_models = list_ollama_models()
-    prefixes = ("llava", "bakllava", "moondream", "llava-phi", "qwen2-vl")
-    return [m for m in all_models if any(m.startswith(p) for p in prefixes)]
+    # Prefiksy znanych modeli Vision
+    vision_prefixes = (
+        "llava", "bakllava", "moondream", "llava-phi", 
+        "qwen2-vl", "qwen2.5vl", "qwen",  # Wszystkie warianty Qwen
+        "cogvlm", "internvl", "minicpm-v"  # Inne popularne modele
+    )
+    return [m for m in all_models if any(m.startswith(p) for p in vision_prefixes)]
 
 def query_ollama_vision(prompt: str, image_b64: str, model: str):
     try:
