@@ -1588,10 +1588,209 @@ def enhance_estimation_with_web(component_name: str, department: str, enable_web
         logger.warning(f"Web search failed: {e}")
     
     return results
+# === FUNKCJE POMOCNICZE DLA AI BRIEF I ANALIZY ===
+
+def build_brief_prompt(description: str, components: list, pdf_text: str, department: str) -> str:
+    """
+    Buduje prompt do generowania briefu projektu.
     
+    Args:
+        description: Opis projektu od użytkownika
+        components: Lista komponentów z Excela/JSON
+        pdf_text: Tekst z plików PDF
+        department: Kod działu (131-135)
+    
+    Returns:
+        Sformatowany prompt dla AI
+    """
+    # Przykładowe komponenty (max 10)
+    comp_names = [c.get('name', '') for c in components[:10] if not c.get('is_summary', False)]
+    comp_list = "\n".join([f"- {name}" for name in comp_names if name]) or "Brak komponentów"
+    
+    # Kontekst branżowy
+    context = DEPARTMENT_CONTEXT.get(department, "")
+    
+    return f"""Jesteś ekspertem CAD i project managerem. Przeanalizuj projekt i stwórz szczegółowy brief.
+
+DZIAŁ: {department}
+{context}
+
+OPIS PROJEKTU:
+{description[:1500] if description else "Brak opisu"}
+
+PRZYKŁADOWE KOMPONENTY:
+{comp_list}
+
+SPECYFIKACJE TECHNICZNE:
+{pdf_text[:2500] if pdf_text else "Brak dodatkowych specyfikacji"}
+
+ZADANIE: Zwróć szczegółowy brief projektu w formacie JSON.
+
+WYMAGANA STRUKTURA JSON:
+{{
+  "brief_md": "Krótki opis projektu (2-3 akapity w Markdown) - co to za projekt, główne wymagania, złożoność",
+  "scope": ["zakres prac 1", "zakres prac 2", "zakres prac 3"],
+  "assumptions": ["założenie techniczne 1", "założenie 2"],
+  "missing_info": ["brakująca informacja 1", "pytanie do klienta 2"],
+  "risks": [
+    {{"risk": "opis ryzyka", "impact": "wysoki/średni/niski", "mitigation": "jak zminimalizować"}},
+    {{"risk": "inne ryzyko", "impact": "średni", "mitigation": "plan mitygacji"}}
+  ],
+  "checklist": ["punkt kontrolny 1", "punkt kontrolny 2", "weryfikacja 3"],
+  "open_questions": ["pytanie do zespołu 1", "pytanie techniczne 2"]
+}}
+
+ZASADY:
+- Pisz TYLKO po polsku
+- Zwróć WYŁĄCZNIE JSON (bez komentarzy, bez tekstu przed/po)
+- W "risks" KAŻDE ryzyko MUSI mieć: risk, impact, mitigation
+- brief_md może zawierać Markdown (nagłówki ##, listy, pogrubienia **)
+- Bądź konkretny i techniczny
+"""
+
+
+def parse_brief_response(resp_text: str) -> dict:
+    """
+    Parsuje odpowiedź AI z briefem projektu.
+    
+    Args:
+        resp_text: Surowa odpowiedź od AI (może zawierać code fences)
+    
+    Returns:
+        Słownik z brieFem lub struktura zastępcza
+    """
+    try:
+        # Usuń code fences (```json ... ```)
+        clean = resp_text.strip()
+        if clean.startswith("```json"):
+            clean = clean[7:]
+        if clean.startswith("```"):
+            clean = clean[3:]
+        if clean.endswith("```"):
+            clean = clean[:-3]
+        clean = clean.strip()
+        
+        # Parsuj JSON
+        data = json.loads(clean)
+        
+        # Walidacja struktury
+        required_keys = ["brief_md", "scope", "assumptions", "missing_info", "risks", "checklist", "open_questions"]
+        for key in required_keys:
+            if key not in data:
+                data[key] = [] if key != "brief_md" else ""
+        
+        # Walidacja ryzyk (MUSZĄ mieć risk, impact, mitigation)
+        validated_risks = []
+        for r in data.get("risks", []):
+            if isinstance(r, dict) and all(k in r for k in ["risk", "impact", "mitigation"]):
+                validated_risks.append(r)
+        data["risks"] = validated_risks
+        
+        return data
+        
+    except json.JSONDecodeError as e:
+        logger.error(f"Brief JSON parsing error: {e}")
+        # Fallback - zwróć surowy tekst jako brief
+        return {
+            "brief_md": f"**Błąd parsowania JSON**\n\n{resp_text[:800]}",
+            "scope": [],
+            "assumptions": [],
+            "missing_info": ["Nie udało się sparsować odpowiedzi AI"],
+            "risks": [],
+            "checklist": [],
+            "open_questions": []
+        }
+    except Exception as e:
+        logger.error(f"Brief parsing error: {e}")
+        return {
+            "brief_md": f"**Błąd:** {str(e)}",
+            "scope": [],
+            "assumptions": [],
+            "missing_info": [],
+            "risks": [],
+            "checklist": [],
+            "open_questions": []
+        }
+
+
+def build_analysis_prompt(description: str, components: list, 
+                          learned_patterns: list, pdf_text: str, 
+                          department: str) -> str:
+    """
+    Buduje prompt do analizy komponentów i estymacji godzin.
+    
+    Args:
+        description: Opis projektu
+        components: Lista komponentów z Excela/JSON (max 30 dla promptu)
+        learned_patterns: Wzorce z bazy danych
+        pdf_text: Tekst z PDF
+        department: Kod działu
+    
+    Returns:
+        Sformatowany prompt dla AI
+    """
+    # Kontekst branżowy
+    context = DEPARTMENT_CONTEXT.get(department, "")
+    
+    # Przykłady komponentów z Excela/JSON (max 30)
+    comp_examples = []
+    for c in components[:30]:
+        if not c.get('is_summary', False):
+            name = c.get('name', 'Bez nazwy')
+            layout = c.get('hours_3d_layout', 0)
+            detail = c.get('hours_3d_detail', 0)
+            doc = c.get('hours_2d', 0)
+            comp_examples.append(
+                f"- {name}: Layout {layout:.1f}h, Detail {detail:.1f}h, 2D {doc:.1f}h"
+            )
+    
+    comp_str = "\n".join(comp_examples) if comp_examples else "Brak przykładów z Excela/JSON"
+    
+    # Wzorce z bazy (top 10)
+    patterns_str = ""
+    if learned_patterns:
+        patterns_str = "\n\nWZORCE Z BAZY DANYCH (dla referencji):\n"
+        for p in learned_patterns[:10]:
+            name = p.get('name', '')
+            avg_total = p.get('avg_hours_total', 0)
+            occurrences = p.get('occurrences', 0)
+            patterns_str += f"- {name}: ~{avg_total:.1f}h całkowicie (n={occurrences} próbek)\n"
+    
+    return f"""{MASTER_PROMPT}
+
+KONTEKST PROJEKTU:
+
+DZIAŁ: {department}
+{context}
+
+OPIS UŻYTKOWNIKA:
+{description[:2000] if description else "Brak szczegółowego opisu"}
+
+KOMPONENTY Z EXCELA/JSON (referencyjne):
+{comp_str}
+
+{patterns_str}
+
+SPECYFIKACJE/PDF:
+{pdf_text[:2500] if pdf_text else "Brak dodatkowych specyfikacji"}
+
+ZADANIE:
+Przeanalizuj projekt i zwróć estymację w formacie JSON zgodnym z MASTER_PROMPT.
+
+WAŻNE ZASADY:
+1. Zwróć WYŁĄCZNIE JSON (bez tekstu przed/po, bez markdown code fences)
+2. Każdy komponent MUSI mieć: name, layout_h, detail_h, doc_h
+3. Sums MUSI zawierać: layout, detail, doc, total
+4. Każde ryzyko w "risks" MUSI mieć: risk, impact, mitigation
+5. Jeśli są "adjustments" (sub-komponenty z komentarzy) - każdy "add" MUSI mieć:
+   name, qty, layout_add, detail_add, doc_add, reason
+
+Przeanalizuj dokładnie i zwróć JSON.
+"""    
 # === Strona: Nowy projekt (z JSON/paste i Vision llava/qwen2-vl) ===
-def render_new_project_page(selected_model):
+def render_new_project_page():
     st.header("🆕 Nowy Projekt")
+
 
     department = st.selectbox(
         "Wybierz dział*",
@@ -1617,7 +1816,12 @@ def render_new_project_page(selected_model):
     # 🔹 AI Brief: opis zadania i checklista
     st.subheader("📝 AI: Opis zadania i checklista")
     if st.button("📝 Generuj opis zadania (AI)", use_container_width=True):
-        try:
+    if not st.session_state.get("description") and not components_for_brief and not pdf_text_for_brief:
+        st.warning("⚠️ Brak danych wejściowych. Dodaj opis, komponenty lub PDF.")
+    else:
+        with st.spinner("Generuję opis zadania..."):
+            try:
+   
             # Komponenty z Excela (przykłady)
             components_for_brief = []
             if excel_file is not None:
@@ -1650,25 +1854,16 @@ def render_new_project_page(selected_model):
                 department
             )
 
-            ai_model_brief = selected_model or "llama3:latest"
-            resp = query_ollama(prompt_brief, model=ai_model_brief, format_json=True)
-            brief = parse_brief_response(resp)
-            st.session_state["ai_brief"] = brief
-            st.success("Opis wygenerowany ✅")
-        except Exception as e:
-            logger.exception("Brief generation failed")
-            st.error(f"Nie udało się wygenerować opisu: {e}")
-    # Po linii ~1600 (gdzie są results z AI)
-    if st.session_state.get("allow_web_lookup") and parsed.get('components'):
-        st.info("🌐 Wzbogacam estymację o dane z sieci...")
-        for comp in parsed['components'][:5]:  # Tylko pierwsze 5 (żeby nie zajmowało wieki)
-            web_data = enhance_estimation_with_web(
-                comp.get('name', ''), 
-                department, 
-                enable_web=True
-            )
-            if web_data.get("web_context"):
-                comp["web_notes"] = web_data["web_context"]
+            ai_model_brief = st.session_state.get("selected_text_model", "qwen2.5:7b")
+                resp = query_ollama(prompt_brief, model=ai_model_brief, format_json=True)
+                brief = parse_brief_response(resp)
+                st.session_state["ai_brief"] = brief
+                st.success("✅ Opis wygenerowany pomyślnie!")
+            except Exception as e:
+                logger.exception("Brief generation failed")
+                st.error(f"❌ Nie udało się wygenerować opisu: {e}")
+                st.info("💡 Spróbuj ponownie lub zmień model AI w Sidebar")
+    
     # Wyświetl brief (jeśli jest)
     if "ai_brief" in st.session_state:
         b = st.session_state["ai_brief"]
@@ -1808,6 +2003,27 @@ def render_new_project_page(selected_model):
 
                 progress_bar.progress(80, text="Parsuję...")
                 parsed = parse_ai_response(ai_text, components_from_excel=components_from_excel)
+                # 🌐 Web enhancement (opcjonalne - po parsowaniu)
+                if st.session_state.get("allow_web_lookup") and parsed.get('components'):
+                    progress_bar.progress(85, text="🌐 Wzbogacam o dane z sieci...")
+                    enhanced_count = 0
+                    for comp in parsed['components'][:5]:  # Tylko pierwsze 5
+                        try:
+                            web_data = enhance_estimation_with_web(
+                                comp.get('name', ''), 
+                                department, 
+                                enable_web=True
+                            )
+                            if web_data.get("web_context"):
+                                comp["web_notes"] = web_data["web_context"]
+                                enhanced_count += 1
+                        except Exception as e:
+                            logger.warning(f"Web enhancement failed for '{comp.get('name')}': {e}")
+                    
+                    if enhanced_count > 0:
+                        st.info(f"✅ Wzbogacono {enhanced_count} komponentów danymi z sieci")
+
+                progress_bar.progress(90, text="Finalizuję...")
 
                 # Dołącz komponenty z JSON (deduplikacja po canonicalize_name)
                 if components_from_json:
@@ -2681,8 +2897,10 @@ def main():
     # Routing stron
     if page == "Dashboard":
         render_dashboard_page()
+
     elif page == "Nowy projekt":
-        render_new_project_page(selected_text_model)
+        render_new_project_page()
+    
     elif page == "Historia i Uczenie":
         render_history_page()
 
