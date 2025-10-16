@@ -1816,54 +1816,54 @@ def render_new_project_page():
     # 🔹 AI Brief: opis zadania i checklista
     st.subheader("📝 AI: Opis zadania i checklista")
     if st.button("📝 Generuj opis zadania (AI)", use_container_width=True):
-    if not st.session_state.get("description") and not components_for_brief and not pdf_text_for_brief:
-        st.warning("⚠️ Brak danych wejściowych. Dodaj opis, komponenty lub PDF.")
-    else:
-        with st.spinner("Generuję opis zadania..."):
+        # Komponenty z Excela (przykłady)
+        components_for_brief = []
+        if excel_file is not None:
             try:
-   
-            # Komponenty z Excela (przykłady)
-            components_for_brief = []
-            if excel_file is not None:
+                components_for_brief = parse_cad_project_structured_with_xlsx_comments(BytesIO(excel_file.getvalue()))['components']
+            except Exception:
+                components_for_brief = []
+
+        # Komponenty z JSON (doc-converter/AI)
+        components_from_json_for_brief = []
+        if json_files:
+            for jf in json_files:
                 try:
-                    components_for_brief = parse_cad_project_structured_with_xlsx_comments(BytesIO(excel_file.getvalue()))['components']
+                    data = safe_json_loads(jf.getvalue())
+                    components_from_json_for_brief += parse_components_from_docconv_json(data)
                 except Exception:
-                    components_for_brief = []
+                    pass
 
-            # Komponenty z JSON (doc-converter/AI)
-            components_from_json_for_brief = []
-            if json_files:
-                for jf in json_files:
-                    try:
-                        data = safe_json_loads(jf.getvalue())
-                        components_from_json_for_brief += parse_components_from_docconv_json(data)
-                    except Exception:
-                        pass
+        pdf_text_for_brief = ""
+        if pdf_files:
+            pdf_text_for_brief = "\n".join([extract_text_from_pdf(pf) for pf in pdf_files])
 
-            pdf_text_for_brief = ""
-            if pdf_files:
-                pdf_text_for_brief = "\n".join([extract_text_from_pdf(pf) for pf in pdf_files])
+        if st.session_state.get("pasted_text"):
+            pdf_text_for_brief = (pdf_text_for_brief + "\n\n" + st.session_state.get("pasted_text")).strip()
 
-            if st.session_state.get("pasted_text"):
-                pdf_text_for_brief = (pdf_text_for_brief + "\n\n" + st.session_state.get("pasted_text")).strip()
+        # Sprawdź czy są dane wejściowe
+        if not st.session_state.get("description") and not components_for_brief and not pdf_text_for_brief:
+            st.warning("⚠️ Brak danych wejściowych. Dodaj opis, komponenty lub PDF.")
+        else:
+            with st.spinner("Generuję opis zadania..."):
+                try:
+                    prompt_brief = build_brief_prompt(
+                        st.session_state.get("description", ""),
+                        components_for_brief + components_from_json_for_brief,
+                        pdf_text_for_brief,
+                        department
+                    )
 
-            prompt_brief = build_brief_prompt(
-                st.session_state.get("description", ""),
-                components_for_brief + components_from_json_for_brief,
-                pdf_text_for_brief,
-                department
-            )
+                    ai_model_brief = st.session_state.get("selected_text_model", "qwen2.5:7b")
+                    resp = query_ollama(prompt_brief, model=ai_model_brief, format_json=True)
+                    brief = parse_brief_response(resp)
+                    st.session_state["ai_brief"] = brief
+                    st.success("✅ Opis wygenerowany pomyślnie!")
+                except Exception as e:
+                    logger.exception("Brief generation failed")
+                    st.error(f"❌ Nie udało się wygenerować opisu: {e}")
+                    st.info("💡 Spróbuj ponownie lub zmień model AI w Sidebar")
 
-            ai_model_brief = st.session_state.get("selected_text_model", "qwen2.5:7b")
-                resp = query_ollama(prompt_brief, model=ai_model_brief, format_json=True)
-                brief = parse_brief_response(resp)
-                st.session_state["ai_brief"] = brief
-                st.success("✅ Opis wygenerowany pomyślnie!")
-            except Exception as e:
-                logger.exception("Brief generation failed")
-                st.error(f"❌ Nie udało się wygenerować opisu: {e}")
-                st.info("💡 Spróbuj ponownie lub zmień model AI w Sidebar")
-    
     # Wyświetl brief (jeśli jest)
     if "ai_brief" in st.session_state:
         b = st.session_state["ai_brief"]
