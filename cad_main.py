@@ -1988,7 +1988,7 @@ def render_new_project_page():
                 )
 
                 # Wybór modelu: Vision → llava / qwen2-vl, inaczej tekstowy
-                if images_b64:
+                
                 # Użyj wybranych modeli z session_state
                 if images_b64 and st.session_state.get("selected_vision_model"):
                     ai_model = st.session_state["selected_vision_model"]
