@@ -1171,7 +1171,7 @@ def _welford_step(mean, m2, n, x):
     # Outlier detection (po zebraniu przynajmniej 5 próbek)
     if n and n >= 5:
         std = (m2 / max(n - 1, 1)) ** 0.5
-        if mean and abs(x - mean) > 2.5 * std:
+        if mean and abs(x - mean) > 3.5 * std:
             logger.debug(f"   ⚠️ Outlier odrzucony: x={x:.2f}, mean={mean:.2f}, std={std:.2f}")
             return mean, m2, n  # Nie aktualizuj - outlier
     
@@ -1375,6 +1375,16 @@ def learn_from_historical_components(cur, dept: str, components: list, distribut
     for comp in components or []:
         try:
             name = comp.get('name', '')
+                    # ════════════════════════════════════════════════════════
+            # DODAJ TO TUTAJ (zaraz po pobraniu name):
+            # ════════════════════════════════════════════════════════
+            # Pomiń placeholder names
+            if name in ['[part]', '[assembly]', '', ' ']:
+                skipped_no_name += 1
+                continue
+            # ════════════════════════════════════════════════════════
+            
+          
             if not name:
                 skipped_no_name += 1
                 continue
