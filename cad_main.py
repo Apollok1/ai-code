@@ -3159,7 +3159,8 @@ def main():
 
     # Sidebar: nawigacja
     st.sidebar.title("Menu")
-    page = st.sidebar.radio("Nawigacja", ["Dashboard", "Nowy projekt", "Historia i Uczenie"])
+    
+    page = st.sidebar.radio("Nawigacja", ["Dashboard", "Nowy projekt", "Historia i Uczenie", "🛠️ Admin"])
 
     # Sidebar: ustawienia AI
     st.sidebar.subheader("Ustawienia AI")
@@ -3295,6 +3296,9 @@ def main():
     
     elif page == "Historia i Uczenie":
         render_history_page()
+
+    elif page == "🛠️ Admin":
+        render_admin_page()  # <-- NOWA STRONA
 
 if __name__ == "__main__":
 
