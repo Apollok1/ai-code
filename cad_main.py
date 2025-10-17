@@ -190,7 +190,7 @@ def canonicalize_name(name: str) -> str:
     n = re.sub(r'\b\d+[.,]?\d*\s*(mm|cm|m|kg|t|ton|szt|pcs|inch|")\b', ' ', n)
     n = re.sub(r'\b\d+[.,]?\d*\b', ' ', n)
     # Tokenizacja i mapowanie aliasów
-    tokens = re.split(r'[\s-_.,;/]+', n)
+    tokens = re.split(r'[\s\-_.,;/]+', n)  # <-- NAPRAWIONE (escaped -)
     norm_tokens = []
     stoplist = {'i', 'a', 'the', 'and', 'or', 'der', 'die', 'das', 'und', 'ein', 'eine', 'of', 'for'}
     for tok in tokens:
@@ -209,7 +209,7 @@ def canonicalize_name(name: str) -> str:
             seen.add(t)
             out.append(t)
     return ' '.join(out).strip()
-
+    
 # === Helpery integracji z doc-converterem i diagnostyki ===
 def safe_json_loads(data_bytes_or_str):
     """Wczytuje JSON, toleruje code fences oraz bytes."""
@@ -2908,7 +2908,7 @@ def render_admin_page():
     if not st.session_state["admin_authenticated"]:
         password = st.text_input("Hasło administratora", type="password")
         if st.button("Zaloguj"):
-            if password == "admin123":  # ZMIEŃ TO NA SWOJE HASŁO!
+            if password == "polmic":  # ZMIEŃ TO NA SWOJE HASŁO!
                 st.session_state["admin_authenticated"] = True
                 st.rerun()
             else:
