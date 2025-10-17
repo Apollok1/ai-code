@@ -2064,6 +2064,10 @@ def render_new_project_page():
     enable_bundles = st.checkbox("Włącz podpowiedzi z historii (bundles)", value=True,
                                  help="Podpowiada typowe sub‑komponenty dla podobnych pozycji na bazie importów historycznych")
 
+
+
+
+
     if st.button("🤖 Analizuj z AI", use_container_width=True):
         if not st.session_state.get("description") and not excel_file and not image_files and not pdf_files and not json_files and not pasted_text:
             st.warning("Podaj opis lub wgraj pliki")
@@ -2073,9 +2077,9 @@ def render_new_project_page():
                 # Excel
                 components_from_excel = []
                 if excel_file:
-                    progress_bar.progress(15, text="Wczytuję Excel...")
+                    progress_bar.progress(15, text="Wczytuje Excel...")
                     components_from_excel = process_excel(excel_file)
-
+    
                 # JSON
                 components_from_json = []
                 if json_files:
@@ -2086,14 +2090,14 @@ def render_new_project_page():
                             components_from_json += parse_components_from_docconv_json(obj)
                         except Exception:
                             pass
-
+    
                 # Obrazy
                 images_b64 = []
                 if image_files:
                     progress_bar.progress(25, text="Analizuję obrazy...")
                     for img in image_files:
                         images_b64.append(encode_image_b64(img))
-
+    
                 # PDF (+ tekst wklejony)
                 pdf_text = ""
                 if pdf_files:
@@ -2101,8 +2105,10 @@ def render_new_project_page():
                     pdf_text = "\n".join([extract_text_from_pdf(pf) for pf in pdf_files])
                 if pasted_text:
                     pdf_text = (pdf_text + "\n\n" + pasted_text).strip()
-
-                # Wzorce z DB
+    
+                # ════════════════════════════════════════════════════════════
+                # KRYTYCZNE: Wzorce z DB
+                # ════════════════════════════════════════════════════════════
                 with get_db_connection() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
                     cur.execute("""
                         SELECT name, avg_hours_total, avg_hours_3d_layout,
@@ -2113,47 +2119,60 @@ def render_new_project_page():
                         ORDER BY occurrences DESC LIMIT 20
                     """, (department,))
                     learned_patterns = cur.fetchall()
-
+    
                 st.write(f"🧠 {len(learned_patterns)} wzorców z działu {department}")
-
-                # Zbuduj prompt – pokazuj przykłady z Excela + JSON (okrojone do 30)
+    
+                # Zbuduj komponenty dla promptu (okrojone do 30)
                 components_for_prompt = (components_from_excel or []) + components_from_json
-                prompt = build_analysis_prompt(
+    
+                # ════════════════════════════════════════════════════════════
+                # KRYTYCZNE: UŻYJ build_analysis_prompt, NIE build_brief_prompt!
+                # ════════════════════════════════════════════════════════════
+                prompt = build_analysis_prompt(  # ✅✅✅ TO JEST POPRAWNE!
                     st.session_state.get("description", ""),
                     components_for_prompt,
-                    learned_patterns,
+                    learned_patterns,  # WAŻNE!
                     pdf_text,
                     department
                 )
-
-                # Wybór modelu: Vision → llava / qwen2-vl, inaczej tekstowy
-                
-                # Użyj wybranych modeli z session_state
+                # ════════════════════════════════════════════════════════════
+    
+                # Wybór modelu
                 if images_b64 and st.session_state.get("selected_vision_model"):
                     ai_model = st.session_state["selected_vision_model"]
                     st.info(f"🖼️ Używam modelu Vision: {ai_model}")
                 else:
-                    # Użyj wybranego modelu tekstowego z session_state (lub domyślny)
                     ai_model = st.session_state.get("selected_text_model", "qwen2.5:7b")
                     st.info(f"📝 Używam modelu tekstowego: {ai_model}")
-
+    
                 progress_bar.progress(60, text=f"AI ({ai_model})...")
-                # DODAJ TO PRZED query_ollama:
+                
                 logger.info(f"🤖 Wysyłam prompt do AI ({ai_model}), długość: {len(prompt)} znaków")
                 logger.debug(f"📝 Prompt preview: {prompt[:500]}...")
-            
+                
                 ai_text = query_ollama(prompt, model=ai_model, images_b64=images_b64, format_json=True)
-
+                
                 logger.info(f"📥 Otrzymano odpowiedź AI, długość: {len(ai_text)} znaków")
                 logger.debug(f"📝 Response preview: {ai_text[:500]}...")
-
+                
+                if not ai_text or len(ai_text) < 50:
+                    st.error("❌ AI zwróciło pustą/zbyt krótką odpowiedź")
+                    st.code(ai_text)
+                    raise ValueError("Empty AI response")
+    
                 progress_bar.progress(80, text="Parsuję...")
                 parsed = parse_ai_response(ai_text, components_from_excel=components_from_excel)
+                
                 logger.info(f"📊 Sparsowano: {len(parsed.get('components',[]))} komponentów, total: {parsed.get('total_hours',0):.1f}h")
                 if parsed.get('warnings'):
                     logger.warning(f"⚠️ Warningi parsera: {parsed['warnings']}")
-                    
-            # ════════════════════════════════════════════════════════════
+
+            # ... reszta kodu (kategoryzacja, zapisanie do session_state, itd.)
+#---------------------------------------------------------+++++++
+
+
+                
+            # ════════════════════════════════════════════════════════════=================================
                 # 🌐 Web enhancement (opcjonalne - po parsowaniu)
                 if st.session_state.get("allow_web_lookup") and parsed.get('components'):
                     progress_bar.progress(85, text="🌐 Wzbogacam o dane z sieci...")
