@@ -1867,16 +1867,6 @@ def build_analysis_prompt(description: str, components: list,
                           department: str) -> str:
     """
     Buduje prompt do analizy komponentów i estymacji godzin.
-    
-    Args:
-        description: Opis projektu
-        components: Lista komponentów z Excela/JSON (max 30 dla promptu)
-        learned_patterns: Wzorce z bazy danych
-        pdf_text: Tekst z PDF
-        department: Kod działu
-    
-    Returns:
-        Sformatowany prompt dla AI
     """
     # Kontekst branżowy
     context = DEPARTMENT_CONTEXT.get(department, "")
@@ -1935,7 +1925,7 @@ WAŻNE ZASADY:
    name, qty, layout_add, detail_add, doc_add, reason
 
 Przeanalizuj dokładnie i zwróć JSON.
-"""    
+"""
 # === Strona: Nowy projekt (z JSON/paste i Vision llava/qwen2-vl) ===
 def render_new_project_page():
     st.header("🆕 Nowy Projekt")
