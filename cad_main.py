@@ -1276,10 +1276,20 @@ def learn_from_historical_components(cur, dept: str, components: list, distribut
     - component_patterns: komponenty główne + sub-komponenty (wg qty lub po równo),
     - component_bundles: częste pary parent→sub.
     """
+    # ════════════════════════════════════════════════════════════
+    # DODAJ TO NA POCZĄTKU FUNKCJI:
+    # ════════════════════════════════════════════════════════════
+    learned_patterns = 0
+    learned_bundles = 0
+    skipped_summary = 0
+    skipped_no_hours = 0
+    skipped_no_name = 0
+    # ════════════════════════════════════════════════════════════
     for comp in components or []:
         try:
             name = comp.get('name', '')
             if not name:
+                skipped_no_name += 1
                 continue
             is_summary = bool(comp.get('is_summary'))
             subs = comp.get('subcomponents', []) or []
@@ -1287,9 +1297,11 @@ def learn_from_historical_components(cur, dept: str, components: list, distribut
             # Bundles – zawsze
             for sub in subs:
                 update_bundle(cur, dept, name, sub.get('name', ''), sub.get('quantity', 1))
+                learned_bundles += 1  # <-- DODAJ
 
             # Pomijamy “sumaryczne”
             if is_summary:
+                skipped_summary += 1  # <-- DODAJ
                 continue
 
             layout = float(comp.get('hours_3d_layout', 0) or 0)
@@ -1300,6 +1312,9 @@ def learn_from_historical_components(cur, dept: str, components: list, distribut
             # Wzorzec główny
             if total > 0:
                 update_pattern_smart(cur, name, dept, layout, detail, doc, source='historical_excel')
+                learned_patterns += 1  # <-- DODAJ
+            else:
+                skipped_no_hours += 1  # <-- DODAJ
 
             # Rozdział na suby
             if subs and total > 0:
@@ -1310,6 +1325,7 @@ def learn_from_historical_components(cur, dept: str, components: list, distribut
                         w = (q / total_qty) if total_qty else (1.0 / len(subs))
                         sl, sd, sdoc = layout * w, detail * w, doc * w
                         update_pattern_smart(cur, sub.get('name', ''), dept, sl, sd, sdoc, source='historical_excel_sub')
+                        learned_patterns += 1  # <-- DODAJ
                 else:
                     n = len(subs)
                     if n > 0:
@@ -1317,8 +1333,22 @@ def learn_from_historical_components(cur, dept: str, components: list, distribut
                         for sub in subs:
                             sl, sd, sdoc = layout * w, detail * w, doc * w
                             update_pattern_smart(cur, sub.get('name', ''), dept, sl, sd, sdoc, source='historical_excel_sub')
+                            learned_patterns += 1  # <-- DODAJ
         except Exception as e:
             logger.warning(f"learn_from_historical_components err for '{comp.get('name','?')}': {e}")
+
+ # ════════════════════════════════════════════════════════════
+    # DODAJ TO NA KOŃCU FUNKCJI:
+    # ════════════════════════════════════════════════════════════
+    logger.info(f"""
+    📊 STATYSTYKI UCZENIA dla działu {dept}:
+       ✅ Wzorców nauczonych: {learned_patterns}
+       ✅ Bundles nauczonych: {learned_bundles}
+       ⏭️  Pominięto (summary): {skipped_summary}
+       ⏭️  Pominięto (brak godzin): {skipped_no_hours}
+       ⏭️  Pominięto (brak nazwy): {skipped_no_name}
+    """)
+    # ════════════════════════════════════════════════════════════
 
 # === HEURYSTYKI ===
 HEURISTIC_LIBRARY = [
