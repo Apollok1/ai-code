@@ -65,35 +65,56 @@ Specyfika: Maszyny specjalne, niestandardowe rozwiązania, prototypy, unikalne w
 }
 
 # === SŁOWNIK NORMALIZACJI KOMPONENTÓW (PL/DE/EN -> EN) ===
+# Dodaj więcej aliasów (linia ~52):
 COMPONENT_ALIASES = {
     # Wsporniki
-    'wspornik': 'bracket', 'halterung': 'bracket', 'halter': 'bracket', 'träger': 'bracket',
-    'support': 'bracket', 'konsole': 'bracket',
+    'wspornik': 'bracket', 'wsporniki': 'bracket', 'halterung': 'bracket', 
+    'halter': 'bracket', 'träger': 'bracket', 'support': 'bracket', 
+    'konsole': 'bracket', 'brackets': 'bracket',
+    
     # Ramy
-    'rama': 'frame', 'rahmen': 'frame', 'gestell': 'frame', 'chassis': 'frame',
+    'rama': 'frame', 'ramy': 'frame', 'rahmen': 'frame', 'gestell': 'frame', 
+    'chassis': 'frame', 'frames': 'frame',
+    
     # Przenośniki
-    'przenośnik': 'conveyor', 'förderband': 'conveyor', 'förderer': 'conveyor', 'transport': 'conveyor',
+    'przenośnik': 'conveyor', 'przenośniki': 'conveyor', 'förderband': 'conveyor', 
+    'förderer': 'conveyor', 'transport': 'conveyor', 'conveying': 'conveyor',
+    'conveyor': 'conveyor',
+    
     # Płyty
-    'płyta': 'plate', 'platte': 'plate', 'sheet': 'plate', 'panel': 'plate',
-    # Pokrywy
-    'pokrywa': 'cover', 'deckel': 'cover', 'abdeckung': 'cover',
-    # Obudowy
-    'obudowa': 'housing', 'gehäuse': 'housing', 'casing': 'housing',
-    # Napędy / siłowniki
-    'napęd': 'drive', 'antrieb': 'drive', 'actuator': 'drive',
-    'siłownik': 'cylinder', 'cylinder': 'cylinder', 'zylinder': 'cylinder',
+    'płyta': 'plate', 'płyty': 'plate', 'platte': 'plate', 'platten': 'plate',
+    'sheet': 'plate', 'panel': 'plate', 'plates': 'plate',
+    
+    # Profile
+    'profil': 'profile', 'profile': 'profile', 'profiles': 'profile',
+    
+    # Adaptery
+    'adapter': 'adapter', 'adapters': 'adapter', 'adaptador': 'adapter',
+    
+    # Czujniki
+    'czujnik': 'sensor', 'czujniki': 'sensor', 'sensor': 'sensor', 
+    'sensors': 'sensor', 'sensoring': 'sensor',
+    
     # Prowadnice
-    'prowadnica': 'guide', 'führung': 'guide', 'rail': 'guide',
-    # Osłony
-    'osłona': 'shield', 'schutz': 'shield', 'guard': 'shield',
-    # Podstawy
-    'podstawa': 'base', 'basis': 'base', 'fundament': 'base', 'sockel': 'base',
-    # Wały
-    'wał': 'shaft', 'welle': 'shaft', 'axle': 'shaft',
+    'prowadnica': 'guide', 'prowadnice': 'guide', 'führung': 'guide', 
+    'rail': 'guide', 'rails': 'guide', 'guide': 'guide', 'guides': 'guide',
+    'guidance': 'guide',
+    
     # Łożyska
-    'łożysko': 'bearing', 'lager': 'bearing',
-    # Śruby / bolty
-    'śruba': 'screw', 'schraube': 'screw', 'bolt': 'bolt',
+    'łożysko': 'bearing', 'łożyska': 'bearing', 'lager': 'bearing',
+    'bearing': 'bearing', 'bearings': 'bearing',
+    
+    # Śruby
+    'śruba': 'screw', 'śruby': 'screw', 'schraube': 'screw', 
+    'screwdriver': 'screw', 'screwdrivers': 'screw',
+    
+    # Cylindry
+    'cylinder': 'cylinder', 'cylinders': 'cylinder', 'zylinder': 'cylinder',
+    'siłownik': 'cylinder', 'siłowniki': 'cylinder',
+    
+    # Bases
+    'podstawa': 'base', 'podstawy': 'base', 'basis': 'base', 
+    'base': 'base', 'bases': 'base', 'fundament': 'base', 'sockel': 'base',
 }
 def extract_scope_from_excel_a1_first_sheet(file_like) -> str:
     """
@@ -1141,18 +1162,27 @@ def find_similar_components(conn, name, department, limit=5):
 
 # === STATYSTYKA (Welford) i dopasowanie kluczy ===
 def _welford_step(mean, m2, n, x):
-    """Algorytm Welforda – aktualizacja średniej i wariancji z prostą detekcją outlierów (po min. 5 próbkach)."""
+    """
+    Algorytm Welforda - aktualizacja średniej i wariancji online.
+    Zapobiega overflow i jest numerycznie stabilny.
+    
+    Outlier detection: jeśli n >= 5, odrzuca wartości > 2.5 std od średniej.
+    """
+    # Outlier detection (po zebraniu przynajmniej 5 próbek)
     if n and n >= 5:
         std = (m2 / max(n - 1, 1)) ** 0.5
         if mean and abs(x - mean) > 2.5 * std:
-            return mean, m2, n  # outlier – odrzucamy
+            logger.debug(f"   ⚠️ Outlier odrzucony: x={x:.2f}, mean={mean:.2f}, std={std:.2f}")
+            return mean, m2, n  # Nie aktualizuj - outlier
+    
+    # Welford update
     n_new = (n or 0) + 1
     delta = x - (mean or 0)
     mean_new = (mean or 0) + delta / n_new
     delta2 = x - mean_new
     m2_new = (m2 or 0) + delta * delta2
+    
     return mean_new, m2_new, n_new
-
 def best_pattern_key(cur, dept: str, key: str, threshold: int = 88) -> str:
     """Jeśli pattern_key nie istnieje – dopasuj fuzzy do istniejących w danym dziale."""
     cur.execute("SELECT pattern_key FROM component_patterns WHERE pattern_key=%s AND department=%s", (key, dept))
@@ -1168,19 +1198,17 @@ def best_pattern_key(cur, dept: str, key: str, threshold: int = 88) -> str:
 
 def update_pattern_smart(cur, name, dept, layout_h, detail_h, doc_h, source='actual'):
     """
-    UPROSZCZONA WERSJA - podstawowy INSERT/UPDATE bez Welford.
+    Uczy wzorce z algorytmem Welford (running average + variance).
+    Zapobiega tworzeniu duplikatów - aktualizuje istniejące wzorce.
     """
     try:
-        # Walidacja danych wejściowych
+        # Walidacja
         if not name or not name.strip():
-            logger.warning(f"⚠️ Pominięto wzorzec: pusta nazwa")
             return False
-        
         if not dept:
-            logger.warning(f"⚠️ Pominięto wzorzec '{name}': brak działu")
             return False
         
-        # Normalizuj klucz
+        # Normalizuj klucz (z poprawionym regex)
         pattern_key = canonicalize_name(name)
         if not pattern_key:
             logger.warning(f"⚠️ Pominięto wzorzec '{name}': pusta pattern_key po normalizacji")
@@ -1197,7 +1225,8 @@ def update_pattern_smart(cur, name, dept, layout_h, detail_h, doc_h, source='act
         # Sprawdź czy istnieje
         cur.execute("""
             SELECT occurrences, 
-                   avg_hours_3d_layout, avg_hours_3d_detail, avg_hours_2d, avg_hours_total
+                   avg_hours_3d_layout, avg_hours_3d_detail, avg_hours_2d, avg_hours_total,
+                   m2_layout, m2_detail, m2_doc, m2_total
             FROM component_patterns
             WHERE pattern_key = %s AND department = %s
         """, (pattern_key, dept))
@@ -1205,23 +1234,22 @@ def update_pattern_smart(cur, name, dept, layout_h, detail_h, doc_h, source='act
         existing = cur.fetchone()
         
         if existing:
-            # UPDATE - prosty weighted average
-            old_occ = existing[0]
-            old_layout = existing[1] or 0
-            old_detail = existing[2] or 0
-            old_doc = existing[3] or 0
-            old_total = existing[4] or 0
+            # UPDATE z Welford
+            old_occ, old_layout, old_detail, old_doc, old_total = existing[0:5]
+            m2_layout, m2_detail, m2_doc, m2_total = existing[5:9]
             
-            new_occ = old_occ + 1
+            # Welford update
+            new_occ = (old_occ or 0) + 1
             
-            # Weighted average: (old * old_count + new) / new_count
-            new_layout = (old_layout * old_occ + layout_h) / new_occ
-            new_detail = (old_detail * old_occ + detail_h) / new_occ
-            new_doc = (old_doc * old_occ + doc_h) / new_occ
-            new_total = (old_total * old_occ + total_h) / new_occ
+            # Mean update: new_mean = old_mean + (new_value - old_mean) / new_count
+            new_layout, m2_layout, _ = _welford_step(old_layout, m2_layout, old_occ, layout_h)
+            new_detail, m2_detail, _ = _welford_step(old_detail, m2_detail, old_occ, detail_h)
+            new_doc, m2_doc, _ = _welford_step(old_doc, m2_doc, old_occ, doc_h)
+            new_total, m2_total, _ = _welford_step(old_total, m2_total, old_occ, total_h)
             
-            # Confidence based on occurrence count
-            confidence = min(1.0, new_occ / 10.0)
+            # Confidence based on count and variance
+            std_total = (m2_total / max(new_occ - 1, 1)) ** 0.5 if new_occ > 1 else 0.0
+            confidence = min(1.0, new_occ / 10.0) * (1.0 / (1.0 + (std_total / (new_total or 1e-6))))
             
             cur.execute("""
                 UPDATE component_patterns
@@ -1229,20 +1257,25 @@ def update_pattern_smart(cur, name, dept, layout_h, detail_h, doc_h, source='act
                     avg_hours_3d_detail = %s,
                     avg_hours_2d = %s,
                     avg_hours_total = %s,
+                    m2_layout = %s,
+                    m2_detail = %s,
+                    m2_doc = %s,
+                    m2_total = %s,
                     occurrences = %s,
                     confidence = %s,
                     source = %s,
                     last_updated = NOW(),
                     last_actual_sample_at = CASE WHEN %s = 'actual' THEN NOW() ELSE last_actual_sample_at END
                 WHERE pattern_key = %s AND department = %s
-            """, (new_layout, new_detail, new_doc, new_total, new_occ, confidence, 
-                  source, source, pattern_key, dept))
+            """, (new_layout, new_detail, new_doc, new_total,
+                  m2_layout, m2_detail, m2_doc, m2_total,
+                  new_occ, confidence, source, source, pattern_key, dept))
             
             logger.debug(f"   ✅ UPDATED: '{name[:40]}' occ: {old_occ}→{new_occ}, total: {old_total:.2f}→{new_total:.2f}h")
             
         else:
             # INSERT new pattern
-            confidence = 0.1  # Low confidence for first occurrence
+            confidence = 0.1
             
             cur.execute("""
                 INSERT INTO component_patterns (
@@ -1266,9 +1299,6 @@ def update_pattern_smart(cur, name, dept, layout_h, detail_h, doc_h, source='act
             
             logger.debug(f"   ✅ INSERTED: '{name[:40]}' total: {total_h:.2f}h")
         
-        # Embedding (opcjonalnie - może być wolne, zakomentuj jeśli problem)
-        # ensure_pattern_embedding(cur, pattern_key, dept, name)
-        
         return True
         
     except Exception as e:
@@ -1276,6 +1306,7 @@ def update_pattern_smart(cur, name, dept, layout_h, detail_h, doc_h, source='act
         import traceback
         logger.error(traceback.format_exc())
         return False
+
 
 def update_category_baseline(cur, dept, category, layout_h, detail_h, doc_h):
     """Aktualizuje baseline kategorii (średnie ruchome metodą Welforda)."""
