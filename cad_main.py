@@ -2148,10 +2148,22 @@ def render_new_project_page():
                     st.info(f"📝 Używam modelu tekstowego: {ai_model}")
 
                 progress_bar.progress(60, text=f"AI ({ai_model})...")
+                # DODAJ TO PRZED query_ollama:
+                logger.info(f"🤖 Wysyłam prompt do AI ({ai_model}), długość: {len(prompt)} znaków")
+                logger.debug(f"📝 Prompt preview: {prompt[:500]}...")
+            
                 ai_text = query_ollama(prompt, model=ai_model, images_b64=images_b64, format_json=True)
+
+                logger.info(f"📥 Otrzymano odpowiedź AI, długość: {len(ai_text)} znaków")
+                logger.debug(f"📝 Response preview: {ai_text[:500]}...")
 
                 progress_bar.progress(80, text="Parsuję...")
                 parsed = parse_ai_response(ai_text, components_from_excel=components_from_excel)
+                logger.info(f"📊 Sparsowano: {len(parsed.get('components',[]))} komponentów, total: {parsed.get('total_hours',0):.1f}h")
+                if parsed.get('warnings'):
+                    logger.warning(f"⚠️ Warningi parsera: {parsed['warnings']}")
+                    
+            # ════════════════════════════════════════════════════════════
                 # 🌐 Web enhancement (opcjonalne - po parsowaniu)
                 if st.session_state.get("allow_web_lookup") and parsed.get('components'):
                     progress_bar.progress(85, text="🌐 Wzbogacam o dane z sieci...")
