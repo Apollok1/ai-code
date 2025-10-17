@@ -28,7 +28,7 @@ from openpyxl import load_workbook
 
 
 # === LOGGING ===
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("cad-estimator")
 
 # === UI CONFIG ===
@@ -1165,61 +1165,90 @@ def best_pattern_key(cur, dept: str, key: str, threshold: int = 88) -> str:
     match, score, _ = process.extractOne(key, keys, scorer=fuzz.token_sort_ratio)
     return match if score >= threshold else key
 
-def update_pattern_smart(cur, name, dept, layout_h, detail_h, doc_h, source='actual'):
-    """
-    Uczy/aktualizuje wzorzec komponentu:
-    - Welford (mean, m2, occurrences),
-    - confidence zależny od n i wariancji,
-    - fuzzy dopasowanie pattern_key,
-    - embedding nazwy.
-    """
-    key = best_pattern_key(cur, dept, canonicalize_name(name))
-    total = float(layout_h) + float(detail_h) + float(doc_h)
-
-    cur.execute("""
-        SELECT avg_hours_3d_layout, avg_hours_3d_detail, avg_hours_2d, avg_hours_total,
-               m2_layout, m2_detail, m2_doc, m2_total, occurrences
-        FROM component_patterns
-        WHERE pattern_key=%s AND department=%s
-    """, (key, dept))
-    row = cur.fetchone()
-
-    if row:
-        ml, md, mc, mt, m2l, m2d, m2c, m2t, n0 = row
-        ml, m2l, _ = _welford_step(ml, m2l, n0, float(layout_h))
-        md, m2d, _ = _welford_step(md, m2d, n0, float(detail_h))
-        mc, m2c, _ = _welford_step(mc, m2c, n0, float(doc_h))
-        mt, m2t, _ = _welford_step(mt, m2t, n0, float(total))
-
-        n1 = (n0 or 0) + 1
-        std_total = (m2t / max(n1 - 1, 1)) ** 0.5 if n1 > 1 else 0.0
-        confidence = min(1.0, n1 / 10.0) * (1.0 / (1.0 + (std_total / (mt or 1e-6))))
+# ════════════════════════════════════════════════════════════
+    # DODAJ TO NA POCZĄTKU:
+    # ════════════════════════════════════════════════════════════
+    try:
+        # ════════════════════════════════════════════════════════════
+        
+        key = best_pattern_key(cur, dept, canonicalize_name(name))
+        total = float(layout_h) + float(detail_h) + float(doc_h)
+        
+        # ════════════════════════════════════════════════════════════
+        # DODAJ LOGGING:
+        # ════════════════════════════════════════════════════════════
+        logger.debug(f"📝 update_pattern_smart: name={name[:30]}, dept={dept}, key={key}, total={total:.2f}h")
+        # ════════════════════════════════════════════════════════════
 
         cur.execute("""
-            UPDATE component_patterns
-            SET avg_hours_3d_layout=%s, avg_hours_3d_detail=%s, avg_hours_2d=%s, avg_hours_total=%s,
-                m2_layout=%s, m2_detail=%s, m2_doc=%s, m2_total=%s,
-                occurrences=%s, confidence=%s, source=%s,
-                last_updated=NOW(),
-                last_actual_sample_at=CASE WHEN %s='actual' THEN NOW() ELSE last_actual_sample_at END,
-                pattern_key=%s
+            SELECT avg_hours_3d_layout, avg_hours_3d_detail, avg_hours_2d, avg_hours_total,
+                   m2_layout, m2_detail, m2_doc, m2_total, occurrences
+            FROM component_patterns
             WHERE pattern_key=%s AND department=%s
-        """, (ml, md, mc, mt, m2l, m2d, m2c, m2t, n1, confidence, source, source, key, key, dept))
-    else:
-        cur.execute("""
-            INSERT INTO component_patterns (
-                name, pattern_key, department,
-                avg_hours_3d_layout, avg_hours_3d_detail, avg_hours_2d, avg_hours_total,
-                m2_layout, m2_detail, m2_doc, m2_total,
-                occurrences, confidence, source, last_actual_sample_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s,
-                      0, 0, 0, 0,
-                      1, 0.1, %s,
-                      CASE WHEN %s='actual' THEN NOW() ELSE NULL END)
-        """, (name, key, dept, layout_h, detail_h, doc_h, total, source, source))
+        """, (key, dept))
+        row = cur.fetchone()
 
-    ensure_pattern_embedding(cur, key, dept, name)
-    return True
+        if row:
+            # UPDATE existing pattern
+            ml, md, mc, mt, m2l, m2d, m2c, m2t, n0 = row
+            ml, m2l, _ = _welford_step(ml, m2l, n0, float(layout_h))
+            md, m2d, _ = _welford_step(md, m2d, n0, float(detail_h))
+            mc, m2c, _ = _welford_step(mc, m2c, n0, float(doc_h))
+            mt, m2t, _ = _welford_step(mt, m2t, n0, float(total))
+
+            n1 = (n0 or 0) + 1
+            std_total = (m2t / max(n1 - 1, 1)) ** 0.5 if n1 > 1 else 0.0
+            confidence = min(1.0, n1 / 10.0) * (1.0 / (1.0 + (std_total / (mt or 1e-6))))
+
+            cur.execute("""
+                UPDATE component_patterns
+                SET avg_hours_3d_layout=%s, avg_hours_3d_detail=%s, avg_hours_2d=%s, avg_hours_total=%s,
+                    m2_layout=%s, m2_detail=%s, m2_doc=%s, m2_total=%s,
+                    occurrences=%s, confidence=%s, source=%s,
+                    last_updated=NOW(),
+                    last_actual_sample_at=CASE WHEN %s='actual' THEN NOW() ELSE last_actual_sample_at END,
+                    pattern_key=%s
+                WHERE pattern_key=%s AND department=%s
+            """, (ml, md, mc, mt, m2l, m2d, m2c, m2t, n1, confidence, source, source, key, key, dept))
+            
+            # ════════════════════════════════════════════════════════════
+            # DODAJ LOGGING:
+            # ════════════════════════════════════════════════════════════
+            logger.debug(f"   ✅ UPDATED pattern: {name[:30]} (occ: {n0} → {n1})")
+            # ════════════════════════════════════════════════════════════
+        else:
+            # INSERT new pattern
+            cur.execute("""
+                INSERT INTO component_patterns (
+                    name, pattern_key, department,
+                    avg_hours_3d_layout, avg_hours_3d_detail, avg_hours_2d, avg_hours_total,
+                    m2_layout, m2_detail, m2_doc, m2_total,
+                    occurrences, confidence, source, last_actual_sample_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s,
+                          0, 0, 0, 0,
+                          1, 0.1, %s,
+                          CASE WHEN %s='actual' THEN NOW() ELSE NULL END)
+            """, (name, key, dept, layout_h, detail_h, doc_h, total, source, source))
+            
+            # ════════════════════════════════════════════════════════════
+            # DODAJ LOGGING:
+            # ════════════════════════════════════════════════════════════
+            logger.debug(f"   ✅ INSERTED new pattern: {name[:30]} (total: {total:.2f}h)")
+            # ════════════════════════════════════════════════════════════
+
+        ensure_pattern_embedding(cur, key, dept, name)
+        
+        return True
+    
+    # ════════════════════════════════════════════════════════════
+    # DODAJ TO NA KOŃCU (zamknięcie try):
+    # ════════════════════════════════════════════════════════════
+    except Exception as e:
+        logger.error(f"❌ update_pattern_smart ERROR for '{name[:30]}': {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return False
+    # ════════════════════════════════════════════════════════════
 
 def update_category_baseline(cur, dept, category, layout_h, detail_h, doc_h):
     """Aktualizuje baseline kategorii (średnie ruchome metodą Welforda)."""
@@ -1568,8 +1597,28 @@ def batch_import_excels(files, department: str,
                     logger.info(f"🧠 UCZĘ WZORCE: {len(comps_full)} komponentów z działu {department}")  # <-- DODAJ TO
                     learn_from_historical_components(cur, department, comps_full, distribute=distribute)
                     logger.info(f"✅ UCZENIE ZAKOŃCZONE")  # <-- DODAJ TO
-                    
+
+                # ════════════════════════════════════════════════════════════
+                # DODAJ TO BEZPOŚREDNIO PO learn_from_historical_components:
+                # ════════════════════════════════════════════════════════════
+                # Sprawdź ile wzorców w bazie PRZED commit
+                cur.execute("SELECT COUNT(*) FROM component_patterns WHERE department=%s", (department,))
+                pattern_count = cur.fetchone()[0]
+                logger.info(f"📊 Po uczeniu, przed commit: {pattern_count} wzorców w działu {department}")
+                # ════════════════════════════════════════════════════════════
+                
                 conn.commit()
+                
+                # ════════════════════════════════════════════════════════════
+                # DODAJ TO BEZPOŚREDNIO PO conn.commit():
+                # ════════════════════════════════════════════════════════════
+                # Sprawdź ile wzorców w bazie PO commit
+                cur.execute("SELECT COUNT(*) FROM component_patterns WHERE department=%s", (department,))
+                pattern_count_after = cur.fetchone()[0]
+                logger.info(f"📊 Po commit: {pattern_count_after} wzorców w działu {department}")
+                # ════════════════════════════════════════════════════════════
+                    
+                
                 results.append({
                     "file": fname,
                     "status": "success",
