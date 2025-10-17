@@ -1165,90 +1165,117 @@ def best_pattern_key(cur, dept: str, key: str, threshold: int = 88) -> str:
     match, score, _ = process.extractOne(key, keys, scorer=fuzz.token_sort_ratio)
     return match if score >= threshold else key
 
-# ════════════════════════════════════════════════════════════
-    # DODAJ TO NA POCZĄTKU:
-    # ════════════════════════════════════════════════════════════
+
+def update_pattern_smart(cur, name, dept, layout_h, detail_h, doc_h, source='actual'):
+    """
+    UPROSZCZONA WERSJA - podstawowy INSERT/UPDATE bez Welford.
+    """
     try:
-        # ════════════════════════════════════════════════════════════
+        # Walidacja danych wejściowych
+        if not name or not name.strip():
+            logger.warning(f"⚠️ Pominięto wzorzec: pusta nazwa")
+            return False
         
-        key = best_pattern_key(cur, dept, canonicalize_name(name))
-        total = float(layout_h) + float(detail_h) + float(doc_h)
+        if not dept:
+            logger.warning(f"⚠️ Pominięto wzorzec '{name}': brak działu")
+            return False
         
-        # ════════════════════════════════════════════════════════════
-        # DODAJ LOGGING:
-        # ════════════════════════════════════════════════════════════
-        logger.debug(f"📝 update_pattern_smart: name={name[:30]}, dept={dept}, key={key}, total={total:.2f}h")
-        # ════════════════════════════════════════════════════════════
-
+        # Normalizuj klucz
+        pattern_key = canonicalize_name(name)
+        if not pattern_key:
+            logger.warning(f"⚠️ Pominięto wzorzec '{name}': pusta pattern_key po normalizacji")
+            return False
+        
+        # Oblicz total
+        layout_h = float(layout_h or 0)
+        detail_h = float(detail_h or 0)
+        doc_h = float(doc_h or 0)
+        total_h = layout_h + detail_h + doc_h
+        
+        logger.debug(f"📝 Uczę wzorzec: '{name[:40]}' → key='{pattern_key}', dept={dept}, total={total_h:.2f}h")
+        
+        # Sprawdź czy istnieje
         cur.execute("""
-            SELECT avg_hours_3d_layout, avg_hours_3d_detail, avg_hours_2d, avg_hours_total,
-                   m2_layout, m2_detail, m2_doc, m2_total, occurrences
+            SELECT occurrences, 
+                   avg_hours_3d_layout, avg_hours_3d_detail, avg_hours_2d, avg_hours_total
             FROM component_patterns
-            WHERE pattern_key=%s AND department=%s
-        """, (key, dept))
-        row = cur.fetchone()
-
-        if row:
-            # UPDATE existing pattern
-            ml, md, mc, mt, m2l, m2d, m2c, m2t, n0 = row
-            ml, m2l, _ = _welford_step(ml, m2l, n0, float(layout_h))
-            md, m2d, _ = _welford_step(md, m2d, n0, float(detail_h))
-            mc, m2c, _ = _welford_step(mc, m2c, n0, float(doc_h))
-            mt, m2t, _ = _welford_step(mt, m2t, n0, float(total))
-
-            n1 = (n0 or 0) + 1
-            std_total = (m2t / max(n1 - 1, 1)) ** 0.5 if n1 > 1 else 0.0
-            confidence = min(1.0, n1 / 10.0) * (1.0 / (1.0 + (std_total / (mt or 1e-6))))
-
+            WHERE pattern_key = %s AND department = %s
+        """, (pattern_key, dept))
+        
+        existing = cur.fetchone()
+        
+        if existing:
+            # UPDATE - prosty weighted average
+            old_occ = existing[0]
+            old_layout = existing[1] or 0
+            old_detail = existing[2] or 0
+            old_doc = existing[3] or 0
+            old_total = existing[4] or 0
+            
+            new_occ = old_occ + 1
+            
+            # Weighted average: (old * old_count + new) / new_count
+            new_layout = (old_layout * old_occ + layout_h) / new_occ
+            new_detail = (old_detail * old_occ + detail_h) / new_occ
+            new_doc = (old_doc * old_occ + doc_h) / new_occ
+            new_total = (old_total * old_occ + total_h) / new_occ
+            
+            # Confidence based on occurrence count
+            confidence = min(1.0, new_occ / 10.0)
+            
             cur.execute("""
                 UPDATE component_patterns
-                SET avg_hours_3d_layout=%s, avg_hours_3d_detail=%s, avg_hours_2d=%s, avg_hours_total=%s,
-                    m2_layout=%s, m2_detail=%s, m2_doc=%s, m2_total=%s,
-                    occurrences=%s, confidence=%s, source=%s,
-                    last_updated=NOW(),
-                    last_actual_sample_at=CASE WHEN %s='actual' THEN NOW() ELSE last_actual_sample_at END,
-                    pattern_key=%s
-                WHERE pattern_key=%s AND department=%s
-            """, (ml, md, mc, mt, m2l, m2d, m2c, m2t, n1, confidence, source, source, key, key, dept))
+                SET avg_hours_3d_layout = %s,
+                    avg_hours_3d_detail = %s,
+                    avg_hours_2d = %s,
+                    avg_hours_total = %s,
+                    occurrences = %s,
+                    confidence = %s,
+                    source = %s,
+                    last_updated = NOW(),
+                    last_actual_sample_at = CASE WHEN %s = 'actual' THEN NOW() ELSE last_actual_sample_at END
+                WHERE pattern_key = %s AND department = %s
+            """, (new_layout, new_detail, new_doc, new_total, new_occ, confidence, 
+                  source, source, pattern_key, dept))
             
-            # ════════════════════════════════════════════════════════════
-            # DODAJ LOGGING:
-            # ════════════════════════════════════════════════════════════
-            logger.debug(f"   ✅ UPDATED pattern: {name[:30]} (occ: {n0} → {n1})")
-            # ════════════════════════════════════════════════════════════
+            logger.debug(f"   ✅ UPDATED: '{name[:40]}' occ: {old_occ}→{new_occ}, total: {old_total:.2f}→{new_total:.2f}h")
+            
         else:
             # INSERT new pattern
+            confidence = 0.1  # Low confidence for first occurrence
+            
             cur.execute("""
                 INSERT INTO component_patterns (
                     name, pattern_key, department,
                     avg_hours_3d_layout, avg_hours_3d_detail, avg_hours_2d, avg_hours_total,
                     m2_layout, m2_detail, m2_doc, m2_total,
-                    occurrences, confidence, source, last_actual_sample_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s,
-                          0, 0, 0, 0,
-                          1, 0.1, %s,
-                          CASE WHEN %s='actual' THEN NOW() ELSE NULL END)
-            """, (name, key, dept, layout_h, detail_h, doc_h, total, source, source))
+                    occurrences, confidence, source, 
+                    last_updated,
+                    last_actual_sample_at
+                ) VALUES (
+                    %s, %s, %s,
+                    %s, %s, %s, %s,
+                    0, 0, 0, 0,
+                    1, %s, %s,
+                    NOW(),
+                    CASE WHEN %s = 'actual' THEN NOW() ELSE NULL END
+                )
+            """, (name, pattern_key, dept, 
+                  layout_h, detail_h, doc_h, total_h,
+                  confidence, source, source))
             
-            # ════════════════════════════════════════════════════════════
-            # DODAJ LOGGING:
-            # ════════════════════════════════════════════════════════════
-            logger.debug(f"   ✅ INSERTED new pattern: {name[:30]} (total: {total:.2f}h)")
-            # ════════════════════════════════════════════════════════════
-
-        ensure_pattern_embedding(cur, key, dept, name)
+            logger.debug(f"   ✅ INSERTED: '{name[:40]}' total: {total_h:.2f}h")
+        
+        # Embedding (opcjonalnie - może być wolne, zakomentuj jeśli problem)
+        # ensure_pattern_embedding(cur, pattern_key, dept, name)
         
         return True
-    
-    # ════════════════════════════════════════════════════════════
-    # DODAJ TO NA KOŃCU (zamknięcie try):
-    # ════════════════════════════════════════════════════════════
+        
     except Exception as e:
-        logger.error(f"❌ update_pattern_smart ERROR for '{name[:30]}': {e}")
+        logger.error(f"❌ update_pattern_smart ERROR for '{name[:40]}': {e}")
         import traceback
         logger.error(traceback.format_exc())
         return False
-    # ════════════════════════════════════════════════════════════
 
 def update_category_baseline(cur, dept, category, layout_h, detail_h, doc_h):
     """Aktualizuje baseline kategorii (średnie ruchome metodą Welforda)."""
