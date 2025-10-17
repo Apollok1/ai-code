@@ -2757,7 +2757,401 @@ def render_history_page():
                     st.rerun()
         else:
             st.caption("Brak pozycji do uzupełnienia – wszystkie mają opis.")
+# CADEstimator_final.py
+# DODAJ NA KOŃCU PLIKU (przed main())
 
+def render_admin_page():
+    """Admin panel - zarządzanie danymi"""
+    st.header("🛠️ Panel Administratora")
+    
+    # Auth (prosty protection)
+    if "admin_authenticated" not in st.session_state:
+        st.session_state["admin_authenticated"] = False
+    
+    if not st.session_state["admin_authenticated"]:
+        password = st.text_input("Hasło administratora", type="password")
+        if st.button("Zaloguj"):
+            if password == "admin123":  # ZMIEŃ TO NA SWOJE HASŁO!
+                st.session_state["admin_authenticated"] = True
+                st.rerun()
+            else:
+                st.error("❌ Błędne hasło")
+        st.stop()
+    
+    # ════════════════════════════════════════════════════════════
+    # TABS
+    # ════════════════════════════════════════════════════════════
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "🗂️ Projekty", 
+        "🧩 Wzorce (Patterns)", 
+        "🔗 Bundles",
+        "⚠️ Danger Zone"
+    ])
+    
+    # ════════════════════════════════════════════════════════════
+    # TAB 1: PROJEKTY
+    # ════════════════════════════════════════════════════════════
+    with tab1:
+        st.subheader("📋 Zarządzanie projektami")
+        
+        # Filtry
+        col1, col2 = st.columns(2)
+        with col1:
+            filter_dept = st.selectbox(
+                "Dział",
+                options=['Wszystkie'] + list(DEPARTMENTS.keys()),
+                format_func=lambda x: 'Wszystkie' if x == 'Wszystkie' else f"{x} - {DEPARTMENTS[x]}"
+            )
+        with col2:
+            filter_historical = st.selectbox(
+                "Typ",
+                ["Wszystkie", "Tylko historyczne", "Tylko bieżące"]
+            )
+        
+        # Pobierz projekty
+        with get_db_connection() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+            query = "SELECT id, name, client, department, created_at, estimated_hours, actual_hours, is_historical FROM projects WHERE 1=1"
+            params = []
+            
+            if filter_dept != 'Wszystkie':
+                query += " AND department = %s"
+                params.append(filter_dept)
+            
+            if filter_historical == "Tylko historyczne":
+                query += " AND is_historical = TRUE"
+            elif filter_historical == "Tylko bieżące":
+                query += " AND (is_historical = FALSE OR is_historical IS NULL)"
+            
+            query += " ORDER BY created_at DESC LIMIT 100"
+            
+            cur.execute(query, params)
+            projects = cur.fetchall()
+        
+        if projects:
+            st.info(f"Znaleziono {len(projects)} projektów")
+            
+            # Display in table with delete buttons
+            for proj in projects:
+                with st.expander(
+                    f"[{proj['department']}] {proj['name']} - ID: {proj['id']}" + 
+                    (" 📜 HISTORICAL" if proj.get('is_historical') else "")
+                ):
+                    col_info, col_actions = st.columns([3, 1])
+                    
+                    with col_info:
+                        st.write(f"**Klient:** {proj['client'] or 'N/A'}")
+                        st.write(f"**Created:** {proj['created_at'].strftime('%Y-%m-%d %H:%M')}")
+                        st.write(f"**Estimated:** {proj['estimated_hours'] or 0:.1f}h")
+                        if proj['actual_hours']:
+                            st.write(f"**Actual:** {proj['actual_hours']:.1f}h")
+                    
+                    with col_actions:
+                        if st.button("🗑️ Usuń", key=f"del_proj_{proj['id']}", type="secondary"):
+                            st.session_state[f"confirm_delete_proj_{proj['id']}"] = True
+                        
+                        # Confirmation
+                        if st.session_state.get(f"confirm_delete_proj_{proj['id']}"):
+                            st.warning("⚠️ Na pewno?")
+                            col_yes, col_no = st.columns(2)
+                            
+                            with col_yes:
+                                if st.button("✅ TAK", key=f"yes_proj_{proj['id']}"):
+                                    with get_db_connection() as conn, conn.cursor() as cur:
+                                        # Delete project (cascades to versions)
+                                        cur.execute("DELETE FROM projects WHERE id = %s", (proj['id'],))
+                                        conn.commit()
+                                    st.success(f"✅ Usunięto projekt ID: {proj['id']}")
+                                    time.sleep(1)
+                                    st.rerun()
+                            
+                            with col_no:
+                                if st.button("❌ NIE", key=f"no_proj_{proj['id']}"):
+                                    st.session_state[f"confirm_delete_proj_{proj['id']}"] = False
+                                    st.rerun()
+        else:
+            st.info("Brak projektów spełniających kryteria")
+    
+    # ════════════════════════════════════════════════════════════
+    # TAB 2: WZORCE (PATTERNS)
+    # ════════════════════════════════════════════════════════════
+    with tab2:
+        st.subheader("🧩 Zarządzanie wzorcami komponentów")
+        
+        # Filtr
+        pattern_dept = st.selectbox(
+            "Dział",
+            options=['Wszystkie'] + list(DEPARTMENTS.keys()),
+            format_func=lambda x: 'Wszystkie' if x == 'Wszystkie' else f"{x} - {DEPARTMENTS[x]}",
+            key="pattern_dept_filter"
+        )
+        
+        # Pobierz patterns
+        with get_db_connection() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if pattern_dept == 'Wszystkie':
+                cur.execute("""
+                    SELECT id, name, department, pattern_key, avg_hours_total, 
+                           occurrences, confidence, source, last_updated
+                    FROM component_patterns
+                    ORDER BY department, occurrences DESC
+                    LIMIT 200
+                """)
+            else:
+                cur.execute("""
+                    SELECT id, name, department, pattern_key, avg_hours_total, 
+                           occurrences, confidence, source, last_updated
+                    FROM component_patterns
+                    WHERE department = %s
+                    ORDER BY occurrences DESC
+                    LIMIT 200
+                """, (pattern_dept,))
+            patterns = cur.fetchall()
+        
+        if patterns:
+            st.info(f"Znaleziono {len(patterns)} wzorców")
+            
+            # Bulk actions
+            st.markdown("### 🔧 Akcje grupowe")
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                if st.button("🗑️ Usuń wzorce z occ=1", type="secondary"):
+                    with get_db_connection() as conn, conn.cursor() as cur:
+                        cur.execute("DELETE FROM component_patterns WHERE occurrences <= 1")
+                        deleted = cur.rowcount
+                        conn.commit()
+                    st.success(f"✅ Usunięto {deleted} wzorców")
+                    time.sleep(1)
+                    st.rerun()
+            
+            with col2:
+                if st.button("🗑️ Usuń bez confidence", type="secondary"):
+                    with get_db_connection() as conn, conn.cursor() as cur:
+                        cur.execute("DELETE FROM component_patterns WHERE confidence < 0.1")
+                        deleted = cur.rowcount
+                        conn.commit()
+                    st.success(f"✅ Usunięto {deleted} wzorców")
+                    time.sleep(1)
+                    st.rerun()
+            
+            with col3:
+                min_occ = st.number_input("Min occurrences do zachowania", min_value=1, value=2)
+                if st.button(f"🗑️ Usuń < {min_occ} occ", type="secondary"):
+                    with get_db_connection() as conn, conn.cursor() as cur:
+                        cur.execute("DELETE FROM component_patterns WHERE occurrences < %s", (min_occ,))
+                        deleted = cur.rowcount
+                        conn.commit()
+                    st.success(f"✅ Usunięto {deleted} wzorców")
+                    time.sleep(1)
+                    st.rerun()
+            
+            st.markdown("---")
+            st.markdown("### 📋 Lista wzorców")
+            
+            # Individual patterns
+            for pat in patterns[:50]:  # Limit display to 50
+                with st.expander(
+                    f"[{pat['department']}] {pat['name']} - occ: {pat['occurrences']}, conf: {pat['confidence']:.2f}"
+                ):
+                    col_info, col_del = st.columns([4, 1])
+                    
+                    with col_info:
+                        st.write(f"**ID:** {pat['id']}")
+                        st.write(f"**Pattern Key:** {pat['pattern_key']}")
+                        st.write(f"**Avg Hours:** {pat['avg_hours_total']:.2f}h")
+                        st.write(f"**Source:** {pat['source'] or 'N/A'}")
+                        st.write(f"**Updated:** {pat['last_updated'].strftime('%Y-%m-%d %H:%M')}")
+                    
+                    with col_del:
+                        if st.button("🗑️", key=f"del_pat_{pat['id']}"):
+                            with get_db_connection() as conn, conn.cursor() as cur:
+                                cur.execute("DELETE FROM component_patterns WHERE id = %s", (pat['id'],))
+                                conn.commit()
+                            st.success("✅ Usunięto")
+                            time.sleep(0.5)
+                            st.rerun()
+            
+            if len(patterns) > 50:
+                st.info(f"Pokazano 50 z {len(patterns)} wzorców. Użyj filtrów aby zawęzić.")
+        
+        else:
+            st.info("Brak wzorców")
+    
+    # ════════════════════════════════════════════════════════════
+    # TAB 3: BUNDLES
+    # ════════════════════════════════════════════════════════════
+    with tab3:
+        st.subheader("🔗 Zarządzanie bundles (relacje parent→sub)")
+        
+        bundle_dept = st.selectbox(
+            "Dział",
+            options=['Wszystkie'] + list(DEPARTMENTS.keys()),
+            format_func=lambda x: 'Wszystkie' if x == 'Wszystkie' else f"{x} - {DEPARTMENTS[x]}",
+            key="bundle_dept_filter"
+        )
+        
+        with get_db_connection() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if bundle_dept == 'Wszystkie':
+                cur.execute("""
+                    SELECT id, department, parent_name, sub_name, 
+                           occurrences, total_qty, confidence
+                    FROM component_bundles
+                    ORDER BY department, occurrences DESC
+                    LIMIT 200
+                """)
+            else:
+                cur.execute("""
+                    SELECT id, department, parent_name, sub_name, 
+                           occurrences, total_qty, confidence
+                    FROM component_bundles
+                    WHERE department = %s
+                    ORDER BY occurrences DESC
+                    LIMIT 200
+                """, (bundle_dept,))
+            bundles = cur.fetchall()
+        
+        if bundles:
+            st.info(f"Znaleziono {len(bundles)} bundles")
+            
+            # Bulk delete
+            min_bundle_occ = st.number_input("Usuń bundles z occ <", min_value=1, value=2)
+            if st.button(f"🗑️ Usuń bundles < {min_bundle_occ} occ"):
+                with get_db_connection() as conn, conn.cursor() as cur:
+                    cur.execute("DELETE FROM component_bundles WHERE occurrences < %s", (min_bundle_occ,))
+                    deleted = cur.rowcount
+                    conn.commit()
+                st.success(f"✅ Usunięto {deleted} bundles")
+                time.sleep(1)
+                st.rerun()
+            
+            st.markdown("---")
+            
+            for bundle in bundles[:50]:
+                with st.expander(
+                    f"[{bundle['department']}] {bundle['parent_name']} → {bundle['sub_name']} (occ: {bundle['occurrences']})"
+                ):
+                    col_i, col_d = st.columns([4, 1])
+                    with col_i:
+                        st.write(f"**Avg Qty:** {bundle['total_qty'] / bundle['occurrences']:.1f}")
+                        st.write(f"**Confidence:** {bundle['confidence']:.2f}")
+                    with col_d:
+                        if st.button("🗑️", key=f"del_bun_{bundle['id']}"):
+                            with get_db_connection() as conn, conn.cursor() as cur:
+                                cur.execute("DELETE FROM component_bundles WHERE id = %s", (bundle['id'],))
+                                conn.commit()
+                            st.success("✅")
+                            time.sleep(0.5)
+                            st.rerun()
+        else:
+            st.info("Brak bundles")
+    
+    # ════════════════════════════════════════════════════════════
+    # TAB 4: DANGER ZONE
+    # ════════════════════════════════════════════════════════════
+    with tab4:
+        st.subheader("⚠️ DANGER ZONE - Operacje nieodwracalne")
+        
+        st.error("⚠️ Te operacje są NIEODWRACALNE! Nie ma backup automatycznego!")
+        
+        with st.expander("🗑️ Usuń WSZYSTKIE projekty z działu"):
+            danger_dept = st.selectbox(
+                "Wybierz dział do wyczyszczenia",
+                options=list(DEPARTMENTS.keys()),
+                format_func=lambda x: f"{x} - {DEPARTMENTS[x]}",
+                key="danger_dept"
+            )
+            
+            confirmation = st.text_input(
+                f"Wpisz '{danger_dept}' aby potwierdzić",
+                key="danger_confirm_dept"
+            )
+            
+            if st.button("🗑️ USUŃ WSZYSTKIE PROJEKTY", type="secondary"):
+                if confirmation == danger_dept:
+                    with get_db_connection() as conn, conn.cursor() as cur:
+                        cur.execute("DELETE FROM projects WHERE department = %s", (danger_dept,))
+                        deleted = cur.rowcount
+                        conn.commit()
+                    st.success(f"✅ Usunięto {deleted} projektów z działu {danger_dept}")
+                else:
+                    st.error("❌ Błędne potwierdzenie!")
+        
+        with st.expander("🗑️ Usuń WSZYSTKIE wzorce z działu"):
+            danger_dept2 = st.selectbox(
+                "Wybierz dział",
+                options=list(DEPARTMENTS.keys()),
+                format_func=lambda x: f"{x} - {DEPARTMENTS[x]}",
+                key="danger_dept2"
+            )
+            
+            confirmation2 = st.text_input(
+                f"Wpisz '{danger_dept2}' aby potwierdzić",
+                key="danger_confirm_dept2"
+            )
+            
+            if st.button("🗑️ USUŃ WSZYSTKIE WZORCE", type="secondary"):
+                if confirmation2 == danger_dept2:
+                    with get_db_connection() as conn, conn.cursor() as cur:
+                        cur.execute("DELETE FROM component_patterns WHERE department = %s", (danger_dept2,))
+                        deleted = cur.rowcount
+                        conn.commit()
+                    st.success(f"✅ Usunięto {deleted} wzorców z działu {danger_dept2}")
+                else:
+                    st.error("❌ Błędne potwierdzenie!")
+        
+        with st.expander("🗑️ RESET CAŁEJ BAZY (wszystko)"):
+            st.error("⚠️⚠️⚠️ TO USUNIE WSZYSTKO! ⚠️⚠️⚠️")
+            
+            confirm_reset = st.text_input("Wpisz 'DELETE EVERYTHING' aby potwierdzić")
+            
+            if st.button("💣 RESET DATABASE", type="secondary"):
+                if confirm_reset == "DELETE EVERYTHING":
+                    with get_db_connection() as conn, conn.cursor() as cur:
+                        cur.execute("TRUNCATE TABLE component_bundles CASCADE")
+                        cur.execute("TRUNCATE TABLE category_baselines CASCADE")
+                        cur.execute("TRUNCATE TABLE project_versions CASCADE")
+                        cur.execute("TRUNCATE TABLE component_patterns CASCADE")
+                        cur.execute("TRUNCATE TABLE projects CASCADE")
+                        conn.commit()
+                    st.success("✅ Baza wyczyszczona całkowicie!")
+                    time.sleep(2)
+                    st.rerun()
+                else:
+                    st.error("❌ Błędne potwierdzenie!")
+
+
+# ════════════════════════════════════════════════════════════
+# ZAKTUALIZUJ MAIN() - dodaj zakładkę Admin
+# ════════════════════════════════════════════════════════════
+
+def main():
+    st.title("🚀 CAD Estimator Pro")
+
+    if not init_db():
+        st.stop()
+
+    # Sidebar: nawigacja
+    st.sidebar.title("Menu")
+    
+    # ZMIEŃ TĘ LINIĘ:
+    # page = st.sidebar.radio("Nawigacja", ["Dashboard", "Nowy projekt", "Historia i Uczenie"])
+    
+    # NA:
+    page = st.sidebar.radio(
+        "Nawigacja", 
+        ["Dashboard", "Nowy projekt", "Historia i Uczenie", "🛠️ Admin"]
+    )
+    
+    # ... reszta sidebar (bez zmian) ...
+    
+    # Routing stron
+    if page == "Dashboard":
+        render_dashboard_page()
+    elif page == "Nowy projekt":
+        render_new_project_page()
+    elif page == "Historia i Uczenie":
+        render_history_page()
+    elif page == "🛠️ Admin":
+        render_admin_page()  # <-- NOWA STRONA
 # === MAIN ===
 def main():
     st.title("🚀 CAD Estimator Pro")
