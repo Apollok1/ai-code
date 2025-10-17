@@ -1535,8 +1535,10 @@ def batch_import_excels(files, department: str,
 
                 # 5) Uczenie wzorców/bundles (opcjonalnie)
                 if learn_from_import and comps_full:
+                    logger.info(f"🧠 UCZĘ WZORCE: {len(comps_full)} komponentów z działu {department}")  # <-- DODAJ TO
                     learn_from_historical_components(cur, department, comps_full, distribute=distribute)
-
+                    logger.info(f"✅ UCZENIE ZAKOŃCZONE")  # <-- DODAJ TO
+                    
                 conn.commit()
                 results.append({
                     "file": fname,
