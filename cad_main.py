@@ -2757,6 +2757,185 @@ def render_history_page():
                     st.rerun()
         else:
             st.caption("Brak pozycji do uzupełnienia – wszystkie mają opis.")
+
+
+def main():
+    st.title("🚀 CAD Estimator Pro")
+
+    if not init_db():
+        st.stop()
+
+    # Sidebar: nawigacja
+    st.sidebar.title("Menu")
+    
+    # ZMIEŃ TĘ LINIĘ:
+    # page = st.sidebar.radio("Nawigacja", ["Dashboard", "Nowy projekt", "Historia i Uczenie"])
+    
+    # NA:
+    page = st.sidebar.radio(
+        "Nawigacja", 
+        ["Dashboard", "Nowy projekt", "Historia i Uczenie", "🛠️ Admin"]
+    )
+    
+    # ... reszta sidebar (bez zmian) ...
+    
+    # Routing stron
+    if page == "Dashboard":
+        render_dashboard_page()
+    elif page == "Nowy projekt":
+        render_new_project_page()
+    elif page == "Historia i Uczenie":
+        render_history_page()
+    elif page == "🛠️ Admin":
+        render_admin_page()  # <-- NOWA STRONA
+# === MAIN ===
+def main():
+    st.title("🚀 CAD Estimator Pro")
+
+    if not init_db():
+        st.stop()
+
+    # Sidebar: nawigacja
+    st.sidebar.title("Menu")
+    page = st.sidebar.radio("Nawigacja", ["Dashboard", "Nowy projekt", "Historia i Uczenie"])
+
+    # Sidebar: ustawienia AI
+    st.sidebar.subheader("Ustawienia AI")
+    
+    # 1) Model tekstowy (dla estymacji, JSON)
+    available_text_models = [
+        m for m in list_local_models() 
+        if not any(m.startswith(p) for p in ("llava", "bakllava", "moondream", "qwen2-vl", "qwen2.5vl", "nomic-embed"))
+    ]
+    
+    if "selected_text_model" not in st.session_state:
+        # Preferuj qwen2.5 dla technicznego tekstu
+        default_text = "qwen2.5:7b" if "qwen2.5:7b" in available_text_models else (
+            "mistral:7b-instruct" if "mistral:7b-instruct" in available_text_models else 
+            (available_text_models[0] if available_text_models else "llama3:latest")
+        )
+        st.session_state["selected_text_model"] = default_text
+    
+    try:
+        text_idx = available_text_models.index(st.session_state["selected_text_model"])
+    except (ValueError, IndexError):
+        text_idx = 0
+    
+    selected_text_model = st.sidebar.selectbox(
+        "Model AI (estymacja/JSON)",
+        options=available_text_models or ["llama3:latest"],
+        index=text_idx,
+        key="text_model_sel",
+        help="Model do analizy komponentów, generowania JSON, opisów zadań"
+    )
+    st.session_state["selected_text_model"] = selected_text_model
+    
+    # 2) Model Vision (dla obrazów/rysunków)
+    available_vision_models = [
+        m for m in list_local_models()
+        if any(m.startswith(p) for p in ("llava", "bakllava", "moondream", "qwen2-vl", "qwen2.5vl"))
+    ]
+    
+    if available_vision_models:
+        if "selected_vision_model" not in st.session_state:
+            # Preferuj qwen2.5vl dla technicznych rysunków
+            default_vision = "qwen2.5vl:7b" if "qwen2.5vl:7b" in available_vision_models else (
+                "qwen2-vl:7b" if "qwen2-vl:7b" in available_vision_models else 
+                available_vision_models[0]
+            )
+            st.session_state["selected_vision_model"] = default_vision
+        
+        try:
+            vision_idx = available_vision_models.index(st.session_state["selected_vision_model"])
+        except (ValueError, IndexError):
+            vision_idx = 0
+        
+        selected_vision_model = st.sidebar.selectbox(
+            "Model Vision (obrazy/rysunki)",
+            options=available_vision_models,
+            index=vision_idx,
+            key="vision_model_sel",
+            help="Model do analizy zdjęć, schematów, rysunków technicznych"
+        )
+        st.session_state["selected_vision_model"] = selected_vision_model
+    else:
+        st.sidebar.warning("⚠️ Brak modeli Vision (zainstaluj llava/qwen2-vl)")
+        selected_vision_model = None
+
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("🌐 Web Lookup")
+    
+    if "allow_web_lookup" not in st.session_state:
+        st.session_state["allow_web_lookup"] = False
+    
+    allow_web = st.sidebar.checkbox(
+        "Zezwól na web lookup (normy/benchmarki)",
+        value=st.session_state["allow_web_lookup"],
+        key="web_lookup_toggle",
+        help="Pobiera publiczne dane: normy ISO/EN, benchmarki czasów, dostępność komponentów. NIE wysyła danych projektu!"
+    )
+    st.session_state["allow_web_lookup"] = allow_web
+    
+    if allow_web:
+        st.sidebar.caption("✅ Web lookup aktywny - system może wzbogacić estymację o dane z sieci")
+    else:
+        st.sidebar.caption("🔒 Tryb offline - tylko lokalne wzorce")
+
+    st.sidebar.subheader("Status Systemu")
+    st.sidebar.write(f"Ollama AI: {'✅ Połączony' if any(list_local_models()) else '❌ Brak połączenia'}")
+
+    with st.sidebar.expander("Dostępne modele"):
+        models = list_local_models()
+        if models:
+            st.write("\n".join(f"- `{m}`" for m in models))
+        else:
+            st.write("Brak modeli")
+
+    st.sidebar.markdown("---")
+    if st.sidebar.button("🔄 Odśwież listę modeli"):
+        try:
+            list_local_models.cache_clear()
+        except Exception:
+            pass
+        st.rerun()
+
+    st.sidebar.subheader("Embedding (diagnostyka)")
+    detected_dim = detect_embed_dim(EMBED_MODEL)
+    if detected_dim and detected_dim != EMBED_DIM:
+        st.sidebar.error(f"EMBED_DIM={EMBED_DIM} vs model '{EMBED_MODEL}' zwraca {detected_dim}. Zmień EMBED_DIM lub model.")
+    elif detected_dim:
+        st.sidebar.success(f"Model '{EMBED_MODEL}' OK (dim={detected_dim}).")
+    else:
+        st.sidebar.info("Nie udało się pobrać embeddingu (sprawdź OLLAMA_URL / model).")
+
+    # Demo/próbne dane
+    with st.sidebar.expander("🧪 Demo / Próbne dane", expanded=False):
+        if st.button("Wypełnij formularz przykładowymi danymi"):
+            fill_demo_fields()
+        demo_excel = generate_sample_excel()
+        st.download_button("📥 Pobierz przykładowy Excel", demo_excel,
+                           file_name="demo_estymacja.xlsx",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        demo_pdf = generate_sample_pdf()
+        if demo_pdf:
+            st.download_button("📥 Pobierz przykładowy PDF", demo_pdf, file_name="demo_spec.pdf", mime="application/pdf")
+        else:
+            st.info("Aby generować PDF, zainstaluj: pip install reportlab")
+        demo_img = generate_sample_image()
+        st.download_button("📥 Pobierz przykładowy obraz (PNG)", demo_img, file_name="demo_schemat.png", mime="image/png")
+
+    # Routing stron
+    if page == "Dashboard":
+        render_dashboard_page()
+
+    elif page == "Nowy projekt":
+        render_new_project_page()
+    
+    elif page == "Historia i Uczenie":
+        render_history_page()
+
+if __name__ == "__main__":
+
 # CADEstimator_final.py
 # DODAJ NA KOŃCU PLIKU (przed main())
 
@@ -3122,181 +3301,4 @@ def render_admin_page():
 # ════════════════════════════════════════════════════════════
 # ZAKTUALIZUJ MAIN() - dodaj zakładkę Admin
 # ════════════════════════════════════════════════════════════
-
-def main():
-    st.title("🚀 CAD Estimator Pro")
-
-    if not init_db():
-        st.stop()
-
-    # Sidebar: nawigacja
-    st.sidebar.title("Menu")
-    
-    # ZMIEŃ TĘ LINIĘ:
-    # page = st.sidebar.radio("Nawigacja", ["Dashboard", "Nowy projekt", "Historia i Uczenie"])
-    
-    # NA:
-    page = st.sidebar.radio(
-        "Nawigacja", 
-        ["Dashboard", "Nowy projekt", "Historia i Uczenie", "🛠️ Admin"]
-    )
-    
-    # ... reszta sidebar (bez zmian) ...
-    
-    # Routing stron
-    if page == "Dashboard":
-        render_dashboard_page()
-    elif page == "Nowy projekt":
-        render_new_project_page()
-    elif page == "Historia i Uczenie":
-        render_history_page()
-    elif page == "🛠️ Admin":
-        render_admin_page()  # <-- NOWA STRONA
-# === MAIN ===
-def main():
-    st.title("🚀 CAD Estimator Pro")
-
-    if not init_db():
-        st.stop()
-
-    # Sidebar: nawigacja
-    st.sidebar.title("Menu")
-    page = st.sidebar.radio("Nawigacja", ["Dashboard", "Nowy projekt", "Historia i Uczenie"])
-
-    # Sidebar: ustawienia AI
-    st.sidebar.subheader("Ustawienia AI")
-    
-    # 1) Model tekstowy (dla estymacji, JSON)
-    available_text_models = [
-        m for m in list_local_models() 
-        if not any(m.startswith(p) for p in ("llava", "bakllava", "moondream", "qwen2-vl", "qwen2.5vl", "nomic-embed"))
-    ]
-    
-    if "selected_text_model" not in st.session_state:
-        # Preferuj qwen2.5 dla technicznego tekstu
-        default_text = "qwen2.5:7b" if "qwen2.5:7b" in available_text_models else (
-            "mistral:7b-instruct" if "mistral:7b-instruct" in available_text_models else 
-            (available_text_models[0] if available_text_models else "llama3:latest")
-        )
-        st.session_state["selected_text_model"] = default_text
-    
-    try:
-        text_idx = available_text_models.index(st.session_state["selected_text_model"])
-    except (ValueError, IndexError):
-        text_idx = 0
-    
-    selected_text_model = st.sidebar.selectbox(
-        "Model AI (estymacja/JSON)",
-        options=available_text_models or ["llama3:latest"],
-        index=text_idx,
-        key="text_model_sel",
-        help="Model do analizy komponentów, generowania JSON, opisów zadań"
-    )
-    st.session_state["selected_text_model"] = selected_text_model
-    
-    # 2) Model Vision (dla obrazów/rysunków)
-    available_vision_models = [
-        m for m in list_local_models()
-        if any(m.startswith(p) for p in ("llava", "bakllava", "moondream", "qwen2-vl", "qwen2.5vl"))
-    ]
-    
-    if available_vision_models:
-        if "selected_vision_model" not in st.session_state:
-            # Preferuj qwen2.5vl dla technicznych rysunków
-            default_vision = "qwen2.5vl:7b" if "qwen2.5vl:7b" in available_vision_models else (
-                "qwen2-vl:7b" if "qwen2-vl:7b" in available_vision_models else 
-                available_vision_models[0]
-            )
-            st.session_state["selected_vision_model"] = default_vision
-        
-        try:
-            vision_idx = available_vision_models.index(st.session_state["selected_vision_model"])
-        except (ValueError, IndexError):
-            vision_idx = 0
-        
-        selected_vision_model = st.sidebar.selectbox(
-            "Model Vision (obrazy/rysunki)",
-            options=available_vision_models,
-            index=vision_idx,
-            key="vision_model_sel",
-            help="Model do analizy zdjęć, schematów, rysunków technicznych"
-        )
-        st.session_state["selected_vision_model"] = selected_vision_model
-    else:
-        st.sidebar.warning("⚠️ Brak modeli Vision (zainstaluj llava/qwen2-vl)")
-        selected_vision_model = None
-
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("🌐 Web Lookup")
-    
-    if "allow_web_lookup" not in st.session_state:
-        st.session_state["allow_web_lookup"] = False
-    
-    allow_web = st.sidebar.checkbox(
-        "Zezwól na web lookup (normy/benchmarki)",
-        value=st.session_state["allow_web_lookup"],
-        key="web_lookup_toggle",
-        help="Pobiera publiczne dane: normy ISO/EN, benchmarki czasów, dostępność komponentów. NIE wysyła danych projektu!"
-    )
-    st.session_state["allow_web_lookup"] = allow_web
-    
-    if allow_web:
-        st.sidebar.caption("✅ Web lookup aktywny - system może wzbogacić estymację o dane z sieci")
-    else:
-        st.sidebar.caption("🔒 Tryb offline - tylko lokalne wzorce")
-
-    st.sidebar.subheader("Status Systemu")
-    st.sidebar.write(f"Ollama AI: {'✅ Połączony' if any(list_local_models()) else '❌ Brak połączenia'}")
-
-    with st.sidebar.expander("Dostępne modele"):
-        models = list_local_models()
-        if models:
-            st.write("\n".join(f"- `{m}`" for m in models))
-        else:
-            st.write("Brak modeli")
-
-    st.sidebar.markdown("---")
-    if st.sidebar.button("🔄 Odśwież listę modeli"):
-        try:
-            list_local_models.cache_clear()
-        except Exception:
-            pass
-        st.rerun()
-
-    st.sidebar.subheader("Embedding (diagnostyka)")
-    detected_dim = detect_embed_dim(EMBED_MODEL)
-    if detected_dim and detected_dim != EMBED_DIM:
-        st.sidebar.error(f"EMBED_DIM={EMBED_DIM} vs model '{EMBED_MODEL}' zwraca {detected_dim}. Zmień EMBED_DIM lub model.")
-    elif detected_dim:
-        st.sidebar.success(f"Model '{EMBED_MODEL}' OK (dim={detected_dim}).")
-    else:
-        st.sidebar.info("Nie udało się pobrać embeddingu (sprawdź OLLAMA_URL / model).")
-
-    # Demo/próbne dane
-    with st.sidebar.expander("🧪 Demo / Próbne dane", expanded=False):
-        if st.button("Wypełnij formularz przykładowymi danymi"):
-            fill_demo_fields()
-        demo_excel = generate_sample_excel()
-        st.download_button("📥 Pobierz przykładowy Excel", demo_excel,
-                           file_name="demo_estymacja.xlsx",
-                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        demo_pdf = generate_sample_pdf()
-        if demo_pdf:
-            st.download_button("📥 Pobierz przykładowy PDF", demo_pdf, file_name="demo_spec.pdf", mime="application/pdf")
-        else:
-            st.info("Aby generować PDF, zainstaluj: pip install reportlab")
-        demo_img = generate_sample_image()
-        st.download_button("📥 Pobierz przykładowy obraz (PNG)", demo_img, file_name="demo_schemat.png", mime="image/png")
-
-    # Routing stron
-    if page == "Dashboard":
-        render_dashboard_page()
-
-    elif page == "Nowy projekt":
-        render_new_project_page()
-    
-    elif page == "Historia i Uczenie":
-        render_history_page()
-
-if __name__ == "__main__":
     main()
