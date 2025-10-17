@@ -2151,9 +2151,15 @@ def render_new_project_page():
                 logger.debug(f"📝 Prompt preview: {prompt[:500]}...")
                 
                 ai_text = query_ollama(prompt, model=ai_model, images_b64=images_b64, format_json=True)
+                                # ════════════════════════════════════════════════════════════
+                # DODAJ TO (tymczasowo do debugowania):
+                st.subheader("🔍 DEBUG: Surowa odpowiedź AI")
+                st.code(ai_text, language="json")
+                # ════════════════════════════════════════════════════════════
                 
                 logger.info(f"📥 Otrzymano odpowiedź AI, długość: {len(ai_text)} znaków")
-                logger.debug(f"📝 Response preview: {ai_text[:500]}...")
+                logger.debug(f"📝 Response preview (first 2000 chars):\n{ai_text[:2000]}")
+
                 
                 if not ai_text or len(ai_text) < 50:
                     st.error("❌ AI zwróciło pustą/zbyt krótką odpowiedź")
