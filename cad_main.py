@@ -1939,31 +1939,31 @@ def build_analysis_prompt(description: str, components: list,
     # ═══════════════════════════════════════════════════════════
     comp_examples = []
     for c in components[:30]:
-    if not c.get('is_summary', False):
-        name = c.get('name', 'Bez nazwy')
-        layout = c.get('hours_3d_layout', 0)
-        detail = c.get('hours_3d_detail', 0)
-        doc = c.get('hours_2d', 0)
-        comment = c.get('comment', '')
-        subs = c.get('subcomponents', [])
-        
-        # Podstawowa linia
-        line = f"- **{name}**: Layout {layout:.1f}h, Detail {detail:.1f}h, 2D {doc:.1f}h"
-        
-        # Dodaj komentarz
-        if comment:
-            line += f"\n  └─ Uwagi: {comment[:100]}"
-        
-        # Dodaj sub-komponenty
-        if subs:
-            line += f"\n  └─ Zawiera: "
-            sub_names = [f"{s.get('quantity',1)}x {s.get('name','')}" for s in subs[:5]]
-            line += ", ".join(sub_names)
-            if len(subs) > 5:
-                line += f" ... (+{len(subs)-5})"
-        
-        comp_examples.append(line)
-
+        if not c.get('is_summary', False):
+            name = c.get('name', 'Bez nazwy')
+            layout = c.get('hours_3d_layout', 0)
+            detail = c.get('hours_3d_detail', 0)
+            doc = c.get('hours_2d', 0)
+            comment = c.get('comment', '')
+            subs = c.get('subcomponents', [])
+            
+            # Podstawowa linia
+            line = f"- **{name}**: Layout {layout:.1f}h, Detail {detail:.1f}h, 2D {doc:.1f}h"
+            
+            # Dodaj komentarz
+            if comment:
+                line += f"\n  └─ Uwagi: {comment[:100]}"
+            
+            # Dodaj sub-komponenty
+            if subs:
+                line += f"\n  └─ Zawiera: "
+                sub_names = [f"{s.get('quantity',1)}x {s.get('name','')}" for s in subs[:5]]
+                line += ", ".join(sub_names)
+                if len(subs) > 5:
+                    line += f" ... (+{len(subs)-5})"
+            
+            comp_examples.append(line)
+    
     comp_str = "\n".join(comp_examples) if comp_examples else "❌ Brak przykładów komponentów z Excela/JSON - użyj swojej wiedzy!"
     # ═══════════════════════════════════════════════════════════
     
