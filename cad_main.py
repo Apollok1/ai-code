@@ -151,25 +151,65 @@ Systemach wizyjnych i kontroli jakości
 Narzędziach CAD: CATIA V5, SolidWorks, AutoCAD
 Odpowiadaj ZAWSZE w języku polskim.
 
-METODYKA SZACOWANIA:
+# ═══════════════════════════════════════════════════════════
+# DODAJ TO (bardziej szczegółowe instrukcje):
+# ═══════════════════════════════════════════════════════════
 
-ANALIZA WYMAGAŃ (10-15% czasu)
-KONCEPCJA I MODELOWANIE (40-50% czasu)
-OBLICZENIA I WERYFIKACJA (20-30% czasu)
-DOKUMENTACJA (15-20% czasu)
-RYZYKA - każde MUSI mieć: "risk", "impact", "mitigation"
-CZYNNIKI KOMPLIKUJĄCE (dodaj czas):
+METODYKA ESTYMACJI - KROK PO KROKU:
 
-Spawanie precyzyjne: +20%
-Części ruchome/kinematyka: +30%
-Automatyzacja/PLC: +25%
-Specjalne normy: +15%
-Niestandardowe materiały: +10%
-Duże wymiary (>10m): +25%
+1. ANALIZA OPISU (przeczytaj DOKŁADNIE):
+   - Zidentyfikuj WSZYSTKIE komponenty wymienione w opisie
+   - Sprawdź czy są podane ilości (np. "4x wspornik", "8x otwór")
+   - Zwróć uwagę na materiały (S355, S235, aluminum)
+   - Zidentyfikuj procesy: spawanie, obróbka, montaż
+   - Sprawdź normy (ISO, EN, AWS)
+
+2. DEKOMPOZYCJA (rozłóż na części):
+   - Każdy wymieniony komponent = osobna pozycja w "components"
+   - Złożenia = suma części składowych
+   - NIE pomijaj żadnego elementu z opisu!
+
+3. ESTYMACJA GODZIN (dla KAŻDEGO komponentu osobno):
+   
+   LAYOUT (3D koncepcja):
+   - Prosta płyta: 0.5-1h
+   - Profil/wspornik: 1-2h
+   - Złożenie proste: 2-4h
+   - Złożenie średnie: 4-8h
+   - Złożenie złożone: 8-15h
+   
+   DETAIL (3D szczegóły):
+   - Prosta płyta z otworami: 2-4h
+   - Profil spawany: 4-8h
+   - Element z obróbką: 5-10h
+   - Złożenie z kinematyką: 10-20h
+   - Złożenie ze spawami: +20-30%
+   
+   DOC (dokumentacja 2D):
+   - Prosty rysunek: 1-2h
+   - Rysunek wykonawczy: 2-4h
+   - Złożenie: 3-6h
+   - Dokumentacja spawania: +1-2h
+
+4. MODYFIKATORY (dostosuj godziny):
+   - Spawanie precyzyjne: +20%
+   - Normy specjalne (automotive, aerospace): +15%
+   - Materiały niestandardowe: +10%
+   - Duże wymiary (>5m): +25%
+   - Części ruchome/kinematyka: +30%
+
+5. WALIDACJA:
+   - Suma layout ≈ 15-25% total
+   - Suma detail ≈ 50-60% total
+   - Suma doc ≈ 20-30% total
+   - Jeśli inne proporcje - uzasadnij w "assumptions"
+
+# ═══════════════════════════════════════════════════════════
+
 WYMAGANY FORMAT ODPOWIEDZI - ZWRÓĆ TYLKO CZYSTY JSON:
 {
 "components": [
-{"name": "Nazwa", "layout_h": 12.5, "detail_h": 42.0, "doc_h": 28.0}
+{"name": "Nazwa DOKŁADNA z opisu", "layout_h": 12.5, "detail_h": 42.0, "doc_h": 28.0}
 ],
 "sums": {"layout": 12.5, "detail": 42.0, "doc": 28.0, "total": 82.5},
 "assumptions": ["Założenie 1"],
@@ -186,7 +226,12 @@ WYMAGANY FORMAT ODPOWIEDZI - ZWRÓĆ TYLKO CZYSTY JSON:
 ]
 }
 
-WAŻNE: Zwróć WYŁĄCZNIE JSON bez tekstu.
+WAŻNE: 
+- Zwróć WYŁĄCZNIE JSON bez tekstu
+- Każdy komponent z opisu = osobna pozycja
+- Godziny MUSZĄ odpowiadać złożoności
+- NIE używaj zawsze tych samych wartości!
+- Prostsze części = mniej godzin, złożone = więcej
 """
 
 # === HTTP Session z retry (stabilniejsze zapytania) ===
@@ -1868,22 +1913,59 @@ def build_analysis_prompt(description: str, components: list,
     """
     Buduje prompt do analizy komponentów i estymacji godzin.
     """
+
+       
+    # ═══════════════════════════════════════════════════════════
+    # DODAJ TUTAJ DEBUG:
+    logger.info(f"🔍 build_analysis_prompt INPUTS:")
+    logger.info(f"   📝 description: '{description[:100]}...' (len={len(description)})")
+    logger.info(f"   📦 components: {len(components)} items")
+    logger.info(f"   🧠 learned_patterns: {len(learned_patterns)} items")
+    logger.info(f"   📄 pdf_text: {len(pdf_text)} chars")
+    logger.info(f"   🏢 department: {department}")
+    
+    if components:
+        logger.info(f"   📦 First component: {components[0].get('name', 'N/A')}")
+    if learned_patterns:
+        logger.info(f"   🧠 First pattern: {learned_patterns[0].get('name', 'N/A')}")
+    # ═══════════════════════════════════════════════════════════
     # Kontekst branżowy
+                              
     context = DEPARTMENT_CONTEXT.get(department, "")
     
     # Przykłady komponentów z Excela/JSON (max 30)
+    # ═══════════════════════════════════════════════════════════
+    # LEPSZY FORMAT PRZYKŁADÓW
+    # ═══════════════════════════════════════════════════════════
     comp_examples = []
     for c in components[:30]:
-        if not c.get('is_summary', False):
-            name = c.get('name', 'Bez nazwy')
-            layout = c.get('hours_3d_layout', 0)
-            detail = c.get('hours_3d_detail', 0)
-            doc = c.get('hours_2d', 0)
-            comp_examples.append(
-                f"- {name}: Layout {layout:.1f}h, Detail {detail:.1f}h, 2D {doc:.1f}h"
-            )
-    
-    comp_str = "\n".join(comp_examples) if comp_examples else "Brak przykładów z Excela/JSON"
+    if not c.get('is_summary', False):
+        name = c.get('name', 'Bez nazwy')
+        layout = c.get('hours_3d_layout', 0)
+        detail = c.get('hours_3d_detail', 0)
+        doc = c.get('hours_2d', 0)
+        comment = c.get('comment', '')
+        subs = c.get('subcomponents', [])
+        
+        # Podstawowa linia
+        line = f"- **{name}**: Layout {layout:.1f}h, Detail {detail:.1f}h, 2D {doc:.1f}h"
+        
+        # Dodaj komentarz
+        if comment:
+            line += f"\n  └─ Uwagi: {comment[:100]}"
+        
+        # Dodaj sub-komponenty
+        if subs:
+            line += f"\n  └─ Zawiera: "
+            sub_names = [f"{s.get('quantity',1)}x {s.get('name','')}" for s in subs[:5]]
+            line += ", ".join(sub_names)
+            if len(subs) > 5:
+                line += f" ... (+{len(subs)-5})"
+        
+        comp_examples.append(line)
+
+    comp_str = "\n".join(comp_examples) if comp_examples else "❌ Brak przykładów komponentów z Excela/JSON - użyj swojej wiedzy!"
+    # ═══════════════════════════════════════════════════════════
     
     # Wzorce z bazy (top 10)
     patterns_str = ""
