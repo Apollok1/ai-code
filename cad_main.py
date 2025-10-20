@@ -2149,16 +2149,15 @@ def render_new_project_page():
                 
                 logger.info(f"🤖 Wysyłam prompt do AI ({ai_model}), długość: {len(prompt)} znaków")
                 logger.debug(f"📝 Prompt preview: {prompt[:500]}...")
-                
                 ai_text = query_ollama(prompt, model=ai_model, images_b64=images_b64, format_json=True)
-                                # ════════════════════════════════════════════════════════════
-                # DODAJ TO (tymczasowo do debugowania):
+
+                # DEBUG - pokaż surową odpowiedź
                 st.subheader("🔍 DEBUG: Surowa odpowiedź AI")
                 st.code(ai_text, language="json")
-                # ════════════════════════════════════════════════════════════
+                st.write(f"Długość: {len(ai_text)} znaków")
                 
                 logger.info(f"📥 Otrzymano odpowiedź AI, długość: {len(ai_text)} znaków")
-                logger.debug(f"📝 Response preview (first 2000 chars):\n{ai_text[:2000]}")
+                
 
                 
                 if not ai_text or len(ai_text) < 50:
@@ -2168,6 +2167,15 @@ def render_new_project_page():
     
                 progress_bar.progress(80, text="Parsuję...")
                 parsed = parse_ai_response(ai_text, components_from_excel=components_from_excel)
+                # ═══════════════════════════════════════════════════════════
+                # DODAJ TUTAJ DEBUG:
+                st.subheader("🔍 DEBUG: Wynik parsowania")
+                st.write("**parsed.get('components'):**")
+                st.json(parsed.get('components', []))
+                st.write(f"**Liczba komponentów:** {len(parsed.get('components', []))}")
+                st.write(f"**total_hours:** {parsed.get('total_hours', 0)}")
+                st.write(f"**Warnings:** {parsed.get('warnings', [])}")
+                # ═══════════════════════════════════════════════════════════
                 
                 logger.info(f"📊 Sparsowano: {len(parsed.get('components',[]))} komponentów, total: {parsed.get('total_hours',0):.1f}h")
                 if parsed.get('warnings'):
