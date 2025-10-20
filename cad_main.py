@@ -152,10 +152,8 @@ Narzędziach CAD: CATIA V5, SolidWorks, AutoCAD
 Odpowiadaj ZAWSZE w języku polskim.
 
 # ═══════════════════════════════════════════════════════════
-# DODAJ TO (bardziej szczegółowe instrukcje):
+# METODYKA ESTYMACJI - KROK PO KROKU
 # ═══════════════════════════════════════════════════════════
-
-METODYKA ESTYMACJI - KROK PO KROKU:
 
 1. ANALIZA OPISU (przeczytaj DOKŁADNIE):
    - Zidentyfikuj WSZYSTKIE komponenty wymienione w opisie
@@ -164,12 +162,24 @@ METODYKA ESTYMACJI - KROK PO KROKU:
    - Zidentyfikuj procesy: spawanie, obróbka, montaż
    - Sprawdź normy (ISO, EN, AWS)
 
-2. DEKOMPOZYCJA (rozłóż na części):
+2. WYKRYJ BRAKUJĄCE INFORMACJE:
+   Sprawdź czy w opisie jest:
+   - ✓ Materiał (S235, S355, aluminium?)
+   - ✓ Wymiary (długość, szerokość, grubość?)
+   - ✓ Ilości komponentów (4x wspornik?)
+   - ✓ Normy (ISO 9606, EN 1090, AWS D1.1?)
+   - ✓ Procesy (spawanie MAG/MIG/TIG? obróbka CNC?)
+   - ✓ Tolerancje (±0.1mm, ±0.5mm?)
+   - ✓ Obróbka powierzchni (malowanie, cynkowanie?)
+   
+   Jeśli CZEGOKOLWIEK brakuje → wygeneruj pytania w "missing_info"
+
+3. DEKOMPOZYCJA (rozłóż na części):
    - Każdy wymieniony komponent = osobna pozycja w "components"
    - Złożenia = suma części składowych
    - NIE pomijaj żadnego elementu z opisu!
 
-3. ESTYMACJA GODZIN (dla KAŻDEGO komponentu osobno):
+4. ESTYMACJA GODZIN (dla KAŻDEGO komponentu osobno):
    
    LAYOUT (3D koncepcja):
    - Prosta płyta: 0.5-1h
@@ -191,47 +201,185 @@ METODYKA ESTYMACJI - KROK PO KROKU:
    - Złożenie: 3-6h
    - Dokumentacja spawania: +1-2h
 
-4. MODYFIKATORY (dostosuj godziny):
-   - Spawanie precyzyjne: +20%
-   - Normy specjalne (automotive, aerospace): +15%
-   - Materiały niestandardowe: +10%
-   - Duże wymiary (>5m): +25%
-   - Części ruchome/kinematyka: +30%
+5. GENERUJ SUGESTIE:
+   Po dekompozycji ZAWSZE sprawdź:
+   
+   A) CZY MOŻNA ZROBIĆ INACZEJ? (alternative)
+      - Spawanie vs śruby vs nitowanie
+      - Materiały: stal vs aluminium
+      - Procesy: CNC vs laser
+   
+   B) CZY MOŻNA ULEPSZYĆ? (improvement)
+      - Dodać wzmocnienia dla sztywności
+      - Zmienić geometrię dla oszczędności
+      - Uprościć montaż
+   
+   C) CZY JEST RYZYKO/OSTRZEŻENIE? (warning)
+      - Brak normy spawania → niezgodność
+      - Zbyt cienka płyta → odkształcenia
+      - Brak wzmocnień → niestabilność
 
-5. WALIDACJA:
+6. WALIDACJA:
    - Suma layout ≈ 15-25% total
    - Suma detail ≈ 50-60% total
    - Suma doc ≈ 20-30% total
-   - Jeśli inne proporcje - uzasadnij w "assumptions"
 
 # ═══════════════════════════════════════════════════════════
+# WYMAGANY FORMAT ODPOWIEDZI - ZWRÓĆ TYLKO CZYSTY JSON
+# ═══════════════════════════════════════════════════════════
 
-WYMAGANY FORMAT ODPOWIEDZI - ZWRÓĆ TYLKO CZYSTY JSON:
 {
-"components": [
-{"name": "Nazwa DOKŁADNA z opisu", "layout_h": 12.5, "detail_h": 42.0, "doc_h": 28.0}
-],
-"sums": {"layout": 12.5, "detail": 42.0, "doc": 28.0, "total": 82.5},
-"assumptions": ["Założenie 1"],
-"risks": [
-{"risk": "Opis ryzyka", "impact": "wysoki/średni/niski", "mitigation": "Jak zminimalizować"}
-],
-"adjustments": [
-{
-"parent": "Nazwa komponentu z głównej listy",
-"adds": [
-{"name": "nazwa sub-komponentu", "qty": 2, "layout_add": 0.5, "detail_add": 3.0, "doc_add": 1.0, "reason": "dlaczego"}
-]
+  "components": [
+    {"name": "Nazwa DOKŁADNA", "layout_h": 12.5, "detail_h": 42.0, "doc_h": 28.0}
+  ],
+  "sums": {"layout": 12.5, "detail": 42.0, "doc": 28.0, "total": 82.5},
+  "assumptions": ["Założenie 1", "Założenie 2"],
+  "risks": [
+    {"risk": "Opis ryzyka", "impact": "wysoki/średni/niski", "mitigation": "Jak zminimalizować"}
+  ],
+  "adjustments": [
+    {
+      "parent": "Nazwa komponentu",
+      "adds": [
+        {"name": "sub-komponent", "qty": 2, "layout_add": 0.5, "detail_add": 3.0, "doc_add": 1.0, "reason": "dlaczego"}
+      ]
+    }
+  ],
+  "suggestions": [
+    {
+      "type": "alternative",
+      "title": "Krótki tytuł sugestii (max 50 znaków)",
+      "description": "Szczegółowy opis (2-3 zdania). Co można zrobić inaczej i jakie będą efekty.",
+      "priority": "high",
+      "impact": {
+        "hours_delta": -5.0,
+        "cost_delta": -750,
+        "quality_info": "Łatwiejszy demontaż"
+      },
+      "components_to_add": ["Opcjonalnie: lista komponentów do dodania"],
+      "components_to_remove": ["Opcjonalnie: lista do usunięcia"]
+    }
+  ],
+  "missing_info": [
+    {
+      "question": "Jaki materiał płyty bazowej?",
+      "type": "choice",
+      "field_name": "material_plate",
+      "options": ["S235JR (stal konstrukcyjna)", "S355J2 (wyższa wytrzymałość)", "Aluminium (lżejsze)"],
+      "default": "S235JR (stal konstrukcyjna)",
+      "priority": "high",
+      "why": "Materiał wpływa na czas obróbki (+20% dla S355) i koszty"
+    },
+    {
+      "question": "Ile wsporników montażowych?",
+      "type": "number",
+      "field_name": "qty_brackets",
+      "min": 1,
+      "max": 20,
+      "default": 4,
+      "priority": "high",
+      "why": "Bezpośrednio wpływa na czas realizacji"
+    },
+    {
+      "question": "Jakie normy spawalnicze mają obowiązywać?",
+      "type": "multi",
+      "field_name": "welding_standards",
+      "options": ["ISO 9606 (Europa)", "EN 1090 (konstrukcje stalowe)", "AWS D1.1 (USA)"],
+      "priority": "medium",
+      "why": "Normy definiują wymagania jakościowe i certyfikację"
+    },
+    {
+      "question": "Czy wymagana jest obróbka CNC?",
+      "type": "yes_no",
+      "field_name": "cnc_required",
+      "default": true,
+      "priority": "medium",
+      "why": "Obróbka CNC zwiększa precyzję ale +10-20% czasu"
+    }
+  ]
 }
-]
+
+# ═══════════════════════════════════════════════════════════
+# PRZYKŁADY
+# ═══════════════════════════════════════════════════════════
+
+PRZYKŁAD 1 - PEŁNY OPIS (brak pytań):
+OPIS: "Płyta montażowa 400x300x5mm ze stali S235JR, 4 otwory gwintowane M8, spawanie MAG wg ISO 9606"
+
+ODPOWIEDŹ:
+{
+  "components": [
+    {"name": "Płyta bazowa 400x300x5mm", "layout_h": 1.0, "detail_h": 3.5, "doc_h": 1.5}
+  ],
+  "missing_info": [],  // PUSTE - wszystko jasne
+  "suggestions": [
+    {
+      "type": "improvement",
+      "title": "Dodaj fazowanie krawędzi",
+      "description": "Fazowanie 1x45° zwiększy bezpieczeństwo i ułatwi montaż. +0.5h obróbki.",
+      "priority": "low",
+      "impact": {"hours_delta": 0.5}
+    }
+  ]
+}
+
+PRZYKŁAD 2 - BRAK SZCZEGÓŁÓW (dużo pytań):
+OPIS: "Rama spawana z wspornikami"
+
+ODPOWIEDŹ:
+{
+  "components": [
+    {"name": "Rama główna (szacunkowo)", "layout_h": 3.0, "detail_h": 10.0, "doc_h": 5.0}
+  ],
+  "missing_info": [
+    {
+      "question": "Jaki materiał ramy?",
+      "type": "choice",
+      "field_name": "material_frame",
+      "options": ["S235JR", "S355J2", "Aluminium"],
+      "priority": "high",
+      "why": "Materiał wpływa na czas obróbki i wagę konstrukcji"
+    },
+    {
+      "question": "Ile wsporników?",
+      "type": "number",
+      "field_name": "qty_brackets",
+      "min": 1, "max": 20, "default": 4,
+      "priority": "high",
+      "why": "Bezpośrednio wpływa na czas"
+    },
+    {
+      "question": "Wymiary ramy (długość x szerokość x wysokość)?",
+      "type": "text",
+      "field_name": "frame_dimensions",
+      "priority": "high",
+      "why": "Duże wymiary (>5m) zwiększają złożoność +25%"
+    },
+    {
+      "question": "Norma spawalnicza?",
+      "type": "multi",
+      "field_name": "welding_standards",
+      "options": ["ISO 9606", "EN 1090", "AWS D1.1"],
+      "priority": "medium",
+      "why": "Normy definiują wymagania jakościowe"
+    }
+  ],
+  "suggestions": [
+    {
+      "type": "warning",
+      "title": "Uzupełnij opis dla dokładniejszej wyceny",
+      "description": "Brakuje kluczowych informacji. Odpowiedz na pytania powyżej dla zwiększenia dokładności estymacji z ±40% do ±10%.",
+      "priority": "high"
+    }
+  ]
 }
 
 WAŻNE: 
 - Zwróć WYŁĄCZNIE JSON bez tekstu
 - Każdy komponent z opisu = osobna pozycja
+- ZAWSZE generuj "missing_info" jeśli czegoś brakuje
+- ZAWSZE generuj min. 1 "suggestion"
 - Godziny MUSZĄ odpowiadać złożoności
-- NIE używaj zawsze tych samych wartości!
-- Prostsze części = mniej godzin, złożone = więcej
 """
 
 # === HTTP Session z retry (stabilniejsze zapytania) ===
@@ -633,6 +781,38 @@ def parse_ai_response(text: str, components_from_excel=None):
     if total_2d == 0 and parsed_components:
         total_2d = sum(c.get('hours_2d', 0) for c in parsed_components)
 
+    # ═══════════════════════════════════════════════════════════
+    # NOWE: Parsowanie suggestions i missing_info
+    # ═══════════════════════════════════════════════════════════
+    
+    suggestions = []
+    for s in data.get("suggestions", []):
+        if isinstance(s, dict):
+            suggestions.append({
+                "type": s.get("type", "other"),
+                "title": s.get("title", "Sugestia"),
+                "description": s.get("description", ""),
+                "priority": s.get("priority", "medium"),
+                "impact": s.get("impact", {}),
+                "components_to_add": s.get("components_to_add", []),
+                "components_to_remove": s.get("components_to_remove", [])
+            })
+    
+    missing_info = []
+    for m in data.get("missing_info", []):
+        if isinstance(m, dict):
+            missing_info.append({
+                "question": m.get("question", "Pytanie"),
+                "type": m.get("type", "text"),
+                "field_name": m.get("field_name", f"field_{len(missing_info)}"),
+                "options": m.get("options", []),
+                "default": m.get("default"),
+                "min": m.get("min"),
+                "max": m.get("max"),
+                "priority": m.get("priority", "medium"),
+                "why": m.get("why", "")
+            })
+
     return {
         "total_hours": max(0.0, total_layout + total_detail + total_2d),
         "total_layout": total_layout,
@@ -642,12 +822,15 @@ def parse_ai_response(text: str, components_from_excel=None):
         "raw_text": text,
         "warnings": warnings,
         "analysis": data.get("analysis", {}),
-        "missing_info": data.get("missing_info", []),
+        "missing_info": missing_info,  # ⬅️ NOWE
         "phases": data.get("phases", {}),
         "risks_detailed": data.get("risks", []),
         "recommendations": data.get("recommendations", []),
-        "ai_adjustments": data.get("ai_adjustments", [])
+        "ai_adjustments": data.get("ai_adjustments", []),
+        "suggestions": suggestions  # ⬅️ NOWE
     }
+    
+    
 
 # === PARSERY EXCEL (z/bez komentarzy) ===
 def parse_cad_project_structured(file_stream):
@@ -2052,7 +2235,121 @@ def extract_keywords(text: str) -> list:
     
     return unique[:10]  # Max 10 słów kluczowych
 
+# ═══════════════════════════════════════════════════════════
+# INTELIGENTNA DEKOMPOZYCJA Z BAZY
+# ═══════════════════════════════════════════════════════════
 
+def extract_keywords(text: str) -> list:
+    """
+    Wyciąga kluczowe słowa techniczne z opisu.
+    Filtruje stopwords i zostawia tylko rzeczowniki techniczne.
+    """
+    stopwords = {'i', 'a', 'z', 'do', 'w', 'na', 'dla', 'o', 'po', 'ze', 'od', 
+                 'the', 'and', 'or', 'of', 'to', 'in', 'on', 'at', 'from', 
+                 'jest', 'są', 'będzie', 'ma', 'będą', 'można', 'tego', 'tej',
+                 'tym', 'ten', 'ta', 'to', 'jak', 'się', 'już', 'tylko'}
+    
+    # Tokenizacja
+    words = re.findall(r'\b\w+\b', text.lower())
+    
+    # Filtruj
+    keywords = [w for w in words if len(w) > 3 and w not in stopwords]
+    
+    # Usuń duplikaty zachowując kolejność
+    seen = set()
+    unique = []
+    for k in keywords:
+        if k not in seen:
+            seen.add(k)
+            unique.append(k)
+    
+    return unique[:10]  # Max 10 słów kluczowych
+
+
+def intelligent_decomposition(description: str, department: str, conn) -> dict:
+    """
+    Inteligentna dekompozycja opisu na komponenty używając:
+    1. Wzorców z bazy (semantic search)
+    2. Podobnych projektów (semantic search)
+    3. Typowych zestawów komponentów (bundles)
+    
+    Zwraca: {
+        "suggested_components": [...],
+        "context_from_db": "...",
+        "similar_projects": [...]
+    }
+    """
+    result = {
+        "suggested_components": [],
+        "context_from_db": "",
+        "similar_projects": []
+    }
+    
+    # 1. Wyciągnij kluczowe terminy z opisu
+    keywords = extract_keywords(description)
+    logger.info(f"🔍 Extracted keywords: {keywords}")
+    
+    # 2. Dla każdego słowa kluczowego znajdź wzorce
+    all_patterns = []
+    for keyword in keywords:
+        # Semantic search po wzorcach
+        similar = find_similar_components(conn, keyword, department, limit=3)
+        all_patterns.extend(similar)
+    
+    # 3. Deduplikuj wzorce
+    seen = set()
+    unique_patterns = []
+    for p in all_patterns:
+        key = canonicalize_name(p.get('name', ''))
+        if key not in seen:
+            seen.add(key)
+            unique_patterns.append(p)
+    
+    logger.info(f"🧠 Found {len(unique_patterns)} unique patterns from DB")
+    
+    # 4. Znajdź podobne projekty
+    similar_projects = find_similar_projects_semantic(conn, description, department, limit=3)
+    result["similar_projects"] = similar_projects
+    
+    # 5. Zbuduj kontekst dla AI
+    context = "═══════════════════════════════════════════════════════════\n"
+    context += "KOMPONENTY ZNALEZIONE W BAZIE (użyj ich w dekompozycji!):\n"
+    context += "═══════════════════════════════════════════════════════════\n\n"
+    
+    for p in unique_patterns[:15]:
+        context += f"- **{p['name']}**: "
+        context += f"Layout {p.get('avg_hours_3d_layout', 0):.1f}h, "
+        context += f"Detail {p.get('avg_hours_3d_detail', 0):.1f}h, "
+        context += f"Doc {p.get('avg_hours_2d', 0):.1f}h "
+        context += f"(confidence: {p.get('confidence', 0):.2f}, n={p.get('occurrences', 0)})\n"
+        
+        # 6. Znajdź typowe zestawy (bundles) dla każdego wzorca
+        try:
+            bundle_adds = propose_bundles_for_component(
+                conn, p['name'], department, 
+                conservativeness=1.0, top_k=3, min_occ=2
+            )
+            if bundle_adds:
+                bundle_names = [a['name'] for a in bundle_adds[:3]]
+                context += f"  └─ Typowo występuje z: {', '.join(bundle_names)}\n"
+        except Exception as e:
+            logger.warning(f"Bundle lookup failed for '{p['name']}': {e}")
+    
+    # 7. Dodaj podobne projekty do kontekstu
+    if similar_projects:
+        context += "\n═══════════════════════════════════════════════════════════\n"
+        context += "PODOBNE PROJEKTY W BAZIE:\n"
+        context += "═══════════════════════════════════════════════════════════\n\n"
+        
+        for proj in similar_projects:
+            context += f"- **{proj['name']}** ({proj['client'] or 'N/A'}): "
+            context += f"{proj['estimated_hours']:.1f}h "
+            context += f"(similarity: {proj.get('similarity', 0)*100:.0f}%)\n"
+    
+    result["context_from_db"] = context
+    result["suggested_components"] = unique_patterns
+    
+    return result
 def build_analysis_prompt(description: str, components: list, 
                           learned_patterns: list, pdf_text: str, 
                           department: str, conn=None) -> str:
