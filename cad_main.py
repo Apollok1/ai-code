@@ -1905,18 +1905,165 @@ def parse_brief_response(resp_text: str) -> dict:
             "checklist": [],
             "open_questions": []
         }
+def extract_keywords(text: str) -> list:
+    """
+    Wyciąga kluczowe słowa techniczne z opisu.
+    Filtruje stopwords i zostawia tylko rzeczowniki techniczne.
+    """
+    stopwords = {'i', 'a', 'z', 'do', 'w', 'na', 'dla', 'o', 'po', 'ze', 'od', 
+                 'the', 'and', 'or', 'of', 'to', 'in', 'on', 'at', 'from', 
+                 'jest', 'są', 'będzie', 'ma', 'będą', 'można', 'tego', 'tej',
+                 'tym', 'ten', 'ta', 'to', 'jak', 'się', 'już', 'tylko'}
+    
+    # Tokenizacja
+    words = re.findall(r'\b\w+\b', text.lower())
+    
+    # Filtruj
+    keywords = [w for w in words if len(w) > 3 and w not in stopwords]
+    
+    # Usuń duplikaty zachowując kolejność
+    seen = set()
+    unique = []
+    for k in keywords:
+        if k not in seen:
+            seen.add(k)
+            unique.append(k)
+    
+    return unique[:10]  # Max 10 słów kluczowych
+def intelligent_decomposition(description: str, department: str, conn) -> dict:
+    """
+    Inteligentna dekompozycja opisu na komponenty używając:
+    1. Wzorców z bazy (semantic search)
+    2. Podobnych projektów (semantic search)
+    3. Typowych zestawów komponentów (bundles)
+    
+    Zwraca: {
+        "suggested_components": [...],
+        "context_from_db": "...",
+        "similar_projects": [...]
+    }
+    """
+    result = {
+        "suggested_components": [],
+        "context_from_db": "",
+        "similar_projects": []
+    }
+    
+    # 1. Wyciągnij kluczowe terminy z opisu
+    keywords = extract_keywords(description)
+    logger.info(f"🔍 Extracted keywords: {keywords}")
+    
+    # ═══════════════════════════════════════════════════════════
+    # 2. Dla każdego słowa kluczowego znajdź wzorce
+    # ═══════════════════════════════════════════════════════════
+    all_patterns = []
+    for keyword in keywords:
+        # Semantic search po wzorcach (find_similar_components już ma własny cursor)
+        similar = find_similar_components(conn, keyword, department, limit=3)
+        all_patterns.extend(similar)
+    
+    # ═══════════════════════════════════════════════════════════
+    # 3. Deduplikuj wzorce
+    # ═══════════════════════════════════════════════════════════
+    seen = set()
+    unique_patterns = []
+    for p in all_patterns:
+        key = canonicalize_name(p.get('name', ''))
+        if key not in seen:
+            seen.add(key)
+            unique_patterns.append(p)
+    
+    logger.info(f"🧠 Found {len(unique_patterns)} unique patterns from DB")
+    
+    # ═══════════════════════════════════════════════════════════
+    # 4. Znajdź podobne projekty
+    # ═══════════════════════════════════════════════════════════
+    similar_projects = find_similar_projects_semantic(conn, description, department, limit=3)
+    result["similar_projects"] = similar_projects
+    
+    # ═══════════════════════════════════════════════════════════
+    # 5. Zbuduj kontekst dla AI
+    # ═══════════════════════════════════════════════════════════
+    context = "═══════════════════════════════════════════════════════════\n"
+    context += "KOMPONENTY ZNALEZIONE W BAZIE (użyj ich w dekompozycji!):\n"
+    context += "═══════════════════════════════════════════════════════════\n\n"
+    
+    for p in unique_patterns[:15]:
+        context += f"- **{p['name']}**: "
+        context += f"Layout {p.get('avg_hours_3d_layout', 0):.1f}h, "
+        context += f"Detail {p.get('avg_hours_3d_detail', 0):.1f}h, "
+        context += f"Doc {p.get('avg_hours_2d', 0):.1f}h "
+        context += f"(confidence: {p.get('confidence', 0):.2f}, n={p.get('occurrences', 0)})\n"
+        
+        # ═══════════════════════════════════════════════════════════
+        # 6. Znajdź typowe zestawy (bundles) dla każdego wzorca
+        # ═══════════════════════════════════════════════════════════
+        try:
+            bundle_adds = propose_bundles_for_component(
+                conn, p['name'], department, 
+                conservativeness=1.0, top_k=3, min_occ=2
+            )
+            if bundle_adds:
+                bundle_names = [a['name'] for a in bundle_adds[:3]]
+                context += f"  └─ Typowo występuje z: {', '.join(bundle_names)}\n"
+        except Exception as e:
+            logger.warning(f"Bundle lookup failed for '{p['name']}': {e}")
+    
+    # ═══════════════════════════════════════════════════════════
+    # 7. Dodaj podobne projekty do kontekstu
+    # ═══════════════════════════════════════════════════════════
+    if similar_projects:
+        context += "\n═══════════════════════════════════════════════════════════\n"
+        context += "PODOBNE PROJEKTY W BAZIE:\n"
+        context += "═══════════════════════════════════════════════════════════\n\n"
+        
+        for proj in similar_projects:
+            context += f"- **{proj['name']}** ({proj['client'] or 'N/A'}): "
+            context += f"{proj['estimated_hours']:.1f}h "
+            context += f"(similarity: {proj.get('similarity', 0)*100:.0f}%)\n"
+    
+    result["context_from_db"] = context
+    result["suggested_components"] = unique_patterns
+    
+    return result
+
+def extract_keywords(text: str) -> list:
+    """
+    Wyciąga kluczowe słowa techniczne z opisu.
+    Filtruje stopwords i zostawia tylko rzeczowniki techniczne.
+    """
+    # Podstawowa lista słów kluczowych (możesz rozbudować)
+    stopwords = {'i', 'a', 'z', 'do', 'w', 'na', 'dla', 'o', 'po', 'ze', 'od', 
+                 'the', 'and', 'or', 'of', 'to', 'in', 'on', 'at', 'from'}
+    
+    # Tokenizacja
+    words = re.findall(r'\b\w+\b', text.lower())
+    
+    # Filtruj
+    keywords = [w for w in words if len(w) > 3 and w not in stopwords]
+    
+    # Usuń duplikaty zachowując kolejność
+    seen = set()
+    unique = []
+    for k in keywords:
+        if k not in seen:
+            seen.add(k)
+            unique.append(k)
+    
+    return unique[:10]  # Max 10 słów kluczowych
 
 
 def build_analysis_prompt(description: str, components: list, 
                           learned_patterns: list, pdf_text: str, 
-                          department: str) -> str:
+                          department: str, conn=None) -> str:
     """
     Buduje prompt do analizy komponentów i estymacji godzin.
+    Jeśli conn podane - użyje inteligentnej dekompozycji z bazy.
     """
-
-       
+    
     # ═══════════════════════════════════════════════════════════
-    # DODAJ TUTAJ DEBUG:
+    # DEBUG
+    # ═══════════════════════════════════════════════════════════
     logger.info(f"🔍 build_analysis_prompt INPUTS:")
     logger.info(f"   📝 description: '{description[:100]}...' (len={len(description)})")
     logger.info(f"   📦 components: {len(components)} items")
@@ -1924,19 +2071,20 @@ def build_analysis_prompt(description: str, components: list,
     logger.info(f"   📄 pdf_text: {len(pdf_text)} chars")
     logger.info(f"   🏢 department: {department}")
     
-    if components:
-        logger.info(f"   📦 First component: {components[0].get('name', 'N/A')}")
-    if learned_patterns:
-        logger.info(f"   🧠 First pattern: {learned_patterns[0].get('name', 'N/A')}")
     # ═══════════════════════════════════════════════════════════
+    # INTELIGENTNA DEKOMPOZYCJA Z BAZY
+    # ═══════════════════════════════════════════════════════════
+    db_context = ""
+    if conn and description:
+        logger.info("🧠 Uruchamiam intelligent_decomposition...")
+        decomp = intelligent_decomposition(description, department, conn)
+        db_context = decomp["context_from_db"]
+        logger.info(f"✅ Znaleziono {len(decomp['suggested_components'])} sugerowanych komponentów")
+    
     # Kontekst branżowy
-                              
     context = DEPARTMENT_CONTEXT.get(department, "")
     
-    # Przykłady komponentów z Excela/JSON (max 30)
-    # ═══════════════════════════════════════════════════════════
-    # LEPSZY FORMAT PRZYKŁADÓW
-    # ═══════════════════════════════════════════════════════════
+    # Przykładowe komponenty z Excela/JSON (jeśli są)
     comp_examples = []
     for c in components[:30]:
         if not c.get('is_summary', False):
@@ -1947,14 +2095,11 @@ def build_analysis_prompt(description: str, components: list,
             comment = c.get('comment', '')
             subs = c.get('subcomponents', [])
             
-            # Podstawowa linia
             line = f"- **{name}**: Layout {layout:.1f}h, Detail {detail:.1f}h, 2D {doc:.1f}h"
             
-            # Dodaj komentarz
             if comment:
                 line += f"\n  └─ Uwagi: {comment[:100]}"
             
-            # Dodaj sub-komponenty
             if subs:
                 line += f"\n  └─ Zawiera: "
                 sub_names = [f"{s.get('quantity',1)}x {s.get('name','')}" for s in subs[:5]]
@@ -1964,18 +2109,11 @@ def build_analysis_prompt(description: str, components: list,
             
             comp_examples.append(line)
     
-    comp_str = "\n".join(comp_examples) if comp_examples else "❌ Brak przykładów komponentów z Excela/JSON - użyj swojej wiedzy!"
-    # ═══════════════════════════════════════════════════════════
+    comp_str = "\n".join(comp_examples) if comp_examples else "(Brak przykładów z Excela)"
     
-    # Wzorce z bazy (top 10)
-    patterns_str = ""
-    if learned_patterns:
-        patterns_str = "\n\nWZORCE Z BAZY DANYCH (dla referencji):\n"
-        for p in learned_patterns[:10]:
-            name = p.get('name', '')
-            avg_total = p.get('avg_hours_total', 0)
-            occurrences = p.get('occurrences', 0)
-            patterns_str += f"- {name}: ~{avg_total:.1f}h całkowicie (n={occurrences} próbek)\n"
+    # ═══════════════════════════════════════════════════════════
+    # PROMPT Z KONTEKSTEM Z BAZY
+    # ═══════════════════════════════════════════════════════════
     
     return f"""{MASTER_PROMPT}
 
@@ -1984,31 +2122,56 @@ KONTEKST PROJEKTU:
 DZIAŁ: {department}
 {context}
 
+{db_context}
+
 OPIS UŻYTKOWNIKA:
 {description[:2000] if description else "Brak szczegółowego opisu"}
 
-KOMPONENTY Z EXCELA/JSON (referencyjne):
+KOMPONENTY Z EXCELA/JSON (referencyjne - opcjonalne):
 {comp_str}
 
-{patterns_str}
-
-SPECYFIKACJE/PDF:
+SPECYFIKACJE/PDF (opcjonalne):
 {pdf_text[:2500] if pdf_text else "Brak dodatkowych specyfikacji"}
 
-ZADANIE:
-Przeanalizuj projekt i zwróć estymację w formacie JSON zgodnym z MASTER_PROMPT.
+═══════════════════════════════════════════════════════════
+ZADANIE - INTELIGENTNA DEKOMPOZYCJA:
+═══════════════════════════════════════════════════════════
 
-WAŻNE ZASADY:
-1. Zwróć WYŁĄCZNIE JSON (bez tekstu przed/po, bez markdown code fences)
-2. Każdy komponent MUSI mieć: name, layout_h, detail_h, doc_h
-3. Sums MUSI zawierać: layout, detail, doc, total
-4. Każde ryzyko w "risks" MUSI mieć: risk, impact, mitigation
-5. Jeśli są "adjustments" (sub-komponenty z komentarzy) - każdy "add" MUSI mieć:
-   name, qty, layout_add, detail_add, doc_add, reason
+1. Przeanalizuj OPIS UŻYTKOWNIKA
+2. Sprawdź KOMPONENTY ZNALEZIONE W BAZIE powyżej
+3. Jeśli opis wspomina o elementach podobnych do tych z bazy (np. "wspornik", "czujnik", "płyta"):
+   → MUSISZ dodać je jako osobne pozycje w "components"
+4. Jeśli opis wspomina o ilościach (np. "4x wspornik"):
+   → Uwzględnij to w dekompozycji (4 osobne komponenty lub 1 z qty)
+5. Użyj godzin z bazy jako punktu odniesienia, ale dostosuj do specyfiki projektu
+6. Jeśli nie masz pewności co do komponentu - lepiej dodać niż pominąć
 
-Przeanalizuj dokładnie i zwróć JSON.
+PRZYKŁAD DOBREJ DEKOMPOZYCJI:
+
+OPIS: "Stacja dociskania z 4 wspornikami, 2 czujnikami i płytą bazową"
+
+BAZA ZAWIERA:
+- wspornik: 2.5h
+- czujnik: 1.8h  
+- płyta: 5.0h
+
+PRAWIDŁOWA ODPOWIEDŹ:
+{{
+  "components": [
+    {{"name": "Rama główna stacji", "layout_h": 3.0, "detail_h": 8.0, "doc_h": 4.0}},
+    {{"name": "Wspornik montażowy", "layout_h": 0.6, "detail_h": 1.5, "doc_h": 0.4}},
+    {{"name": "Wspornik montażowy", "layout_h": 0.6, "detail_h": 1.5, "doc_h": 0.4}},
+    {{"name": "Wspornik montażowy", "layout_h": 0.6, "detail_h": 1.5, "doc_h": 0.4}},
+    {{"name": "Wspornik montażowy", "layout_h": 0.6, "detail_h": 1.5, "doc_h": 0.4}},
+    {{"name": "Czujnik pozycji", "layout_h": 0.4, "detail_h": 1.0, "doc_h": 0.4}},
+    {{"name": "Czujnik pozycji", "layout_h": 0.4, "detail_h": 1.0, "doc_h": 0.4}},
+    {{"name": "Płyta bazowa", "layout_h": 1.2, "detail_h": 3.0, "doc_h": 0.8}}
+  ],
+  ...
+}}
+
+Przeanalizuj dokładnie i zwróć JSON z PEŁNĄ dekompozycją.
 """
-# === Strona: Nowy projekt (z JSON/paste i Vision llava/qwen2-vl) ===
 def render_new_project_page():
     st.header("🆕 Nowy Projekt")
 
@@ -2216,6 +2379,8 @@ def render_new_project_page():
                     learned_patterns,  # WAŻNE!
                     pdf_text,
                     department
+                    conn=conn  # ⬅️ DODAJ TO!
+
                 )
                 # ════════════════════════════════════════════════════════════
     
