@@ -2153,8 +2153,8 @@ def render_new_project_page():
                 ai_text = query_ollama(prompt, model=ai_model, images_b64=images_b64, format_json=True)
                                 # ════════════════════════════════════════════════════════════
                 # DODAJ TO (tymczasowo do debugowania):
-                 st.subheader("🔍 DEBUG: Surowa odpowiedź AI")
-                 st.code(ai_text, language="json")
+                st.subheader("🔍 DEBUG: Surowa odpowiedź AI")
+                st.code(ai_text, language="json")
                 # ════════════════════════════════════════════════════════════
                 
                 logger.info(f"📥 Otrzymano odpowiedź AI, długość: {len(ai_text)} znaków")
