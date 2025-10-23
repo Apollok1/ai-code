@@ -2487,6 +2487,311 @@ Zwróć TYLKO JSON, bez tekstu.
         logger.error(f"❌ Nie udało się wygenerować pytań: {e}", exc_info=True)
         return []
 
+# ═══════════════════════════════════════════════════════════
+# SPRINT 3: Interaktywna lista komponentów
+# ═══════════════════════════════════════════════════════════
+
+def render_interactive_component_list(components: list, session_key: str = "components") -> list:
+    """
+    Renderuje interaktywną listę komponentów z możliwością:
+    - Edycji inline (nazwa, godziny)
+    - Usuwania
+    - Dodawania nowych
+    - Duplikowania
+    - Sortowania
+
+    Args:
+        components: Lista komponentów
+        session_key: Klucz w session_state
+
+    Returns:
+        Zmodyfikowana lista komponentów
+    """
+
+    # Inicjalizacja session state dla komponentów
+    if session_key not in st.session_state:
+        st.session_state[session_key] = components.copy()
+
+    working_components = st.session_state[session_key]
+
+    # Akcje globalne
+    col_act1, col_act2, col_act3, col_act4 = st.columns(4)
+
+    with col_act1:
+        if st.button("➕ Dodaj komponent", key=f"{session_key}_add_new"):
+            new_comp = {
+                "name": "Nowy komponent",
+                "hours_3d_layout": 1.0,
+                "hours_3d_detail": 3.0,
+                "hours_2d": 1.5,
+                "hours": 5.5,
+                "is_summary": False,
+                "confidence": 0.5,
+                "confidence_reason": "Ręcznie dodany",
+                "manually_added": True
+            }
+            working_components.append(new_comp)
+            st.session_state[session_key] = working_components
+            st.rerun()
+
+    with col_act2:
+        if st.button("🔄 Reset do AI", key=f"{session_key}_reset"):
+            st.session_state[session_key] = components.copy()
+            st.rerun()
+
+    with col_act3:
+        sort_by = st.selectbox(
+            "Sortuj:",
+            options=["Kolejność AI", "Nazwa A-Z", "Godziny ↓", "Godziny ↑", "Confidence ↓"],
+            key=f"{session_key}_sort"
+        )
+
+    with col_act4:
+        show_mode = st.radio(
+            "Widok:",
+            options=["📋 Lista", "📊 Tabela"],
+            horizontal=True,
+            key=f"{session_key}_view_mode"
+        )
+
+    st.markdown("---")
+
+    # Sortowanie
+    if sort_by == "Nazwa A-Z":
+        working_components.sort(key=lambda x: x.get("name", "").lower())
+    elif sort_by == "Godziny ↓":
+        working_components.sort(key=lambda x: x.get("hours", 0), reverse=True)
+    elif sort_by == "Godziny ↑":
+        working_components.sort(key=lambda x: x.get("hours", 0))
+    elif sort_by == "Confidence ↓":
+        working_components.sort(key=lambda x: x.get("confidence", 0.5), reverse=True)
+
+    # Filtruj summary
+    non_summary = [c for c in working_components if not c.get("is_summary")]
+
+    # ═══════════════════════════════════════════════════════════
+    # WIDOK: LISTA (z inline editing)
+    # ═══════════════════════════════════════════════════════════
+    if "Lista" in show_mode:
+        for idx, comp in enumerate(non_summary):
+            with st.container():
+                col_expand, col_name, col_hours, col_conf, col_actions = st.columns([0.3, 3, 1.5, 1, 1.5])
+
+                # Expander toggle
+                with col_expand:
+                    expand_key = f"{session_key}_expand_{idx}"
+                    if expand_key not in st.session_state:
+                        st.session_state[expand_key] = False
+
+                    if st.button("▼" if st.session_state[expand_key] else "▶", key=f"{session_key}_toggle_{idx}", use_container_width=True):
+                        st.session_state[expand_key] = not st.session_state[expand_key]
+                        st.rerun()
+
+                # Nazwa
+                with col_name:
+                    st.markdown(f"**{comp.get('name', 'N/A')}**")
+                    if comp.get("manually_added"):
+                        st.caption("✏️ Ręcznie dodany")
+
+                # Total hours
+                with col_hours:
+                    st.metric("Total", f"{comp.get('hours', 0):.1f}h", label_visibility="collapsed")
+
+                # Confidence badge
+                with col_conf:
+                    conf = comp.get("confidence", 0.5)
+                    if conf > 0.7:
+                        st.markdown("🟢 HIGH")
+                    elif conf > 0.4:
+                        st.markdown("🟡 MED")
+                    else:
+                        st.markdown("🔴 LOW")
+
+                # Quick actions
+                with col_actions:
+                    col_dup, col_del = st.columns(2)
+
+                    with col_dup:
+                        if st.button("📋", key=f"{session_key}_dup_{idx}", help="Duplikuj"):
+                            duplicated = comp.copy()
+                            duplicated["name"] = f"{comp.get('name', '')} (kopia)"
+                            working_components.insert(idx + 1, duplicated)
+                            st.session_state[session_key] = working_components
+                            st.rerun()
+
+                    with col_del:
+                        if st.button("🗑️", key=f"{session_key}_del_{idx}", help="Usuń"):
+                            working_components.remove(comp)
+                            st.session_state[session_key] = working_components
+                            st.rerun()
+
+                # Expanded view (edycja)
+                if st.session_state.get(f"{session_key}_expand_{idx}", False):
+                    with st.container():
+                        st.markdown("---")
+
+                        col_edit1, col_edit2 = st.columns([2, 1])
+
+                        with col_edit1:
+                            new_name = st.text_input(
+                                "Nazwa:",
+                                value=comp.get("name", ""),
+                                key=f"{session_key}_name_{idx}"
+                            )
+
+                            col_h1, col_h2, col_h3 = st.columns(3)
+
+                            with col_h1:
+                                new_layout = st.number_input(
+                                    "Layout (3D):",
+                                    min_value=0.0,
+                                    value=float(comp.get("hours_3d_layout", 0)),
+                                    step=0.5,
+                                    key=f"{session_key}_layout_{idx}"
+                                )
+
+                            with col_h2:
+                                new_detail = st.number_input(
+                                    "Detail (3D):",
+                                    min_value=0.0,
+                                    value=float(comp.get("hours_3d_detail", 0)),
+                                    step=0.5,
+                                    key=f"{session_key}_detail_{idx}"
+                                )
+
+                            with col_h3:
+                                new_2d = st.number_input(
+                                    "2D (Doc):",
+                                    min_value=0.0,
+                                    value=float(comp.get("hours_2d", 0)),
+                                    step=0.5,
+                                    key=f"{session_key}_2d_{idx}"
+                                )
+
+                        with col_edit2:
+                            new_conf = st.slider(
+                                "Confidence:",
+                                min_value=0.0,
+                                max_value=1.0,
+                                value=float(comp.get("confidence", 0.5)),
+                                step=0.05,
+                                key=f"{session_key}_conf_{idx}"
+                            )
+
+                            new_conf_reason = st.text_area(
+                                "Powód confidence:",
+                                value=comp.get("confidence_reason", ""),
+                                height=80,
+                                key=f"{session_key}_conf_reason_{idx}"
+                            )
+
+                        col_save, col_cancel = st.columns(2)
+
+                        with col_save:
+                            if st.button("💾 Zapisz zmiany", key=f"{session_key}_save_{idx}", type="primary", use_container_width=True):
+                                comp["name"] = new_name
+                                comp["hours_3d_layout"] = new_layout
+                                comp["hours_3d_detail"] = new_detail
+                                comp["hours_2d"] = new_2d
+                                comp["hours"] = new_layout + new_detail + new_2d
+                                comp["confidence"] = new_conf
+                                comp["confidence_reason"] = new_conf_reason
+                                comp["manually_edited"] = True
+
+                                st.session_state[session_key] = working_components
+                                st.session_state[f"{session_key}_expand_{idx}"] = False
+                                st.success("✅ Zapisano zmiany")
+                                st.rerun()
+
+                        with col_cancel:
+                            if st.button("❌ Anuluj", key=f"{session_key}_cancel_{idx}", use_container_width=True):
+                                st.session_state[f"{session_key}_expand_{idx}"] = False
+                                st.rerun()
+
+                st.markdown("---")
+
+    # ═══════════════════════════════════════════════════════════
+    # WIDOK: TABELA (edycja w data_editor)
+    # ═══════════════════════════════════════════════════════════
+    else:
+        # Przygotuj dane dla tabeli
+        table_data = []
+        for comp in non_summary:
+            table_data.append({
+                "Nazwa": comp.get("name", ""),
+                "Layout": comp.get("hours_3d_layout", 0),
+                "Detail": comp.get("hours_3d_detail", 0),
+                "2D": comp.get("hours_2d", 0),
+                "Total": comp.get("hours", 0),
+                "Confidence": comp.get("confidence", 0.5),
+                "Powód": comp.get("confidence_reason", "")
+            })
+
+        df = pd.DataFrame(table_data)
+
+        # Edytowalny data editor
+        edited_df = st.data_editor(
+            df,
+            use_container_width=True,
+            num_rows="dynamic",
+            column_config={
+                "Nazwa": st.column_config.TextColumn("Nazwa", width="large"),
+                "Layout": st.column_config.NumberColumn("Layout", format="%.1f", min_value=0.0, step=0.5),
+                "Detail": st.column_config.NumberColumn("Detail", format="%.1f", min_value=0.0, step=0.5),
+                "2D": st.column_config.NumberColumn("2D", format="%.1f", min_value=0.0, step=0.5),
+                "Total": st.column_config.NumberColumn("Total", format="%.1f", disabled=True),
+                "Confidence": st.column_config.NumberColumn("Conf", format="%.2f", min_value=0.0, max_value=1.0, step=0.05),
+                "Powód": st.column_config.TextColumn("Powód confidence", width="medium")
+            },
+            key=f"{session_key}_table"
+        )
+
+        # Synchronizuj zmiany z tabeli do working_components
+        if not edited_df.equals(df):
+            for i, row in edited_df.iterrows():
+                if i < len(non_summary):
+                    non_summary[i]["name"] = row["Nazwa"]
+                    non_summary[i]["hours_3d_layout"] = float(row["Layout"])
+                    non_summary[i]["hours_3d_detail"] = float(row["Detail"])
+                    non_summary[i]["hours_2d"] = float(row["2D"])
+                    non_summary[i]["hours"] = float(row["Layout"]) + float(row["Detail"]) + float(row["2D"])
+                    non_summary[i]["confidence"] = float(row["Confidence"])
+                    non_summary[i]["confidence_reason"] = row["Powód"]
+                    non_summary[i]["manually_edited"] = True
+
+            st.session_state[session_key] = working_components
+
+    # ═══════════════════════════════════════════════════════════
+    # Podsumowanie po edycji
+    # ═══════════════════════════════════════════════════════════
+    st.markdown("---")
+
+    total_layout_new = sum(c.get("hours_3d_layout", 0) for c in non_summary)
+    total_detail_new = sum(c.get("hours_3d_detail", 0) for c in non_summary)
+    total_2d_new = sum(c.get("hours_2d", 0) for c in non_summary)
+    total_hours_new = sum(c.get("hours", 0) for c in non_summary)
+
+    # Pobierz hourly rate z sidebar (domyślnie 150)
+    hourly_rate = st.session_state.get("hourly_rate", 150)
+
+    col_sum1, col_sum2, col_sum3, col_sum4 = st.columns(4)
+    col_sum1.metric("📐 Layout", f"{total_layout_new:.1f}h")
+    col_sum2.metric("🔧 Detail", f"{total_detail_new:.1f}h")
+    col_sum3.metric("📄 2D", f"{total_2d_new:.1f}h")
+    col_sum4.metric("💰 TOTAL", f"{total_hours_new:.1f}h", delta=f"{int(total_hours_new * hourly_rate)} PLN")
+
+    # Informacja o zmianach
+    edited_count = len([c for c in non_summary if c.get("manually_edited") or c.get("manually_added")])
+    if edited_count > 0:
+        st.info(f"ℹ️ {edited_count} komponentów zostało zmienionych ręcznie")
+
+    return working_components
+
+
+# ═══════════════════════════════════════════════════════════
+# Koniec Sprint 3: Interaktywna lista
+# ═══════════════════════════════════════════════════════════
+
 def render_new_project_page():
     st.header("🆕 Nowy Projekt")
 
@@ -2943,64 +3248,44 @@ def render_new_project_page():
         col2.metric("Detail", f"{detail_h:.1f}h")
         col3.metric("2D", f"{doc_h:.1f}h")
         hourly_rate = st.sidebar.number_input("Stawka PLN/h", min_value=1, max_value=1000, value=150, step=10)
+        # Zapisz hourly_rate do session state dla innych funkcji
+        st.session_state["hourly_rate"] = hourly_rate
         col4.metric("TOTAL", f"{estimated_hours:.1f}h", delta=f"{(estimated_hours * hourly_rate):.0f} PLN")
         col5.metric(f"{conf_color} Confidence", f"{overall_conf*100:.0f}%", delta=f"{conf_level} ({conf_accuracy})")  # ⬅️ SPRINT 2
 
         # ═══════════════════════════════════════════════════════════
-        # SPRINT 2: Podsumowanie confidence per komponent
+        # SPRINT 3: Interaktywna lista komponentów (zastępuje SPRINT 2 expander)
         # ═══════════════════════════════════════════════════════════
         st.markdown("---")
-        st.subheader("📊 Rozkład pewności komponentów")
+        st.subheader(f"🔍 Komponenty z dekompozycji ({len(analysis.get('components',[]))} pozycji)")
 
-        components = analysis.get("components", [])
-        non_summary = [c for c in components if not c.get("is_summary")]
+        # Renderuj interaktywną listę
+        updated_components = render_interactive_component_list(
+            analysis.get("components", []),
+            session_key="analyzed_components"
+        )
 
+        # Aktualizuj analysis z nowymi komponentami
+        analysis["components"] = updated_components
+
+        # Przelicz sumy (mogły się zmienić po edycji)
+        non_summary = [c for c in updated_components if not c.get("is_summary")]
+        analysis["total_layout"] = sum(c.get("hours_3d_layout", 0) for c in non_summary)
+        analysis["total_detail"] = sum(c.get("hours_3d_detail", 0) for c in non_summary)
+        analysis["total_2d"] = sum(c.get("hours_2d", 0) for c in non_summary)
+        analysis["total_hours"] = sum(c.get("hours", 0) for c in non_summary)
+
+        # Przelicz overall confidence (może się zmienić po edycji)
         if non_summary:
-            high_conf = len([c for c in non_summary if c.get("confidence", 0.5) > 0.7])
-            med_conf = len([c for c in non_summary if 0.4 <= c.get("confidence", 0.5) <= 0.7])
-            low_conf = len([c for c in non_summary if c.get("confidence", 0.5) < 0.4])
+            total_h = sum(c.get("hours", 0) for c in non_summary)
+            if total_h > 0:
+                weighted_conf = sum(c.get("confidence", 0.5) * c.get("hours", 0) for c in non_summary)
+                analysis["overall_confidence"] = weighted_conf / total_h
+            else:
+                analysis["overall_confidence"] = sum(c.get("confidence", 0.5) for c in non_summary) / len(non_summary)
 
-            col_c1, col_c2, col_c3, col_c4 = st.columns(4)
-            col_c1.metric("🟢 High Confidence", f"{high_conf} ({high_conf/len(non_summary)*100:.0f}%)")
-            col_c2.metric("🟡 Medium Confidence", f"{med_conf} ({med_conf/len(non_summary)*100:.0f}%)")
-            col_c3.metric("🔴 Low Confidence", f"{low_conf} ({low_conf/len(non_summary)*100:.0f}%)")
-            col_c4.metric("📊 Avg Confidence", f"{overall_conf*100:.0f}%")
-
-            if low_conf > len(non_summary) * 0.3:
-                st.warning(f"⚠️ {low_conf} komponentów ma niską pewność - rozważ doprecyzowanie opisu lub odpowiedź na pytania doprecyzowujące")
-
-            # Wyświetl komponenty z confidence badges
-            with st.expander("📋 Szczegóły komponentów z confidence", expanded=False):
-                for idx, comp in enumerate(non_summary):
-                    comp_name = comp.get("name", "N/A")
-                    comp_hours = comp.get("hours", 0.0)
-
-                    # Confidence badge
-                    comp_conf = comp.get("confidence", 0.5)
-                    if comp_conf > 0.7:
-                        conf_badge = "🟢"
-                        conf_text = f"HIGH ({comp_conf*100:.0f}%)"
-                    elif comp_conf > 0.4:
-                        conf_badge = "🟡"
-                        conf_text = f"MEDIUM ({comp_conf*100:.0f}%)"
-                    else:
-                        conf_badge = "🔴"
-                        conf_text = f"LOW ({comp_conf*100:.0f}%)"
-
-                    conf_reason = comp.get("confidence_reason", "")
-
-                    col_comp, col_conf = st.columns([3, 1])
-                    with col_comp:
-                        st.markdown(f"**{idx+1}. {comp_name}** — {comp_hours:.1f}h")
-                    with col_conf:
-                        st.markdown(f"{conf_badge} {conf_text}")
-
-                    if conf_reason:
-                        st.caption(f"💡 {conf_reason}")
-
-                    st.markdown("---")
-
-        st.markdown("---")
+        # Zaktualizuj session state
+        st.session_state["ai_analysis"] = analysis
         # ═══════════════════════════════════════════════════════════
 
         # Proponowane dodatki (AI)
@@ -3184,7 +3469,28 @@ def render_new_project_page():
                     st.error(e)
             else:
                 try:
-                    components_to_save = [c for c in combined_components if not c.get('is_summary', False)]
+                    # ═══════════════════════════════════════════════════════════
+                    # SPRINT 3: Zachowaj informacje o edycji
+                    # ═══════════════════════════════════════════════════════════
+                    # Przygotuj komponenty do zapisu (z flagami edycji)
+                    components_to_save = []
+                    for comp in combined_components:
+                        if comp.get("is_summary"):
+                            continue
+
+                        comp_to_save = {
+                            "name": comp.get("name", ""),
+                            "hours_3d_layout": comp.get("hours_3d_layout", 0),
+                            "hours_3d_detail": comp.get("hours_3d_detail", 0),
+                            "hours_2d": comp.get("hours_2d", 0),
+                            "hours": comp.get("hours", 0),
+                            "confidence": comp.get("confidence", 0.5),
+                            "confidence_reason": comp.get("confidence_reason", ""),
+                            "manually_edited": comp.get("manually_edited", False),  # ⬅️ SPRINT 3
+                            "manually_added": comp.get("manually_added", False)     # ⬅️ SPRINT 3
+                        }
+                        components_to_save.append(comp_to_save)
+                    # ═══════════════════════════════════════════════════════════
                     with get_db_connection() as conn, conn.cursor() as cur:
                         cur.execute("SELECT id FROM projects WHERE name = %s AND department = %s",
                                     (name, department))
@@ -4062,6 +4368,42 @@ def render_admin_page():
 # ════════════════════════════════════════════════════════════
 def main():
     st.title("🚀 CAD Estimator Pro")
+
+    # ═══════════════════════════════════════════════════════════
+    # SPRINT 3: Custom CSS
+    # ═══════════════════════════════════════════════════════════
+    st.markdown("""
+    <style>
+    /* Kompaktowe kontenery dla komponentów */
+    .stContainer > div {
+        padding: 0.5rem 0;
+    }
+
+    /* Lepsze spacing dla metric */
+    [data-testid="stMetricValue"] {
+        font-size: 1.2rem;
+    }
+
+    /* Highlight dla edytowanych komponentów */
+    .edited-component {
+        background-color: rgba(255, 193, 7, 0.1);
+        border-left: 3px solid #ffc107;
+        padding-left: 0.5rem;
+    }
+
+    /* Compact buttons */
+    .stButton > button {
+        padding: 0.25rem 0.5rem;
+        font-size: 0.9rem;
+    }
+
+    /* Expander spacing */
+    .streamlit-expanderHeader {
+        font-size: 1rem;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    # ═══════════════════════════════════════════════════════════
 
     if not init_db():
         st.stop()
