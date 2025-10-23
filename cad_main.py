@@ -1528,11 +1528,9 @@ def update_pattern_smart(cur, name, dept, layout_h, detail_h, doc_h, source='act
             logger.debug(f"   ✅ INSERTED: '{name[:40]}' total: {total_h:.2f}h")
         
         return True
-        
+
     except Exception as e:
-        logger.error(f"❌ update_pattern_smart ERROR for '{name[:40]}': {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+        logger.error(f"❌ update_pattern_smart ERROR for '{name[:40]}': {e}", exc_info=True)
         return False
 
 
@@ -1603,17 +1601,9 @@ def learn_from_historical_components(cur, dept: str, components: list, distribut
     for comp in components or []:
         try:
             name = comp.get('name', '')
-                    # ════════════════════════════════════════════════════════
-            # DODAJ TO TUTAJ (zaraz po pobraniu name):
-            # ════════════════════════════════════════════════════════
-            # Pomiń placeholder names
-            if name in ['[part]', '[assembly]', '', ' ']:
-                skipped_no_name += 1
-                continue
-            # ════════════════════════════════════════════════════════
-            
-          
-            if not name:
+
+            # Pomiń placeholder names i puste nazwy
+            if not name or name in ['[part]', '[assembly]', ' ']:
                 skipped_no_name += 1
                 continue
             is_summary = bool(comp.get('is_summary'))
@@ -2235,121 +2225,6 @@ def extract_keywords(text: str) -> list:
     
     return unique[:10]  # Max 10 słów kluczowych
 
-# ═══════════════════════════════════════════════════════════
-# INTELIGENTNA DEKOMPOZYCJA Z BAZY
-# ═══════════════════════════════════════════════════════════
-
-def extract_keywords(text: str) -> list:
-    """
-    Wyciąga kluczowe słowa techniczne z opisu.
-    Filtruje stopwords i zostawia tylko rzeczowniki techniczne.
-    """
-    stopwords = {'i', 'a', 'z', 'do', 'w', 'na', 'dla', 'o', 'po', 'ze', 'od', 
-                 'the', 'and', 'or', 'of', 'to', 'in', 'on', 'at', 'from', 
-                 'jest', 'są', 'będzie', 'ma', 'będą', 'można', 'tego', 'tej',
-                 'tym', 'ten', 'ta', 'to', 'jak', 'się', 'już', 'tylko'}
-    
-    # Tokenizacja
-    words = re.findall(r'\b\w+\b', text.lower())
-    
-    # Filtruj
-    keywords = [w for w in words if len(w) > 3 and w not in stopwords]
-    
-    # Usuń duplikaty zachowując kolejność
-    seen = set()
-    unique = []
-    for k in keywords:
-        if k not in seen:
-            seen.add(k)
-            unique.append(k)
-    
-    return unique[:10]  # Max 10 słów kluczowych
-
-
-def intelligent_decomposition(description: str, department: str, conn) -> dict:
-    """
-    Inteligentna dekompozycja opisu na komponenty używając:
-    1. Wzorców z bazy (semantic search)
-    2. Podobnych projektów (semantic search)
-    3. Typowych zestawów komponentów (bundles)
-    
-    Zwraca: {
-        "suggested_components": [...],
-        "context_from_db": "...",
-        "similar_projects": [...]
-    }
-    """
-    result = {
-        "suggested_components": [],
-        "context_from_db": "",
-        "similar_projects": []
-    }
-    
-    # 1. Wyciągnij kluczowe terminy z opisu
-    keywords = extract_keywords(description)
-    logger.info(f"🔍 Extracted keywords: {keywords}")
-    
-    # 2. Dla każdego słowa kluczowego znajdź wzorce
-    all_patterns = []
-    for keyword in keywords:
-        # Semantic search po wzorcach
-        similar = find_similar_components(conn, keyword, department, limit=3)
-        all_patterns.extend(similar)
-    
-    # 3. Deduplikuj wzorce
-    seen = set()
-    unique_patterns = []
-    for p in all_patterns:
-        key = canonicalize_name(p.get('name', ''))
-        if key not in seen:
-            seen.add(key)
-            unique_patterns.append(p)
-    
-    logger.info(f"🧠 Found {len(unique_patterns)} unique patterns from DB")
-    
-    # 4. Znajdź podobne projekty
-    similar_projects = find_similar_projects_semantic(conn, description, department, limit=3)
-    result["similar_projects"] = similar_projects
-    
-    # 5. Zbuduj kontekst dla AI
-    context = "═══════════════════════════════════════════════════════════\n"
-    context += "KOMPONENTY ZNALEZIONE W BAZIE (użyj ich w dekompozycji!):\n"
-    context += "═══════════════════════════════════════════════════════════\n\n"
-    
-    for p in unique_patterns[:15]:
-        context += f"- **{p['name']}**: "
-        context += f"Layout {p.get('avg_hours_3d_layout', 0):.1f}h, "
-        context += f"Detail {p.get('avg_hours_3d_detail', 0):.1f}h, "
-        context += f"Doc {p.get('avg_hours_2d', 0):.1f}h "
-        context += f"(confidence: {p.get('confidence', 0):.2f}, n={p.get('occurrences', 0)})\n"
-        
-        # 6. Znajdź typowe zestawy (bundles) dla każdego wzorca
-        try:
-            bundle_adds = propose_bundles_for_component(
-                conn, p['name'], department, 
-                conservativeness=1.0, top_k=3, min_occ=2
-            )
-            if bundle_adds:
-                bundle_names = [a['name'] for a in bundle_adds[:3]]
-                context += f"  └─ Typowo występuje z: {', '.join(bundle_names)}\n"
-        except Exception as e:
-            logger.warning(f"Bundle lookup failed for '{p['name']}': {e}")
-    
-    # 7. Dodaj podobne projekty do kontekstu
-    if similar_projects:
-        context += "\n═══════════════════════════════════════════════════════════\n"
-        context += "PODOBNE PROJEKTY W BAZIE:\n"
-        context += "═══════════════════════════════════════════════════════════\n\n"
-        
-        for proj in similar_projects:
-            context += f"- **{proj['name']}** ({proj['client'] or 'N/A'}): "
-            context += f"{proj['estimated_hours']:.1f}h "
-            context += f"(similarity: {proj.get('similarity', 0)*100:.0f}%)\n"
-    
-    result["context_from_db"] = context
-    result["suggested_components"] = unique_patterns
-    
-    return result
 def build_analysis_prompt(description: str, components: list, 
                           learned_patterns: list, pdf_text: str, 
                           department: str, conn=None) -> str:
@@ -2675,7 +2550,7 @@ def render_new_project_page():
                     components_for_prompt,
                     learned_patterns,  # WAŻNE!
                     pdf_text,
-                    department
+                    department,
                     conn=conn  # ⬅️ DODAJ TO!
 
                 )
