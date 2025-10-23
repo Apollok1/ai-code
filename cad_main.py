@@ -230,7 +230,14 @@ Odpowiadaj ZAWSZE w języku polskim.
 
 {
   "components": [
-    {"name": "Nazwa DOKŁADNA", "layout_h": 12.5, "detail_h": 42.0, "doc_h": 28.0}
+    {
+      "name": "Nazwa DOKŁADNA",
+      "layout_h": 12.5,
+      "detail_h": 42.0,
+      "doc_h": 28.0,
+      "confidence": 0.85,
+      "confidence_reason": "8 podobnych projektów w bazie, kompletny opis z materiałem i normami"
+    }
   ],
   "sums": {"layout": 12.5, "detail": 42.0, "doc": 28.0, "total": 82.5},
   "assumptions": ["Założenie 1", "Założenie 2"],
@@ -374,12 +381,41 @@ ODPOWIEDŹ:
   ]
 }
 
-WAŻNE: 
+# ═══════════════════════════════════════════════════════════
+# SPRINT 2: CONFIDENCE SCORING
+# ═══════════════════════════════════════════════════════════
+
+CONFIDENCE SCORING:
+Dla każdego komponentu oblicz pewność estymacji (0.0-1.0):
+
+Wzór: confidence = base_score + modifiers
+
+base_score:
+- Wzorzec w bazie (>5 projektów): 0.6
+- Wzorzec w bazie (2-5 projektów): 0.4
+- Brak wzorca: 0.2
+
+modifiers:
+- Kompletny opis (materiał + wymiary + normy): +0.2
+- Podobny projekt w historii: +0.1
+- Brak informacji o materiale: -0.1
+- Brak norm/standardów: -0.1
+- Niestandardowy/unikalny: -0.2
+
+Przykłady:
+- Standardowa rama spawana z pełnym opisem: 0.8-0.9 (HIGH)
+- Rama bez materiału: 0.5-0.6 (MEDIUM)
+- Unikalny komponent bez wzorców: 0.2-0.3 (LOW)
+
+W "confidence_reason" wyjaśnij dlaczego taka pewność (1 zdanie).
+
+WAŻNE:
 - Zwróć WYŁĄCZNIE JSON bez tekstu
 - Każdy komponent z opisu = osobna pozycja
 - ZAWSZE generuj "missing_info" jeśli czegoś brakuje
 - ZAWSZE generuj min. 1 "suggestion"
 - Godziny MUSZĄ odpowiadać złożoności
+- ZAWSZE dodaj "confidence" i "confidence_reason" do każdego komponentu
 """
 
 # === HTTP Session z retry (stabilniejsze zapytania) ===
@@ -723,6 +759,8 @@ def parse_ai_response(text: str, components_from_excel=None):
             }
             item["hours"] = item["hours_3d_layout"] + item["hours_3d_detail"] + item["hours_2d"]
             item["is_summary"] = False
+            item["confidence"] = float(c.get("confidence", 0.5))  # ⬅️ SPRINT 2
+            item["confidence_reason"] = c.get("confidence_reason", "")  # ⬅️ SPRINT 2
             parsed_components.append(item)
 
         sums = data.get("sums", {})
@@ -759,7 +797,9 @@ def parse_ai_response(text: str, components_from_excel=None):
                     "hours_3d_detail": float(m.group(3).replace(',', '.')),
                     "hours_2d": float(m.group(4).replace(',', '.')),
                     "hours": sum(float(m.group(i).replace(',', '.')) for i in [2,3,4]),
-                    "is_summary": False
+                    "is_summary": False,
+                    "confidence": 0.3,  # ⬅️ SPRINT 2: niska pewność dla regex fallback
+                    "confidence_reason": "Fallback regex - AI nie zwrócił JSON"  # ⬅️ SPRINT 2
                 })
             except Exception:
                 pass
@@ -813,6 +853,26 @@ def parse_ai_response(text: str, components_from_excel=None):
                 "why": m.get("why", "")
             })
 
+    # ═══════════════════════════════════════════════════════════
+    # SPRINT 2: Oblicz overall confidence
+    # ═══════════════════════════════════════════════════════════
+    overall_confidence = 0.5
+    non_summary_components = [c for c in parsed_components if not c.get("is_summary")]
+
+    if non_summary_components:
+        # Średnia ważona confidence (większe komponenty = większa waga)
+        total_hours = sum(c.get("hours", 0) for c in non_summary_components)
+        if total_hours > 0:
+            weighted_sum = sum(
+                c.get("confidence", 0.5) * c.get("hours", 0)
+                for c in non_summary_components
+            )
+            overall_confidence = weighted_sum / total_hours
+        else:
+            # Jeśli brak godzin, zwykła średnia
+            overall_confidence = sum(c.get("confidence", 0.5) for c in non_summary_components) / len(non_summary_components)
+    # ═══════════════════════════════════════════════════════════
+
     return {
         "total_hours": max(0.0, total_layout + total_detail + total_2d),
         "total_layout": total_layout,
@@ -827,7 +887,8 @@ def parse_ai_response(text: str, components_from_excel=None):
         "risks_detailed": data.get("risks", []),
         "recommendations": data.get("recommendations", []),
         "ai_adjustments": data.get("ai_adjustments", []),
-        "suggestions": suggestions  # ⬅️ NOWE
+        "suggestions": suggestions,  # ⬅️ NOWE
+        "overall_confidence": overall_confidence  # ⬅️ SPRINT 2
     }
     
     
@@ -2868,12 +2929,79 @@ def render_new_project_page():
         doc_h = analysis.get("total_2d", 0.0)
         estimated_hours = max(0.0, layout_h + detail_h + doc_h)
 
-        col1, col2, col3, col4 = st.columns(4)
+        # ═══════════════════════════════════════════════════════════
+        # SPRINT 2: Dodaj overall confidence
+        # ═══════════════════════════════════════════════════════════
+        overall_conf = analysis.get("overall_confidence", 0.5)
+        conf_level = "HIGH" if overall_conf > 0.7 else ("MEDIUM" if overall_conf > 0.4 else "LOW")
+        conf_color = "🟢" if overall_conf > 0.7 else ("🟡" if overall_conf > 0.4 else "🔴")
+        conf_accuracy = "±10%" if overall_conf > 0.7 else ("±20%" if overall_conf > 0.4 else "±40%")
+        # ═══════════════════════════════════════════════════════════
+
+        col1, col2, col3, col4, col5 = st.columns(5)  # ⬅️ SPRINT 2: 5 kolumn zamiast 4
         col1.metric("Layout", f"{layout_h:.1f}h")
         col2.metric("Detail", f"{detail_h:.1f}h")
         col3.metric("2D", f"{doc_h:.1f}h")
         hourly_rate = st.sidebar.number_input("Stawka PLN/h", min_value=1, max_value=1000, value=150, step=10)
         col4.metric("TOTAL", f"{estimated_hours:.1f}h", delta=f"{(estimated_hours * hourly_rate):.0f} PLN")
+        col5.metric(f"{conf_color} Confidence", f"{overall_conf*100:.0f}%", delta=f"{conf_level} ({conf_accuracy})")  # ⬅️ SPRINT 2
+
+        # ═══════════════════════════════════════════════════════════
+        # SPRINT 2: Podsumowanie confidence per komponent
+        # ═══════════════════════════════════════════════════════════
+        st.markdown("---")
+        st.subheader("📊 Rozkład pewności komponentów")
+
+        components = analysis.get("components", [])
+        non_summary = [c for c in components if not c.get("is_summary")]
+
+        if non_summary:
+            high_conf = len([c for c in non_summary if c.get("confidence", 0.5) > 0.7])
+            med_conf = len([c for c in non_summary if 0.4 <= c.get("confidence", 0.5) <= 0.7])
+            low_conf = len([c for c in non_summary if c.get("confidence", 0.5) < 0.4])
+
+            col_c1, col_c2, col_c3, col_c4 = st.columns(4)
+            col_c1.metric("🟢 High Confidence", f"{high_conf} ({high_conf/len(non_summary)*100:.0f}%)")
+            col_c2.metric("🟡 Medium Confidence", f"{med_conf} ({med_conf/len(non_summary)*100:.0f}%)")
+            col_c3.metric("🔴 Low Confidence", f"{low_conf} ({low_conf/len(non_summary)*100:.0f}%)")
+            col_c4.metric("📊 Avg Confidence", f"{overall_conf*100:.0f}%")
+
+            if low_conf > len(non_summary) * 0.3:
+                st.warning(f"⚠️ {low_conf} komponentów ma niską pewność - rozważ doprecyzowanie opisu lub odpowiedź na pytania doprecyzowujące")
+
+            # Wyświetl komponenty z confidence badges
+            with st.expander("📋 Szczegóły komponentów z confidence", expanded=False):
+                for idx, comp in enumerate(non_summary):
+                    comp_name = comp.get("name", "N/A")
+                    comp_hours = comp.get("hours", 0.0)
+
+                    # Confidence badge
+                    comp_conf = comp.get("confidence", 0.5)
+                    if comp_conf > 0.7:
+                        conf_badge = "🟢"
+                        conf_text = f"HIGH ({comp_conf*100:.0f}%)"
+                    elif comp_conf > 0.4:
+                        conf_badge = "🟡"
+                        conf_text = f"MEDIUM ({comp_conf*100:.0f}%)"
+                    else:
+                        conf_badge = "🔴"
+                        conf_text = f"LOW ({comp_conf*100:.0f}%)"
+
+                    conf_reason = comp.get("confidence_reason", "")
+
+                    col_comp, col_conf = st.columns([3, 1])
+                    with col_comp:
+                        st.markdown(f"**{idx+1}. {comp_name}** — {comp_hours:.1f}h")
+                    with col_conf:
+                        st.markdown(f"{conf_badge} {conf_text}")
+
+                    if conf_reason:
+                        st.caption(f"💡 {conf_reason}")
+
+                    st.markdown("---")
+
+        st.markdown("---")
+        # ═══════════════════════════════════════════════════════════
 
         # Proponowane dodatki (AI)
         st.subheader("💡 Proponowane dodatki (AI z komentarzy)")
