@@ -1,6 +1,6 @@
 # app.py — Document Converter Pro (Part 1/3)
 # Część 1/3: Importy, konfiguracja, offline guard, diagnostyka, helpery, OCR, Ollama utils, session_state
-#cos nowego
+
 import streamlit as st
 import io
 import base64
@@ -20,7 +20,6 @@ from urllib.parse import urlparse
 from datetime import datetime
 from PIL import Image
 import numpy as np
-import tempfile
 
 # Parsery/formaty
 import pdfplumber
@@ -125,8 +124,6 @@ IMAGE_MODE_MAP = {
     "Vision: opisz obraz": "vision_describe",
     "OCR + Vision opis": "ocr_plus_vision_desc",
 }
-
-import re
 
 def remap_speakers(text_with_speakers: str, speaker_map: dict) -> str:
     """
@@ -1564,12 +1561,6 @@ with st.sidebar:
             index=0,
             disabled=True
         )
-    IMAGE_MODE_MAP = {
-        "OCR": "ocr",
-        "Vision: przepisz tekst": "vision_transcribe",
-        "Vision: opisz obraz": "vision_describe",
-        "OCR + Vision opis": "ocr_plus_vision_desc",
-    }
     image_mode = IMAGE_MODE_MAP.get(image_mode_label, "ocr")
 
     # Zapis lokalny
