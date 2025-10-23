@@ -2344,6 +2344,88 @@ PRAWIDŁOWA ODPOWIEDŹ:
 
 Przeanalizuj dokładnie i zwróć JSON z PEŁNĄ dekompozycją.
 """
+
+# ═══════════════════════════════════════════════════════════
+# SPRINT 1: PYTANIA DOPRECYZOWUJĄCE
+# ═══════════════════════════════════════════════════════════
+
+def generate_clarifying_questions(description: str, department: str, pdf_text: str = "") -> list:
+    """
+    Generuje pytania doprecyzowujące na podstawie opisu projektu.
+    Używa AI do identyfikacji brakujących informacji.
+
+    Zwraca: [{"question": "...", "why": "..."}, ...]
+    """
+    if not description or len(description.strip()) < 50:
+        return []
+
+    prompt = f"""Jesteś senior konstruktorem CAD. Przeanalizuj poniższy opis projektu i wygeneruj 3-5 KLUCZOWYCH pytań, które pomogą w dokładniejszej estymacji czasu.
+
+DZIAŁ: {DEPARTMENTS.get(department, department)}
+
+OPIS PROJEKTU:
+{description[:1000]}
+
+PDF/SPECYFIKACJA:
+{pdf_text[:500] if pdf_text else "Brak"}
+
+ZASADY:
+- Pytaj TYLKO o rzeczy krytyczne dla estymacji (materiały, ilości, normy, procesy)
+- NIE pytaj o rzeczy oczywiste lub już opisane
+- Maksymalnie 5 pytań
+- Każde pytanie musi mieć uzasadnienie (dlaczego to ważne)
+
+Zwróć JSON:
+{{
+  "questions": [
+    {{
+      "question": "Krótkie pytanie?",
+      "why": "Dlaczego to ważne dla estymacji"
+    }}
+  ]
+}}
+
+PRZYKŁAD:
+Opis: "Rama spawana z wspornikami"
+
+ODPOWIEDŹ:
+{{
+  "questions": [
+    {{
+      "question": "Jaki materiał ramy? (S235JR, S355J2, Aluminium)",
+      "why": "Materiał wpływa na czas obróbki (+20% dla S355) i spawanie"
+    }},
+    {{
+      "question": "Ile wsporników?",
+      "why": "Bezpośrednio wpływa na czas realizacji (każdy ~2-3h)"
+    }},
+    {{
+      "question": "Jakie wymiary ramy? (dł x szer x wys w mm)",
+      "why": "Duże wymiary (>5m) zwiększają złożoność o 25%"
+    }}
+  ]
+}}
+
+Zwróć TYLKO JSON, bez tekstu.
+"""
+
+    try:
+        ai_model = st.session_state.get("selected_text_model", "qwen2.5:7b")
+        logger.info(f"🤔 Generuję pytania doprecyzowujące przez {ai_model}...")
+
+        response = query_ollama(prompt, model=ai_model, format_json=True)
+
+        # Parse JSON
+        data = safe_json_loads(response)
+        questions = data.get("questions", [])
+
+        logger.info(f"✅ Wygenerowano {len(questions)} pytań")
+        return questions[:5]  # Max 5 pytań
+
+    except Exception as e:
+        logger.error(f"❌ Nie udało się wygenerować pytań: {e}", exc_info=True)
+        return []
+
 def render_new_project_page():
     st.header("🆕 Nowy Projekt")
 
@@ -2361,7 +2443,14 @@ def render_new_project_page():
     with col1:
         st.text_input("Nazwa projektu*", key="project_name")
         st.text_input("Klient", key="client")
-        st.text_area("Opis", height=200, key="description")
+
+        # SPRINT 1: Monitoruj zmiany w opisie i resetuj pytania
+        current_desc = st.text_area("Opis", height=200, key="description")
+        if current_desc != st.session_state.get("_prev_description"):
+            st.session_state["_prev_description"] = current_desc
+            st.session_state["questions_answered"] = False
+            st.session_state["clarifying_answers"] = {}
+
     with col2:
         excel_file = st.file_uploader("Excel", type=['xlsx', 'xls'])
         image_files = st.file_uploader("Zdjęcia/Rysunki", type=['jpg', 'png'], accept_multiple_files=True)
@@ -2481,7 +2570,84 @@ def render_new_project_page():
     enable_bundles = st.checkbox("Włącz podpowiedzi z historii (bundles)", value=True,
                                  help="Podpowiada typowe sub‑komponenty dla podobnych pozycji na bazie importów historycznych")
 
+    # ═══════════════════════════════════════════════════════════
+    # SPRINT 1: UI dla pytań doprecyzowujących
+    # ═══════════════════════════════════════════════════════════
+    st.subheader("💡 Pytania doprecyzowujące")
 
+    # Sprawdź czy trzeba wygenerować pytania
+    if (st.session_state.get("description") and
+        len(st.session_state.get("description", "")) > 50 and
+        not st.session_state.get("questions_answered")):
+
+        # Zbierz PDF text dla kontekstu
+        pdf_text_for_questions = ""
+        if pdf_files:
+            try:
+                pdf_text_for_questions = "\n".join([extract_text_from_pdf(pf) for pf in pdf_files])
+            except Exception:
+                pass
+
+        if st.session_state.get("pasted_text"):
+            pdf_text_for_questions = (pdf_text_for_questions + "\n\n" + st.session_state.get("pasted_text", "")).strip()
+
+        # Generuj pytania (tylko raz)
+        if "clarifying_questions" not in st.session_state:
+            with st.spinner("🤔 Generuję pytania doprecyzowujące..."):
+                questions = generate_clarifying_questions(
+                    st.session_state.get("description", ""),
+                    department,
+                    pdf_text_for_questions
+                )
+                st.session_state["clarifying_questions"] = questions
+
+        questions = st.session_state.get("clarifying_questions", [])
+
+        if questions and len(questions) > 0:
+            st.info(f"🔍 Mam {len(questions)} pytań, które pomogą w dokładniejszej estymacji")
+
+            with st.form("clarifying_questions_form"):
+                st.markdown("### 📋 Pytania doprecyzowujące")
+                st.caption("Odpowiedzi pomogą AI lepiej oszacować czas. Możesz pominąć pytania.")
+
+                answers = {}
+                for i, q in enumerate(questions):
+                    st.markdown(f"**{i+1}. {q.get('question', '')}**")
+                    if q.get('why'):
+                        st.caption(f"💡 _{q['why']}_")
+
+                    answer = st.text_area(
+                        f"Odpowiedź {i+1}:",
+                        key=f"answer_{i}",
+                        placeholder="Zostaw puste jeśli nie wiesz lub nie dotyczy",
+                        height=80
+                    )
+                    answers[q.get('question', '')] = answer
+                    st.markdown("---")
+
+                col_q1, col_q2 = st.columns(2)
+                submit_questions = col_q1.form_submit_button("✅ Kontynuuj z odpowiedziami", type="primary")
+                skip_questions = col_q2.form_submit_button("⏭️ Pomiń pytania")
+
+                if submit_questions or skip_questions:
+                    st.session_state["questions_answered"] = True
+                    st.session_state["clarifying_answers"] = answers if submit_questions else {}
+                    # Usuń pytania z sesji aby nie wygenerowały się ponownie
+                    if "clarifying_questions" in st.session_state:
+                        del st.session_state["clarifying_questions"]
+                    st.rerun()
+
+            # Zatrzymaj dalsze przetwarzanie dopóki nie odpowie
+            st.warning("⏸️ Odpowiedz na pytania lub pomiń je, aby kontynuować analizę")
+            return
+        else:
+            # Brak pytań - automatycznie oznacz jako odpowiedziane
+            st.session_state["questions_answered"] = True
+    elif not st.session_state.get("description") or len(st.session_state.get("description", "")) <= 50:
+        st.info("💡 Dodaj opis projektu (min. 50 znaków), aby otrzymać pytania doprecyzowujące")
+    else:
+        if st.session_state.get("clarifying_answers"):
+            st.success(f"✅ Odpowiedzi uwzględnione ({len([a for a in st.session_state['clarifying_answers'].values() if a])} odpowiedzi)")
 
 
 
@@ -2541,12 +2707,24 @@ def render_new_project_page():
     
                 # Zbuduj komponenty dla promptu (okrojone do 30)
                 components_for_prompt = (components_from_excel or []) + components_from_json
-    
+
+                # ════════════════════════════════════════════════════════════
+                # SPRINT 1: Wzbogacenie opisu o odpowiedzi na pytania
+                # ════════════════════════════════════════════════════════════
+                enriched_description = st.session_state.get("description", "")
+                if st.session_state.get("clarifying_answers"):
+                    enriched_description += "\n\n--- DODATKOWE INFORMACJE ---\n"
+                    for q, a in st.session_state["clarifying_answers"].items():
+                        if a and a.strip():
+                            enriched_description += f"\n{q}\nOdpowiedź: {a}\n"
+                    st.info(f"✅ Wzbogacono opis o {len([a for a in st.session_state['clarifying_answers'].values() if a])} odpowiedzi")
+                # ════════════════════════════════════════════════════════════
+
                 # ════════════════════════════════════════════════════════════
                 # KRYTYCZNE: UŻYJ build_analysis_prompt, NIE build_brief_prompt!
                 # ════════════════════════════════════════════════════════════
                 prompt = build_analysis_prompt(  # ✅✅✅ TO JEST POPRAWNE!
-                    st.session_state.get("description", ""),
+                    enriched_description,  # ⬅️ SPRINT 1: używaj wzbogaconego opisu
                     components_for_prompt,
                     learned_patterns,  # WAŻNE!
                     pdf_text,
