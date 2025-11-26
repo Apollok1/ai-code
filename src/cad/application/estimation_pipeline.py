@@ -79,7 +79,11 @@ class EstimationPipeline:
         department: DepartmentCode,
         pdf_files: list[BinaryIO] | None = None,
         excel_file: BinaryIO | None = None,
-        use_multi_model: bool | None = None
+        use_multi_model: bool | None = None,
+        stage1_model: str | None = None,
+        stage2_model: str | None = None,
+        stage3_model: str | None = None,
+        stage4_model: str | None = None
     ) -> Estimate:
         """
         Generate estimate from project description.
@@ -90,6 +94,10 @@ class EstimationPipeline:
             pdf_files: Optional PDF specification files
             excel_file: Optional Excel component hints
             use_multi_model: If True, use multi-model pipeline; if None, use config default
+            stage1_model: Optional model override for Stage 1
+            stage2_model: Optional model override for Stage 2
+            stage3_model: Optional model override for Stage 3
+            stage4_model: Optional model override for Stage 4
 
         Returns:
             Estimate object
@@ -106,7 +114,10 @@ class EstimationPipeline:
         # Route to appropriate method
         if should_use_multi_model and self.multi_model is not None:
             logger.info(f"🚀 Starting MULTI-MODEL estimation for department {department.value}")
-            return self._estimate_multi_model(description, department, pdf_files, excel_file)
+            return self._estimate_multi_model(
+                description, department, pdf_files, excel_file,
+                stage1_model, stage2_model, stage3_model, stage4_model
+            )
         else:
             logger.info(f"🚀 Starting SINGLE-MODEL estimation for department {department.value}")
             return self._estimate_single_model(description, department, pdf_files, excel_file)
@@ -116,7 +127,11 @@ class EstimationPipeline:
         description: str,
         department: DepartmentCode,
         pdf_files: list[BinaryIO] | None,
-        excel_file: BinaryIO | None
+        excel_file: BinaryIO | None,
+        stage1_model: str | None = None,
+        stage2_model: str | None = None,
+        stage3_model: str | None = None,
+        stage4_model: str | None = None
     ) -> Estimate:
         """Execute multi-model pipeline estimation."""
         # Parse files
@@ -159,8 +174,15 @@ class EstimationPipeline:
             similar_projects=similar_projects
         )
 
-        # Execute pipeline
-        estimate = self.multi_model.execute_pipeline(context, enable_multi_model=True)
+        # Execute pipeline with model overrides
+        estimate = self.multi_model.execute_pipeline(
+            context,
+            enable_multi_model=True,
+            stage1_model=stage1_model,
+            stage2_model=stage2_model,
+            stage3_model=stage3_model,
+            stage4_model=stage4_model
+        )
 
         logger.info(f"✅ Multi-model estimation complete: {estimate.total_hours:.1f}h, {estimate.component_count} components")
         return estimate

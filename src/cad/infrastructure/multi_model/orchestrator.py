@@ -64,7 +64,11 @@ class MultiModelOrchestrator:
         self,
         context: StageContext,
         enable_multi_model: bool = True,
-        progress_callback: Callable[[PipelineProgress], None] | None = None
+        progress_callback: Callable[[PipelineProgress], None] | None = None,
+        stage1_model: str | None = None,
+        stage2_model: str | None = None,
+        stage3_model: str | None = None,
+        stage4_model: str | None = None
     ) -> Estimate:
         """
         Execute complete multi-model pipeline.
@@ -73,6 +77,10 @@ class MultiModelOrchestrator:
             context: Initial pipeline context
             enable_multi_model: If False, fallback to single-model
             progress_callback: Optional callback(PipelineProgress) for UI updates
+            stage1_model: Optional model override for Stage 1
+            stage2_model: Optional model override for Stage 2
+            stage3_model: Optional model override for Stage 3
+            stage4_model: Optional model override for Stage 4
 
         Returns:
             Complete Estimate object
@@ -99,7 +107,7 @@ class MultiModelOrchestrator:
                 progress_callback
             )
 
-            tech_analysis = self.stage1.analyze(context)
+            tech_analysis = self.stage1.analyze(context, model=stage1_model)
             context = context.with_technical_analysis(tech_analysis)
             completed_stages.append(PipelineStage.TECHNICAL_ANALYSIS)
 
@@ -114,7 +122,7 @@ class MultiModelOrchestrator:
                 progress_callback
             )
 
-            structure = self.stage2.decompose(context)
+            structure = self.stage2.decompose(context, model=stage2_model)
             context = context.with_structural_decomposition(structure)
             completed_stages.append(PipelineStage.STRUCTURAL_DECOMPOSITION)
 
@@ -129,7 +137,7 @@ class MultiModelOrchestrator:
                 progress_callback
             )
 
-            context = self.stage3.estimate_hours(context)
+            context = self.stage3.estimate_hours(context, model=stage3_model)
             completed_stages.append(PipelineStage.HOURS_ESTIMATION)
 
             total_hours = sum(comp.total_hours for comp in context.estimated_components)
@@ -144,7 +152,7 @@ class MultiModelOrchestrator:
                 progress_callback
             )
 
-            risks, suggestions, assumptions, warnings = self.stage4.analyze_risks(context)
+            risks, suggestions, assumptions, warnings = self.stage4.analyze_risks(context, model=stage4_model)
             completed_stages.append(PipelineStage.RISK_OPTIMIZATION)
 
             logger.info(f"Stage 4 complete: Risks={len(risks)}, Suggestions={len(suggestions)}")

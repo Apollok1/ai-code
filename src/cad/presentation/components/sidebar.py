@@ -84,11 +84,58 @@ def render_sidebar(
 
     if use_multi_model:
         st.sidebar.caption("✅ Multi-model aktywny (4 etapy)")
-        with st.sidebar.expander("📋 Modele per etap"):
-            st.caption(f"1️⃣ Technical: {app_config.multi_model.stage1_model}")
-            st.caption(f"2️⃣ Structure: {app_config.multi_model.stage2_model}")
-            st.caption(f"3️⃣ Estimation: {app_config.multi_model.stage3_model}")
-            st.caption(f"4️⃣ Risk Analysis: {app_config.multi_model.stage4_model}")
+        with st.sidebar.expander("⚙️ Wybór modeli per etap", expanded=False):
+            # Stage 1: Technical Analysis (reasoning model)
+            stage1_current = session.get_stage1_model() or app_config.multi_model.stage1_model
+            if stage1_current not in available_text_models and available_text_models:
+                stage1_current = available_text_models[0]
+
+            stage1_model = st.selectbox(
+                "1️⃣ Technical Analysis (reasoning)",
+                options=available_text_models if available_text_models else [app_config.multi_model.stage1_model],
+                index=available_text_models.index(stage1_current) if stage1_current in available_text_models else 0,
+                help="Model do głębokiej analizy technicznej. Zalecane: większy model (14b+)"
+            )
+            session.set_stage1_model(stage1_model)
+
+            # Stage 2: Structural Decomposition
+            stage2_current = session.get_stage2_model() or app_config.multi_model.stage2_model
+            if stage2_current not in available_text_models and available_text_models:
+                stage2_current = available_text_models[0]
+
+            stage2_model = st.selectbox(
+                "2️⃣ Structural Decomposition",
+                options=available_text_models if available_text_models else [app_config.multi_model.stage2_model],
+                index=available_text_models.index(stage2_current) if stage2_current in available_text_models else 0,
+                help="Model do dekompozycji na komponenty. Może być mniejszy (7b)"
+            )
+            session.set_stage2_model(stage2_model)
+
+            # Stage 3: Hours Estimation
+            stage3_current = session.get_stage3_model() or app_config.multi_model.stage3_model
+            if stage3_current not in available_text_models and available_text_models:
+                stage3_current = available_text_models[0]
+
+            stage3_model = st.selectbox(
+                "3️⃣ Hours Estimation",
+                options=available_text_models if available_text_models else [app_config.multi_model.stage3_model],
+                index=available_text_models.index(stage3_current) if stage3_current in available_text_models else 0,
+                help="Model do estymacji godzin. Może być szybki (7b) + wzorce"
+            )
+            session.set_stage3_model(stage3_model)
+
+            # Stage 4: Risk & Optimization
+            stage4_current = session.get_stage4_model() or app_config.multi_model.stage4_model
+            if stage4_current not in available_text_models and available_text_models:
+                stage4_current = available_text_models[0]
+
+            stage4_model = st.selectbox(
+                "4️⃣ Risk Analysis (critical)",
+                options=available_text_models if available_text_models else [app_config.multi_model.stage4_model],
+                index=available_text_models.index(stage4_current) if stage4_current in available_text_models else 0,
+                help="Model do analizy ryzyk. Zalecane: większy model (14b+)"
+            )
+            session.set_stage4_model(stage4_model)
     else:
         st.sidebar.caption("⚡ Single-model (szybki)")
 
@@ -145,6 +192,10 @@ def render_sidebar(
         'text_model': selected_text,
         'vision_model': selected_vision if available_vision_models else None,
         'use_multi_model': use_multi_model,
+        'stage1_model': session.get_stage1_model() if use_multi_model else None,
+        'stage2_model': session.get_stage2_model() if use_multi_model else None,
+        'stage3_model': session.get_stage3_model() if use_multi_model else None,
+        'stage4_model': session.get_stage4_model() if use_multi_model else None,
         'allow_web_lookup': allow_web,
         'hourly_rate': hourly_rate
     }

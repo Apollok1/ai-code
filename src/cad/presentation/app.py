@@ -234,12 +234,17 @@ def render_new_project_page(app: dict, session: SessionManager, config: dict):
                     if additional_text:
                         full_text += "\n\n" + additional_text
 
-                    # Estimate
+                    # Estimate (with multi-model settings)
                     estimate = app['pipeline'].estimate_from_description(
                         description=full_text,
                         department=department,
                         pdf_files=files['pdfs'],
-                        excel_file=files['excel']
+                        excel_file=files['excel'],
+                        use_multi_model=config.get('use_multi_model'),
+                        stage1_model=config.get('stage1_model'),
+                        stage2_model=config.get('stage2_model'),
+                        stage3_model=config.get('stage3_model'),
+                        stage4_model=config.get('stage4_model')
                     )
 
                     # Save to session

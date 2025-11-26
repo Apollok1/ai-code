@@ -31,6 +31,10 @@ class UIState:
     selected_text_model: str = "qwen2.5:7b"
     selected_vision_model: str | None = "qwen2.5vl:7b"
     use_multi_model: bool = True
+    stage1_model: str | None = None  # Technical Analysis
+    stage2_model: str | None = None  # Structural Decomposition
+    stage3_model: str | None = None  # Hours Estimation
+    stage4_model: str | None = None  # Risk & Optimization
     allow_web_lookup: bool = False
     admin_authenticated: bool = False
 
@@ -203,6 +207,46 @@ class SessionManager:
         """Set multi-model pipeline enabled flag."""
         state = self.get_ui_state()
         state.use_multi_model = enabled
+        self.set_ui_state(state)
+
+    def get_stage1_model(self) -> str | None:
+        """Get Stage 1 model (Technical Analysis)."""
+        return self.get_ui_state().stage1_model
+
+    def set_stage1_model(self, model: str) -> None:
+        """Set Stage 1 model (Technical Analysis)."""
+        state = self.get_ui_state()
+        state.stage1_model = model
+        self.set_ui_state(state)
+
+    def get_stage2_model(self) -> str | None:
+        """Get Stage 2 model (Structural Decomposition)."""
+        return self.get_ui_state().stage2_model
+
+    def set_stage2_model(self, model: str) -> None:
+        """Set Stage 2 model (Structural Decomposition)."""
+        state = self.get_ui_state()
+        state.stage2_model = model
+        self.set_ui_state(state)
+
+    def get_stage3_model(self) -> str | None:
+        """Get Stage 3 model (Hours Estimation)."""
+        return self.get_ui_state().stage3_model
+
+    def set_stage3_model(self, model: str) -> None:
+        """Set Stage 3 model (Hours Estimation)."""
+        state = self.get_ui_state()
+        state.stage3_model = model
+        self.set_ui_state(state)
+
+    def get_stage4_model(self) -> str | None:
+        """Get Stage 4 model (Risk & Optimization)."""
+        return self.get_ui_state().stage4_model
+
+    def set_stage4_model(self, model: str) -> None:
+        """Set Stage 4 model (Risk & Optimization)."""
+        state = self.get_ui_state()
+        state.stage4_model = model
         self.set_ui_state(state)
 
     def is_web_lookup_enabled(self) -> bool:
