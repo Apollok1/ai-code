@@ -95,6 +95,16 @@ class MultiModelOrchestrator:
 
         logger.info("Starting multi-model pipeline execution")
 
+        # Log model configuration
+        models_used = {
+            'stage1': stage1_model or self.config.stage1_model,
+            'stage2': stage2_model or self.config.stage2_model,
+            'stage3': stage3_model or self.config.stage3_model,
+            'stage4': stage4_model or self.config.stage4_model
+        }
+        logger.info(f"Models: Stage1={models_used['stage1']}, Stage2={models_used['stage2']}, "
+                   f"Stage3={models_used['stage3']}, Stage4={models_used['stage4']}")
+
         completed_stages = []
         total_stages = 4
 
