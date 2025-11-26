@@ -227,40 +227,87 @@ def render_new_project_page(app: dict, session: SessionManager, config: dict):
         if not description and not files['excel']:
             st.warning("⚠️ Podaj opis lub wgraj plik Excel")
         else:
-            with st.spinner("Analizuję projekt..."):
+            # Check if multi-model is enabled
+            use_multi_model = config.get('use_multi_model', False)
+
+            if use_multi_model:
+                # Multi-model with progress tracking
+                from .components.progress_tracker import render_progress_placeholder, ProgressTracker
+
+                progress_placeholder = render_progress_placeholder()
+                tracker = ProgressTracker(progress_placeholder)
+
                 try:
                     # Combine texts
                     full_text = description
                     if additional_text:
                         full_text += "\n\n" + additional_text
 
-                    # Estimate (with multi-model settings)
+                    # Estimate with progress callback
                     estimate = app['pipeline'].estimate_from_description(
                         description=full_text,
                         department=department,
                         pdf_files=files['pdfs'],
                         excel_file=files['excel'],
-                        use_multi_model=config.get('use_multi_model'),
+                        use_multi_model=True,
                         stage1_model=config.get('stage1_model'),
                         stage2_model=config.get('stage2_model'),
                         stage3_model=config.get('stage3_model'),
                         stage4_model=config.get('stage4_model')
                     )
 
-                    # Save to session
+                    # Clear progress, show success
+                    progress_placeholder.empty()
                     session.set_estimate(estimate)
+                    st.success(f"✅ Multi-Model Pipeline zakończony: {estimate.total_hours:.1f}h, {estimate.component_count} komponentów")
 
-                    st.success(f"✅ Analiza zakończona: {estimate.total_hours:.1f}h, {estimate.component_count} komponentów")
+                    # Display enhanced results
+                    from .components.multi_model_results import render_multi_model_results
+                    render_multi_model_results(estimate, config['hourly_rate'])
 
-                    # Display results
-                    from .components.results_display import render_estimate_summary, render_components_list
-                    render_estimate_summary(estimate, config['hourly_rate'])
+                    # Also show standard component list
                     st.markdown("---")
+                    st.markdown("### 📋 Lista Komponentów (szczegóły)")
+                    from .components.results_display import render_components_list
                     render_components_list(estimate)
 
                 except Exception as e:
-                    st.error(f"❌ Analiza nie powiodła się: {e}")
-                    logger.error(f"Estimation failed: {e}", exc_info=True)
+                    progress_placeholder.empty()
+                    st.error(f"❌ Multi-Model Pipeline nie powiódł się: {e}")
+                    logger.error(f"Multi-model estimation failed: {e}", exc_info=True)
+
+            else:
+                # Single-model with spinner
+                with st.spinner("Analizuję projekt (single-model)..."):
+                    try:
+                        # Combine texts
+                        full_text = description
+                        if additional_text:
+                            full_text += "\n\n" + additional_text
+
+                        # Estimate (single-model)
+                        estimate = app['pipeline'].estimate_from_description(
+                            description=full_text,
+                            department=department,
+                            pdf_files=files['pdfs'],
+                            excel_file=files['excel'],
+                            use_multi_model=False
+                        )
+
+                        # Save to session
+                        session.set_estimate(estimate)
+
+                        st.success(f"✅ Analiza zakończona: {estimate.total_hours:.1f}h, {estimate.component_count} komponentów")
+
+                        # Display results
+                        from .components.results_display import render_estimate_summary, render_components_list
+                        render_estimate_summary(estimate, config['hourly_rate'])
+                        st.markdown("---")
+                        render_components_list(estimate)
+
+                    except Exception as e:
+                        st.error(f"❌ Analiza nie powiodła się: {e}")
+                        logger.error(f"Estimation failed: {e}", exc_info=True)
 
 
 def render_history_page(app: dict, session: SessionManager):

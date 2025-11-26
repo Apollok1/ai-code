@@ -283,11 +283,15 @@ class MultiModelOrchestrator:
         else:
             overall_confidence = 0.5
 
-        # Build metadata
+        # Build metadata with detailed stage outputs
         metadata = {
             'multi_model': True,
             'stage1_complexity': context.technical_analysis.project_complexity if context.technical_analysis else None,
+            'stage1_materials': context.technical_analysis.materials if context.technical_analysis else [],
+            'stage1_standards': context.technical_analysis.applicable_standards if context.technical_analysis else [],
+            'stage1_challenges': context.technical_analysis.key_challenges if context.technical_analysis else [],
             'stage2_component_count': context.structural_decomposition.total_component_count if context.structural_decomposition else None,
+            'stage2_max_depth': context.structural_decomposition.max_depth if context.structural_decomposition else None,
             'suggestions': suggestions,
             'assumptions': assumptions,
             'warnings': warnings
