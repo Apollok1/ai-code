@@ -1,0 +1,69 @@
+[tool.poetry]
+name = "document-converter-pro"
+version = "2.0.0"
+description = "Modern document processing with offline-first design"
+authors = ["Document Converter Team"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+streamlit = "^1.28.0"
+pydantic = "^2.5.0"
+pydantic-settings = "^2.1.0"
+pdfplumber = "^0.10.0"
+pdf2image = "^1.16.0"
+pytesseract = "^0.3.10"
+python-pptx = "^0.6.21"
+python-docx = "^1.1.0"
+opencv-python = "^4.8.0"
+Pillow = "^10.0.0"
+numpy = "^1.24.0"
+requests = "^2.31.0"
+
+# Optional dependencies
+mailparser = {optional = true, version = "^3.15.0"}
+extract-msg = {optional = true, version = "^0.45.0"}
+duckduckgo-search = {optional = true, version = "^3.9.0"}
+trafilatura = {optional = true, version = "^1.6.0"}
+pandas = {optional = true, version = "^2.1.0"}
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.0"
+pytest-cov = "^4.1.0"
+pytest-asyncio = "^0.21.0"
+black = "^23.7.0"
+ruff = "^0.0.286"
+mypy = "^1.5.0"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+addopts = "-v --cov=src --cov-report=html --cov-report=term"
+
+[tool.black]
+line-length = 100
+target-version = ['py310']
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+select = ["E", "F", "I", "N", "UP", "ANN", "B", "A", "COM", "C4", "DTZ", "T10", "EM", "EXE", "ISC", "ICN", "G", "INP", "PIE", "T20", "PYI", "PT", "Q", "RSE", "RET", "SLF", "SIM", "TID", "TCH", "ARG", "PTH", "ERA", "PD", "PGH", "PL", "TRY", "NPY", "RUF"]
+ignore = ["ANN101", "ANN102"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
