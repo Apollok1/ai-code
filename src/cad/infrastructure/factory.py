@@ -12,6 +12,7 @@ from ..infrastructure.ai.ollama_client import OllamaClient
 from ..infrastructure.parsers.excel_parser import CADExcelParser
 from ..infrastructure.parsers.pdf_parser import CADPDFParser
 from ..infrastructure.parsers.component_parser import CADComponentParser
+from ..infrastructure.multi_model import MultiModelOrchestrator
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,21 @@ def create_component_parser(config: AppConfig) -> CADComponentParser:
     return CADComponentParser()
 
 
+def create_multi_model_orchestrator(config: AppConfig) -> MultiModelOrchestrator:
+    """
+    Create multi-model orchestrator.
+
+    Args:
+        config: Application configuration
+
+    Returns:
+        MultiModelOrchestrator instance
+    """
+    ai_client = create_ai_client(config)
+    db_client = create_database_client(config)
+    return MultiModelOrchestrator(ai_client, db_client, config.multi_model)
+
+
 def quick_setup(
     ollama_url: str = "http://localhost:11434",
     db_host: str = "localhost"
@@ -108,14 +124,18 @@ def quick_setup(
         ollama=OllamaConfig(url=ollama_url)
     )
 
+    db = create_database_client(config)
+    ai = create_ai_client(config)
+
     components = {
         'config': config,
-        'db': create_database_client(config),
-        'ai': create_ai_client(config),
+        'db': db,
+        'ai': ai,
         'excel_parser': create_excel_parser(config),
         'pdf_parser': create_pdf_parser(config),
-        'component_parser': create_component_parser(config)
+        'component_parser': create_component_parser(config),
+        'multi_model': MultiModelOrchestrator(ai, db, config.multi_model)
     }
 
-    logger.info("✅ Quick setup complete")
+    logger.info("✅ Quick setup complete (multi-model pipeline ready)")
     return components

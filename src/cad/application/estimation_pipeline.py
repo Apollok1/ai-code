@@ -16,6 +16,8 @@ from ..infrastructure.parsers.component_parser import CADComponentParser
 from ..infrastructure.learning.pattern_learner import PatternLearner
 from ..infrastructure.learning.bundle_learner import BundleLearner
 from ..infrastructure.embeddings.pgvector_service import PgVectorService
+from ..infrastructure.multi_model import MultiModelOrchestrator
+from ..domain.models.multi_model import StageContext
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +44,8 @@ class EstimationPipeline:
         component_parser: CADComponentParser,
         pattern_learner: PatternLearner,
         bundle_learner: BundleLearner,
-        pgvector_service: PgVectorService
+        pgvector_service: PgVectorService,
+        multi_model_orchestrator: MultiModelOrchestrator | None = None
     ):
         """
         Initialize EstimationPipeline.
@@ -57,6 +60,7 @@ class EstimationPipeline:
             pattern_learner: Pattern learner
             bundle_learner: Bundle learner
             pgvector_service: PgVector service
+            multi_model_orchestrator: Optional multi-model orchestrator
         """
         self.config = config
         self.db = db_client
@@ -67,13 +71,15 @@ class EstimationPipeline:
         self.pattern_learner = pattern_learner
         self.bundle_learner = bundle_learner
         self.pgvector = pgvector_service
+        self.multi_model = multi_model_orchestrator
 
     def estimate_from_description(
         self,
         description: str,
         department: DepartmentCode,
         pdf_files: list[BinaryIO] | None = None,
-        excel_file: BinaryIO | None = None
+        excel_file: BinaryIO | None = None,
+        use_multi_model: bool | None = None
     ) -> Estimate:
         """
         Generate estimate from project description.
@@ -83,6 +89,7 @@ class EstimationPipeline:
             department: Department code
             pdf_files: Optional PDF specification files
             excel_file: Optional Excel component hints
+            use_multi_model: If True, use multi-model pipeline; if None, use config default
 
         Returns:
             Estimate object
@@ -91,6 +98,81 @@ class EstimationPipeline:
             AIGenerationError: If AI estimation fails
             ParsingError: If file parsing fails
         """
+        # Determine whether to use multi-model
+        should_use_multi_model = use_multi_model
+        if should_use_multi_model is None:
+            should_use_multi_model = self.config.multi_model.enabled
+
+        # Route to appropriate method
+        if should_use_multi_model and self.multi_model is not None:
+            logger.info(f"🚀 Starting MULTI-MODEL estimation for department {department.value}")
+            return self._estimate_multi_model(description, department, pdf_files, excel_file)
+        else:
+            logger.info(f"🚀 Starting SINGLE-MODEL estimation for department {department.value}")
+            return self._estimate_single_model(description, department, pdf_files, excel_file)
+
+    def _estimate_multi_model(
+        self,
+        description: str,
+        department: DepartmentCode,
+        pdf_files: list[BinaryIO] | None,
+        excel_file: BinaryIO | None
+    ) -> Estimate:
+        """Execute multi-model pipeline estimation."""
+        # Parse files
+        excel_data = None
+        if excel_file:
+            try:
+                excel_data = self.excel_parser.parse(excel_file)
+                logger.info(f"📊 Parsed {len(excel_data['components'])} components from Excel")
+            except Exception as e:
+                logger.warning(f"Excel parsing failed: {e}")
+
+        pdf_texts = []
+        if pdf_files:
+            try:
+                pdf_texts = [self.pdf_parser.extract_text(f) for f in pdf_files]
+                logger.info(f"📄 Extracted text from {len(pdf_files)} PDFs")
+            except Exception as e:
+                logger.warning(f"PDF parsing failed: {e}")
+
+        # Find similar projects
+        similar_projects = []
+        if description:
+            try:
+                similar_projects = self.pgvector.find_similar_projects(
+                    description,
+                    department.value,
+                    limit=5
+                )
+                if similar_projects:
+                    logger.info(f"🔍 Found {len(similar_projects)} similar projects")
+            except Exception as e:
+                logger.warning(f"Semantic search failed: {e}")
+
+        # Build context for multi-model pipeline
+        context = StageContext(
+            description=description,
+            department_code=department.value,
+            pdf_texts=pdf_texts,
+            excel_data=excel_data,
+            similar_projects=similar_projects
+        )
+
+        # Execute pipeline
+        estimate = self.multi_model.execute_pipeline(context, enable_multi_model=True)
+
+        logger.info(f"✅ Multi-model estimation complete: {estimate.total_hours:.1f}h, {estimate.component_count} components")
+        return estimate
+
+    def _estimate_single_model(
+        self,
+        description: str,
+        department: DepartmentCode,
+        pdf_files: list[BinaryIO] | None,
+        excel_file: BinaryIO | None
+    ) -> Estimate:
+        """Execute single-model (legacy) estimation."""
         logger.info(f"🚀 Starting estimation for department {department.value}")
 
         # Parse Excel hints (if provided)

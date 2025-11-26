@@ -30,6 +30,7 @@ class UIState:
     hourly_rate: int = 150
     selected_text_model: str = "qwen2.5:7b"
     selected_vision_model: str | None = "qwen2.5vl:7b"
+    use_multi_model: bool = True
     allow_web_lookup: bool = False
     admin_authenticated: bool = False
 
@@ -192,6 +193,16 @@ class SessionManager:
         """Set selected vision AI model."""
         state = self.get_ui_state()
         state.selected_vision_model = model
+        self.set_ui_state(state)
+
+    def get_use_multi_model(self) -> bool:
+        """Check if multi-model pipeline is enabled."""
+        return self.get_ui_state().use_multi_model
+
+    def set_use_multi_model(self, enabled: bool) -> None:
+        """Set multi-model pipeline enabled flag."""
+        state = self.get_ui_state()
+        state.use_multi_model = enabled
         self.set_ui_state(state)
 
     def is_web_lookup_enabled(self) -> bool:

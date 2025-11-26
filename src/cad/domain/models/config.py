@@ -61,6 +61,19 @@ class LearningConfig(BaseModel):
     semantic_similarity_threshold: float = Field(default=0.6, ge=0.0, le=1.0, description="Semantic similarity threshold")
 
 
+class MultiModelConfig(BaseModel):
+    """Multi-model pipeline configuration."""
+
+    model_config = ConfigDict(frozen=True)
+
+    enabled: bool = Field(default=True, description="Enable multi-model pipeline")
+    stage1_model: str = Field(default="qwen2.5:14b", description="Technical analysis model (reasoning)")
+    stage2_model: str = Field(default="qwen2.5:7b", description="Structural decomposition model")
+    stage3_model: str = Field(default="qwen2.5:7b", description="Hours estimation model (fast)")
+    stage4_model: str = Field(default="qwen2.5:14b", description="Risk & optimization model (critical)")
+    fallback_model: str = Field(default="qwen2.5:7b", description="Fallback if stage model unavailable")
+
+
 class UIConfig(BaseModel):
     """UI/Presentation configuration."""
 
@@ -92,6 +105,7 @@ class AppConfig(BaseModel):
     ollama: OllamaConfig = Field(default_factory=OllamaConfig)
     parser: ParserConfig = Field(default_factory=ParserConfig)
     learning: LearningConfig = Field(default_factory=LearningConfig)
+    multi_model: MultiModelConfig = Field(default_factory=MultiModelConfig)
     ui: UIConfig = Field(default_factory=UIConfig)
 
     @classmethod

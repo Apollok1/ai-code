@@ -18,6 +18,7 @@ from ..infrastructure.factory import (
 from ..infrastructure.learning.pattern_learner import PatternLearner
 from ..infrastructure.learning.bundle_learner import BundleLearner
 from ..infrastructure.embeddings.pgvector_service import PgVectorService
+from ..infrastructure.multi_model import MultiModelOrchestrator
 from ..application.estimation_pipeline import EstimationPipeline
 from ..application.batch_importer import BatchImporter
 from .state.session_manager import SessionManager
@@ -76,6 +77,9 @@ def init_app() -> dict[str, Any]:
     # Create embedding service
     pgvector_service = PgVectorService(db, ai)
 
+    # Create multi-model orchestrator
+    multi_model = MultiModelOrchestrator(ai, db, config.multi_model)
+
     # Create pipeline
     pipeline = EstimationPipeline(
         config=config,
@@ -86,7 +90,8 @@ def init_app() -> dict[str, Any]:
         component_parser=component_parser,
         pattern_learner=pattern_learner,
         bundle_learner=bundle_learner,
-        pgvector_service=pgvector_service
+        pgvector_service=pgvector_service,
+        multi_model_orchestrator=multi_model
     )
 
     # Create batch importer
@@ -98,7 +103,7 @@ def init_app() -> dict[str, Any]:
         bundle_learner=bundle_learner
     )
 
-    logger.info("✅ Initialization complete")
+    logger.info("✅ Initialization complete (multi-model pipeline ready)")
 
     return {
         'config': config,
@@ -108,7 +113,8 @@ def init_app() -> dict[str, Any]:
         'batch_importer': batch_importer,
         'pattern_learner': pattern_learner,
         'bundle_learner': bundle_learner,
-        'pgvector': pgvector_service
+        'pgvector': pgvector_service,
+        'multi_model': multi_model
     }
 
 

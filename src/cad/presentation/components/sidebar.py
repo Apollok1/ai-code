@@ -65,6 +65,35 @@ def render_sidebar(
 
     st.sidebar.markdown("---")
 
+    # Multi-Model Pipeline
+    st.sidebar.subheader("🎯 Pipeline Estymacji")
+    use_multi_model = st.sidebar.checkbox(
+        "Multi-Model Pipeline (4 etapy)",
+        value=app_config.multi_model.enabled,
+        help="""
+        Multi-model pipeline używa 4 wyspecjalizowanych modeli:
+        1. Analiza techniczna (qwen2.5:14b)
+        2. Dekompozycja struktury (qwen2.5:7b)
+        3. Estymacja godzin (qwen2.5:7b + wzorce)
+        4. Analiza ryzyk (qwen2.5:14b)
+
+        Single-model: Jeden model dla całości (szybsze, mniej dokładne)
+        """
+    )
+    session.set_use_multi_model(use_multi_model)
+
+    if use_multi_model:
+        st.sidebar.caption("✅ Multi-model aktywny (4 etapy)")
+        with st.sidebar.expander("📋 Modele per etap"):
+            st.caption(f"1️⃣ Technical: {app_config.multi_model.stage1_model}")
+            st.caption(f"2️⃣ Structure: {app_config.multi_model.stage2_model}")
+            st.caption(f"3️⃣ Estimation: {app_config.multi_model.stage3_model}")
+            st.caption(f"4️⃣ Risk Analysis: {app_config.multi_model.stage4_model}")
+    else:
+        st.sidebar.caption("⚡ Single-model (szybki)")
+
+    st.sidebar.markdown("---")
+
     # Web lookup
     st.sidebar.subheader("🌐 Web Lookup")
     allow_web = st.sidebar.checkbox(
@@ -115,6 +144,7 @@ def render_sidebar(
     return {
         'text_model': selected_text,
         'vision_model': selected_vision if available_vision_models else None,
+        'use_multi_model': use_multi_model,
         'allow_web_lookup': allow_web,
         'hourly_rate': hourly_rate
     }
