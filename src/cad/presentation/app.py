@@ -1,0 +1,341 @@
+"""
+CAD Estimator Pro - Main Streamlit Application
+
+Main entry point for CAD Estimator Pro Streamlit UI.
+"""
+import streamlit as st
+import logging
+from typing import Any
+
+from ..domain.models.config import AppConfig
+from ..infrastructure.factory import (
+    create_database_client,
+    create_ai_client,
+    create_excel_parser,
+    create_pdf_parser,
+    create_component_parser
+)
+from ..infrastructure.learning.pattern_learner import PatternLearner
+from ..infrastructure.learning.bundle_learner import BundleLearner
+from ..infrastructure.embeddings.pgvector_service import PgVectorService
+from ..application.estimation_pipeline import EstimationPipeline
+from ..application.batch_importer import BatchImporter
+from .state.session_manager import SessionManager
+from .components.sidebar import render_sidebar
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Page configuration
+st.set_page_config(
+    page_title="CAD Estimator Pro",
+    page_icon="🚀",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+
+@st.cache_resource
+def init_app() -> dict[str, Any]:
+    """
+    Initialize application (cached).
+
+    Returns:
+        Dict with initialized components
+    """
+    logger.info("🚀 Initializing CAD Estimator Pro...")
+
+    # Load configuration
+    config = AppConfig.from_env()
+
+    # Create core services
+    db = create_database_client(config)
+    ai = create_ai_client(config)
+
+    # Initialize schema
+    try:
+        db.init_schema()
+        logger.info("✅ Database schema initialized")
+    except Exception as e:
+        logger.error(f"❌ Schema initialization failed: {e}")
+        st.error(f"Database initialization failed: {e}")
+
+    # Create parsers
+    excel_parser = create_excel_parser(config)
+    pdf_parser = create_pdf_parser(config)
+    component_parser = create_component_parser(config)
+
+    # Create learning components
+    pattern_learner = PatternLearner(config.learning, db)
+    bundle_learner = BundleLearner(config.learning, db)
+
+    # Create embedding service
+    pgvector_service = PgVectorService(db, ai)
+
+    # Create pipeline
+    pipeline = EstimationPipeline(
+        config=config,
+        db_client=db,
+        ai_client=ai,
+        excel_parser=excel_parser,
+        pdf_parser=pdf_parser,
+        component_parser=component_parser,
+        pattern_learner=pattern_learner,
+        bundle_learner=bundle_learner,
+        pgvector_service=pgvector_service
+    )
+
+    # Create batch importer
+    batch_importer = BatchImporter(
+        config=config,
+        db_client=db,
+        excel_parser=excel_parser,
+        pattern_learner=pattern_learner,
+        bundle_learner=bundle_learner
+    )
+
+    logger.info("✅ Initialization complete")
+
+    return {
+        'config': config,
+        'db': db,
+        'ai': ai,
+        'pipeline': pipeline,
+        'batch_importer': batch_importer,
+        'pattern_learner': pattern_learner,
+        'bundle_learner': bundle_learner,
+        'pgvector': pgvector_service
+    }
+
+
+def main():
+    """Main application entry point."""
+    st.title("🚀 CAD Estimator Pro")
+
+    # Initialize app
+    try:
+        app = init_app()
+    except Exception as e:
+        st.error(f"❌ Initialization failed: {e}")
+        logger.error(f"Initialization failed: {e}", exc_info=True)
+        st.stop()
+
+    # Initialize session manager
+    session = SessionManager(st.session_state)
+
+    # Get available models
+    try:
+        all_models = app['ai'].list_available_models()
+        text_models = [m for m in all_models if not any(
+            m.startswith(p) for p in ("llava", "bakllava", "moondream", "qwen2-vl", "qwen2.5vl", "nomic-embed")
+        )]
+        vision_models = [m for m in all_models if any(
+            m.startswith(p) for p in ("llava", "bakllava", "moondream", "qwen2-vl", "qwen2.5vl")
+        )]
+    except Exception as e:
+        logger.warning(f"Failed to list models: {e}")
+        text_models = ["llama3:latest"]
+        vision_models = []
+
+    # Render sidebar
+    sidebar_config = render_sidebar(
+        session=session,
+        app_config=app['config'],
+        available_text_models=text_models,
+        available_vision_models=vision_models
+    )
+
+    # Navigation
+    st.sidebar.markdown("---")
+    st.sidebar.title("📋 Menu")
+    page = st.sidebar.radio(
+        "Nawigacja",
+        ["📊 Dashboard", "🆕 Nowy projekt", "📚 Historia i Uczenie", "🛠️ Admin"],
+        label_visibility="collapsed"
+    )
+
+    # Routing
+    if "Dashboard" in page:
+        render_dashboard_page(app, session)
+    elif "Nowy projekt" in page:
+        render_new_project_page(app, session, sidebar_config)
+    elif "Historia" in page:
+        render_history_page(app, session)
+    elif "Admin" in page:
+        render_admin_page(app, session)
+
+
+# ==================== PAGES ====================
+
+def render_dashboard_page(app: dict, session: SessionManager):
+    """Render Dashboard page."""
+    st.header("📊 Dashboard")
+
+    # Quick stats
+    try:
+        with app['db'].get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM projects")
+                project_count = cur.fetchone()[0]
+
+                cur.execute("SELECT COUNT(*) FROM component_patterns WHERE occurrences > 2")
+                pattern_count = cur.fetchone()[0]
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric("📁 Projekty", project_count)
+        col2.metric("🧩 Wzorce", pattern_count)
+        col3.metric("🤖 Status AI", "✅ Online" if app['ai'] else "❌ Offline")
+
+    except Exception as e:
+        st.error(f"Błąd pobierania statystyk: {e}")
+
+    st.info("💡 Dashboard w pełni funkcjonalny będzie dostępny w kolejnej iteracji")
+
+
+def render_new_project_page(app: dict, session: SessionManager, config: dict):
+    """Render New Project page."""
+    st.header("🆕 Nowy Projekt")
+
+    from .components.file_uploader import render_file_uploader, render_text_input
+    from .components.sidebar import render_department_selector
+
+    # Department selection
+    department = render_department_selector()
+
+    # Project details
+    col1, col2 = st.columns(2)
+    with col1:
+        project_name = st.text_input("Nazwa projektu*", placeholder="np. Stacja dociskania omega")
+        client = st.text_input("Klient", placeholder="np. Firma sp. z o.o.")
+
+    # Description and files
+    description, additional_text = render_text_input()
+    files = render_file_uploader()
+
+    # Estimate button
+    if st.button("🤖 Analizuj z AI", use_container_width=True, type="primary"):
+        if not description and not files['excel']:
+            st.warning("⚠️ Podaj opis lub wgraj plik Excel")
+        else:
+            with st.spinner("Analizuję projekt..."):
+                try:
+                    # Combine texts
+                    full_text = description
+                    if additional_text:
+                        full_text += "\n\n" + additional_text
+
+                    # Estimate
+                    estimate = app['pipeline'].estimate_from_description(
+                        description=full_text,
+                        department=department,
+                        pdf_files=files['pdfs'],
+                        excel_file=files['excel']
+                    )
+
+                    # Save to session
+                    session.set_estimate(estimate)
+
+                    st.success(f"✅ Analiza zakończona: {estimate.total_hours:.1f}h, {estimate.component_count} komponentów")
+
+                    # Display results
+                    from .components.results_display import render_estimate_summary, render_components_list
+                    render_estimate_summary(estimate, config['hourly_rate'])
+                    st.markdown("---")
+                    render_components_list(estimate)
+
+                except Exception as e:
+                    st.error(f"❌ Analiza nie powiodła się: {e}")
+                    logger.error(f"Estimation failed: {e}", exc_info=True)
+
+
+def render_history_page(app: dict, session: SessionManager):
+    """Render History & Learning page."""
+    st.header("📚 Historia i Uczenie")
+    st.info("💡 Pełna funkcjonalność historii i uczenia będzie dostępna w kolejnej iteracji")
+
+    # Show patterns count
+    try:
+        with app['db'].get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM component_patterns WHERE occurrences > 2")
+                pattern_count = cur.fetchone()[0]
+
+        st.metric("🧩 Wzorce w bazie", pattern_count)
+
+    except Exception as e:
+        st.error(f"Błąd: {e}")
+
+
+def render_admin_page(app: dict, session: SessionManager):
+    """Render Admin page."""
+    st.header("🛠️ Panel Administratora")
+
+    # Simple authentication
+    if not session.is_admin_authenticated():
+        password = st.text_input("Hasło administratora", type="password")
+        if st.button("Zaloguj"):
+            if password == "polmic":  # CHANGE IN PRODUCTION!
+                session.set_admin_authenticated(True)
+                st.rerun()
+            else:
+                st.error("❌ Błędne hasło")
+        st.stop()
+
+    st.success("✅ Zalogowano jako Administrator")
+
+    # Admin actions
+    tab1, tab2, tab3 = st.tabs(["📊 Statystyki", "🗑️ Czyszczenie", "🔄 Embeddings"])
+
+    with tab1:
+        st.subheader("📊 Statystyki bazy")
+        try:
+            with app['db'].get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT COUNT(*) FROM projects")
+                    projects = cur.fetchone()[0]
+
+                    cur.execute("SELECT COUNT(*) FROM component_patterns")
+                    patterns = cur.fetchone()[0]
+
+                    cur.execute("SELECT COUNT(*) FROM component_bundles")
+                    bundles = cur.fetchone()[0]
+
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Projekty", projects)
+            col2.metric("Wzorce", patterns)
+            col3.metric("Bundles", bundles)
+
+        except Exception as e:
+            st.error(f"Błąd: {e}")
+
+    with tab2:
+        st.subheader("🗑️ Czyszczenie danych")
+        st.warning("⚠️ Operacje nieodwracalne!")
+
+        if st.button("🗑️ Usuń wzorce z confidence < 0.1"):
+            try:
+                deleted = app['db'].delete_patterns_with_low_confidence(0.1)
+                st.success(f"✅ Usunięto {deleted} wzorców")
+            except Exception as e:
+                st.error(f"Błąd: {e}")
+
+    with tab3:
+        st.subheader("🔄 Przelicz embeddingi")
+        if st.button("🔄 Przelicz wszystkie embeddingi"):
+            with st.spinner("Przeliczam embeddingi..."):
+                try:
+                    counts = app['pgvector'].batch_update_embeddings(
+                        update_projects=True,
+                        update_patterns=True
+                    )
+                    st.success(f"✅ Przeliczono {counts['projects']} projektów i {counts['patterns']} wzorców")
+                except Exception as e:
+                    st.error(f"Błąd: {e}")
+
+
+if __name__ == "__main__":
+    main()
