@@ -489,7 +489,8 @@ def extract_audio_whisper(file):
     """Audio → tekst przez Whisper ASR. Zwraca (text, pages, meta)."""
     try:
         size_bytes = get_file_size(file)
-        timeout_read = calculate_timeout(size_bytes, base=240, per_mb=25)
+        # Zwiększony timeout dla długich plików audio (base=600s = 10min, per_mb=60s)
+        timeout_read = calculate_timeout(size_bytes, base=600, per_mb=60)
 
         file.seek(0)
         raw = file.read()
