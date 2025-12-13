@@ -11,11 +11,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Media processing
     ffmpeg \
     # Image processing
-    libgl1-mesa-glx \
+    libgl1 \
     libglib2.0-0 \
     # Build tools (needed for some Python packages)
     gcc \
     g++ \
+    # Health check
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
