@@ -1,0 +1,231 @@
+# Docker Compose - Konfiguracja z Direct Mounting
+# Montuje katalogi bezpośrednio z ai-code - BEZ KOPIOWANIA!
+
+services:
+  ollama:
+    image: ollama/ollama:rocm
+    container_name: ollama
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - "485"  # video
+      - "482"  # render
+    environment:
+      - ROCR_VISIBLE_DEVICES=0
+      - OLLAMA_KEEP_ALIVE=15m
+      - OLLAMA_NUM_PARALLEL=2
+      - HSA_OVERRIDE_GFX_VERSION=12.0.1
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - ./ollama_data:/root/.ollama
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+
+  tax-api:
+    build:
+      context: ./tax-system
+      dockerfile: api/Dockerfile
+    container_name: tax-api
+    volumes:
+      - ./tax-system/streamlit-app/data:/app/data
+    ports:
+      - "172.20.0.1:8002:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  whisper:
+    image: onerahmet/openai-whisper-asr-webservice:latest
+    container_name: whisper
+    environment:
+      - ASR_MODEL=medium
+      - ASR_LANGUAGE=pl
+      - ASR_DEVICE=cuda
+      - ROCR_VISIBLE_DEVICES=0
+      - HSA_OVERRIDE_GFX_VERSION=12.0.1
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - "485"
+      - "482"
+    ports:
+      - "127.0.0.1:9000:9000"
+    volumes:
+      - ./whisper-cache:/root/.cache
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9000/docs >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  anythingllm-db:
+    image: chromadb/chroma
+    container_name: anythingllm-db
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./storage/chroma:/chroma/.chroma/
+    restart: unless-stopped
+
+  anythingllm:
+    image: mintplexlabs/anythingllm:latest
+    container_name: anythingllm
+    ports:
+      - "3001:3001"
+    environment:
+      - STORAGE_DIR=/app/server/storage
+      - DISABLE_SIGNUP=true
+    volumes:
+      - ./storage:/app/server/storage
+      - ./hotdir:/data/hotdir
+    user: "${UID:-1000}:${GID:-1000}"
+    depends_on:
+      ollama:
+        condition: service_healthy
+      anythingllm-db:
+        condition: service_started
+    restart: unless-stopped
+
+  cad-postgres:
+    image: ankane/pgvector:v0.5.1
+    container_name: cad-postgres
+    environment:
+      POSTGRES_DB: cad_estimator
+      POSTGRES_USER: cad_user
+      POSTGRES_PASSWORD: cad_password_2024
+    volumes:
+      - ./cad/postgres-data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cad_user"]
+      interval: 10s
+    restart: unless-stopped
+
+  # ============================================================================
+  # DOC-CONVERTER - DIRECT MOUNTING (bez kopiowania!)
+  # ============================================================================
+  doc-converter:
+    build:
+      # Buduje z ai-code (tylko raz, przy zmianach w Dockerfile/requirements)
+      context: ${AI_CODE_PATH:-/home/michal/ai-code}/doc-converter
+      dockerfile: Dockerfile
+    container_name: doc-converter
+    command: [
+      "streamlit", "run", "/app/app/converter.py",
+      "--server.headless=true", "--server.address=0.0.0.0", "--server.port=8502",
+      "--server.fileWatcherType=auto", "--client.toolbarMode=minimal"
+    ]
+    environment:
+      - OLLAMA_URL=http://ollama:11434
+      - WHISPER_URL=http://whisper:9000
+      - PYANNOTE_URL=http://pyannote:8000
+      - ANYTHINGLLM_URL=${ANYTHINGLLM_URL}
+      - ANYTHINGLLM_API_KEY=${ANYTHINGLLM_API_KEY}
+      - STRICT_OFFLINE=1
+      - FFMPEG_BINARY=/usr/bin/ffmpeg
+    volumes:
+      # MONTUJ BEZPOŚREDNIO Z AI-CODE (zmiany widoczne od razu!)
+      - ${AI_CODE_PATH:-/home/michal/ai-code}/doc-converter/app:/app/app:ro
+      - ./outputs:/app/outputs
+    ports:
+      - "8502:8502"
+    depends_on:
+      ollama:
+        condition: service_healthy
+      whisper:
+        condition: service_started
+      pyannote:
+        condition: service_started
+    restart: unless-stopped
+
+  # ============================================================================
+  # CAD-PANEL - DIRECT MOUNTING (bez kopiowania!)
+  # ============================================================================
+  cad-panel:
+    build:
+      context: ${AI_CODE_PATH:-/home/michal/ai-code}/cad
+      dockerfile: Dockerfile
+    container_name: cad-panel
+    ports:
+      - "8501:8501"
+    volumes:
+      # MONTUJ BEZPOŚREDNIO Z AI-CODE (cały moduł src/)
+      - ${AI_CODE_PATH:-/home/michal/ai-code}/src:/app/src:ro
+      - ./cad/data:/data
+    environment:
+      - DB_HOST=cad-postgres
+      - DB_NAME=cad_estimator
+      - DB_USER=cad_user
+      - DB_PASSWORD=cad_password_2024
+      - OLLAMA_URL=http://ollama:11434
+      - EMBED_MODEL=nomic-embed-text
+      - EMBED_DIM=768
+      - STRICT_OFFLINE=1
+    depends_on:
+      cad-postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    restart: unless-stopped
+
+  pyannote:
+    build: ./pyannote
+    container_name: pyannote
+    ports:
+      - "127.0.0.1:8001:8000"
+    environment:
+      - HF_TOKEN=${HF_TOKEN}
+    env_file: .env
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health | grep -q '\"model_loaded\":true'"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+
+  streamlit-faktura:
+    build:
+      context: ./tax-system/streamlit-app
+      dockerfile: Dockerfile
+    container_name: streamlit-faktura
+    command: [
+      "streamlit", "run", "/app/app.py",
+      "--server.headless=true",
+      "--server.address=0.0.0.0",
+      "--server.port=8501",
+      "--server.fileWatcherType=none"
+    ]
+    environment:
+      - STREAMLIT_SERVER_PORT=8501
+      - STREAMLIT_SERVER_ADDRESS=0.0.0.0
+      - STREAMLIT_SERVER_HEADLESS=true
+      - STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+    volumes:
+      - ./tax-system/streamlit-app:/app
+    ports:
+      - "8503:8501"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  streamlit-faktura-data:
