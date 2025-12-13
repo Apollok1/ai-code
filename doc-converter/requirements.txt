@@ -19,5 +19,8 @@ requests>=2.31.0
 # Utilities
 python-dateutil>=2.8.2
 
-# NOTE: Optional dependencies (mailparser, extract-msg, trafilatura, duckduckgo-search)
+# Web scraping (optional but available)
+trafilatura>=1.6.0
+
+# NOTE: Some optional dependencies (mailparser, extract-msg, duckduckgo-search)
 # are handled with try/except in code - not required for core functionality
