@@ -16,13 +16,8 @@ numpy>=1.24.0
 # HTTP requests
 requests>=2.31.0
 
-# Email processing (optional)
-mailparser>=3.15.0
-extract-msg>=0.45.0
-
-# Web scraping and search (optional)
-trafilatura>=1.6.0
-duckduckgo-search>=3.9.0
-
 # Utilities
 python-dateutil>=2.8.2
+
+# NOTE: Optional dependencies (mailparser, extract-msg, trafilatura, duckduckgo-search)
+# are handled with try/except in code - not required for core functionality
