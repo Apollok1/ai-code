@@ -164,8 +164,8 @@ services:
     ports:
       - "8501:8501"
     volumes:
-      # MONTUJ BEZPOŚREDNIO Z AI-CODE
-      - ${AI_CODE_PATH:-/home/michal/ai-code}/cad/app:/app:ro
+      # MONTUJ BEZPOŚREDNIO Z AI-CODE (cały moduł src/)
+      - ${AI_CODE_PATH:-/home/michal/ai-code}/src:/app/src:ro
       - ./cad/data:/data
     environment:
       - DB_HOST=cad-postgres
