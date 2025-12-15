@@ -72,10 +72,10 @@ def render_sidebar(
         value=app_config.multi_model.enabled,
         help="""
         Multi-model pipeline używa 4 wyspecjalizowanych modeli:
-        1. Analiza techniczna (qwen2.5:14b)
-        2. Dekompozycja struktury (qwen2.5:7b)
-        3. Estymacja godzin (qwen2.5:7b + wzorce)
-        4. Analiza ryzyk (qwen2.5:14b)
+        1. Analiza techniczna (14b - reasoning)
+        2. Dekompozycja struktury (14b - KRYTYCZNY)
+        3. Estymacja godzin (7b + wzorce + pattern matching)
+        4. Analiza ryzyk (14b - synteza)
 
         Single-model: Jeden model dla całości (szybsze, mniej dokładne)
         """
@@ -104,10 +104,10 @@ def render_sidebar(
                 stage2_current = available_text_models[0]
 
             stage2_model = st.selectbox(
-                "2️⃣ Structural Decomposition",
+                "2️⃣ Structural Decomposition (CRITICAL)",
                 options=available_text_models if available_text_models else [app_config.multi_model.stage2_model],
                 index=available_text_models.index(stage2_current) if stage2_current in available_text_models else 0,
-                help="Model do dekompozycji na komponenty. Może być mniejszy (7b)"
+                help="Model do dekompozycji na komponenty. KRYTYCZNY etap - błędy tutaj psują resztę pipeline! Zalecane: większy model (14b+)"
             )
             session.set_stage2_model(stage2_model)
 

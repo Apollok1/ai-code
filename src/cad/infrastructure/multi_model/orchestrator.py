@@ -118,6 +118,10 @@ class MultiModelOrchestrator:
             )
 
             tech_analysis = self.stage1.analyze(context, model=stage1_model)
+
+            # SANITY CHECK: Stage 1
+            self._validate_stage1_output(tech_analysis)
+
             context = context.with_technical_analysis(tech_analysis)
             completed_stages.append(PipelineStage.TECHNICAL_ANALYSIS)
 
@@ -133,6 +137,10 @@ class MultiModelOrchestrator:
             )
 
             structure = self.stage2.decompose(context, model=stage2_model)
+
+            # SANITY CHECK: Stage 2 (CRITICAL - errors here propagate!)
+            self._validate_stage2_output(structure)
+
             context = context.with_structural_decomposition(structure)
             completed_stages.append(PipelineStage.STRUCTURAL_DECOMPOSITION)
 
@@ -148,9 +156,12 @@ class MultiModelOrchestrator:
             )
 
             context = self.stage3.estimate_hours(context, model=stage3_model)
+
+            # SANITY CHECK: Stage 3
+            total_hours = self._validate_stage3_output(context)
+
             completed_stages.append(PipelineStage.HOURS_ESTIMATION)
 
-            total_hours = sum(comp.total_hours for comp in context.estimated_components)
             logger.info(f"Stage 3 complete: Estimated {len(context.estimated_components)} components, "
                        f"Total hours={total_hours:.1f}")
 
@@ -338,3 +349,120 @@ class MultiModelOrchestrator:
             callback(progress)
         except Exception as e:
             logger.warning(f"Progress callback failed: {e}")
+
+    # =========================================================================
+    # VALIDATION / SANITY CHECKS (added for production robustness)
+    # =========================================================================
+
+    def _validate_stage1_output(self, tech_analysis) -> None:
+        """
+        Validate Stage 1 (Technical Analysis) output.
+
+        Ensures the model produced sensible technical understanding.
+
+        Raises:
+            ValidationError: If output invalid
+        """
+        if not tech_analysis:
+            raise ValidationError("Stage 1: Technical analysis is None")
+
+        # Check project complexity is reasonable
+        if not hasattr(tech_analysis, 'project_complexity'):
+            logger.warning("Stage 1: Missing project_complexity field")
+
+        complexity = getattr(tech_analysis, 'project_complexity', None)
+        if complexity and not isinstance(complexity, str):
+            raise ValidationError(f"Stage 1: Invalid complexity type: {type(complexity)}")
+
+        # Check materials list exists (can be empty)
+        if not hasattr(tech_analysis, 'materials'):
+            logger.warning("Stage 1: Missing materials field")
+
+        # Check key challenges exist
+        if not hasattr(tech_analysis, 'key_challenges'):
+            logger.warning("Stage 1: Missing key_challenges field")
+
+        logger.info("✓ Stage 1 validation passed")
+
+    def _validate_stage2_output(self, structure) -> None:
+        """
+        Validate Stage 2 (Structural Decomposition) output.
+
+        CRITICAL: Errors here propagate to all subsequent stages!
+
+        Raises:
+            ValidationError: If output invalid
+        """
+        if not structure:
+            raise ValidationError("Stage 2: Structural decomposition is None")
+
+        # Check total component count
+        if not hasattr(structure, 'total_component_count'):
+            raise ValidationError("Stage 2: Missing total_component_count field")
+
+        component_count = structure.total_component_count
+        if component_count < 1:
+            raise ValidationError(f"Stage 2: Component count too low: {component_count}")
+
+        if component_count > 1000:
+            logger.warning(f"Stage 2: Very high component count: {component_count} - potential hallucination?")
+
+        # Check depth is reasonable
+        if hasattr(structure, 'max_depth'):
+            depth = structure.max_depth
+            if depth < 1:
+                raise ValidationError(f"Stage 2: Invalid depth: {depth}")
+            if depth > 10:
+                logger.warning(f"Stage 2: Very deep hierarchy: {depth} levels - potential over-decomposition")
+
+        # Check root components exist
+        if hasattr(structure, 'root_components'):
+            if not structure.root_components:
+                raise ValidationError("Stage 2: No root components found")
+
+        logger.info("✓ Stage 2 validation passed (CRITICAL stage validated)")
+
+    def _validate_stage3_output(self, context) -> float:
+        """
+        Validate Stage 3 (Hours Estimation) output.
+
+        Args:
+            context: Stage context with estimated_components
+
+        Returns:
+            Total estimated hours
+
+        Raises:
+            ValidationError: If output invalid
+        """
+        if not hasattr(context, 'estimated_components'):
+            raise ValidationError("Stage 3: Missing estimated_components")
+
+        components = context.estimated_components
+        if not components:
+            raise ValidationError("Stage 3: No components estimated")
+
+        # Check each component has valid hours
+        total_hours = 0.0
+        for i, comp in enumerate(components):
+            if not hasattr(comp, 'total_hours'):
+                raise ValidationError(f"Stage 3: Component {i} missing total_hours")
+
+            hours = comp.total_hours
+            if hours < 0:
+                raise ValidationError(f"Stage 3: Component {i} has negative hours: {hours}")
+
+            if hours > 10000:
+                logger.warning(f"Stage 3: Component {i} has very high hours: {hours} - potential error")
+
+            total_hours += hours
+
+        # Sanity check: total hours should be reasonable for CAD project
+        if total_hours < 0.1:
+            raise ValidationError(f"Stage 3: Total hours too low: {total_hours}")
+
+        if total_hours > 100000:
+            logger.warning(f"Stage 3: Total hours very high: {total_hours} - potential hallucination")
+
+        logger.info(f"✓ Stage 3 validation passed (total={total_hours:.1f}h)")
+        return total_hours

@@ -147,21 +147,22 @@ def main():
         text_models = ["llama3:latest"]
         vision_models = []
 
-    # Render sidebar
-    sidebar_config = render_sidebar(
-        session=session,
-        app_config=app['config'],
-        available_text_models=text_models,
-        available_vision_models=vision_models
-    )
-
-    # Navigation
-    st.sidebar.markdown("---")
+    # Navigation FIRST - menu at the top of sidebar
     st.sidebar.title("📋 Menu")
     page = st.sidebar.radio(
         "Nawigacja",
         ["📊 Dashboard", "🆕 Nowy projekt", "📚 Historia i Uczenie", "🛠️ Admin"],
         label_visibility="collapsed"
+    )
+
+    st.sidebar.markdown("---")
+
+    # Render sidebar configuration BELOW the menu
+    sidebar_config = render_sidebar(
+        session=session,
+        app_config=app['config'],
+        available_text_models=text_models,
+        available_vision_models=vision_models
     )
 
     # Routing
