@@ -24,8 +24,8 @@ err() { echo -e "${RED}[$(ts)]${NC} ❌ ERROR: $*" >&2; }
 # ==============================================================================
 # USTAWIENIA
 # ==============================================================================
-PROJECT_DIR="${PROJECT_DIR:-/home/michal/moj-asystent-ai}"
-AI_CODE_PATH="${AI_CODE_PATH:-/home/michal/ai-code}"
+PROJECT_DIR="${PROJECT_DIR:-/home/user/ai-code}"
+AI_CODE_PATH="${AI_CODE_PATH:-/home/user/ai-code}"
 ACTION="${ACTION:-update}"
 REBUILD="${REBUILD:-0}"
 

@@ -122,7 +122,7 @@ services:
   doc-converter:
     build:
       # Buduje z ai-code (tylko raz, przy zmianach w Dockerfile/requirements)
-      context: ${AI_CODE_PATH:-/home/michal/ai-code}/doc-converter
+      context: ${AI_CODE_PATH:-/home/user/ai-code}/doc-converter
       dockerfile: Dockerfile
     container_name: doc-converter
     command: [
@@ -140,7 +140,7 @@ services:
       - FFMPEG_BINARY=/usr/bin/ffmpeg
     volumes:
       # MONTUJ BEZPOŚREDNIO Z AI-CODE (zmiany widoczne od razu!)
-      - ${AI_CODE_PATH:-/home/michal/ai-code}/doc-converter/app:/app/app:ro
+      - ${AI_CODE_PATH:-/home/user/ai-code}/doc-converter/app:/app/app:ro
       - ./outputs:/app/outputs
     ports:
       - "8502:8502"
@@ -158,14 +158,14 @@ services:
   # ============================================================================
   cad-panel:
     build:
-      context: ${AI_CODE_PATH:-/home/michal/ai-code}/cad
+      context: ${AI_CODE_PATH:-/home/user/ai-code}/cad
       dockerfile: Dockerfile
     container_name: cad-panel
     ports:
       - "8501:8501"
     volumes:
       # MONTUJ BEZPOŚREDNIO Z AI-CODE (cały moduł src/)
-      - ${AI_CODE_PATH:-/home/michal/ai-code}/src:/app/src:ro
+      - ${AI_CODE_PATH:-/home/user/ai-code}/src:/app/src:ro
       - ./cad/data:/data
     environment:
       - DB_HOST=cad-postgres
@@ -184,7 +184,9 @@ services:
     restart: unless-stopped
 
   pyannote:
-    build: ./pyannote
+    build:
+      context: ${AI_CODE_PATH:-/home/user/ai-code}/pyannote
+      dockerfile: Dockerfile
     container_name: pyannote
     ports:
       - "127.0.0.1:8001:8000"
