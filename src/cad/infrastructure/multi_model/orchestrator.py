@@ -17,10 +17,10 @@ from cad.domain.interfaces.ai_client import AIClient
 from cad.domain.interfaces.database import DatabaseClient
 from cad.domain.exceptions import AIGenerationError, ValidationError
 
-from cad.stage1_technical_analysis import TechnicalAnalysisStage
-from cad.stage2_structural_decomposition import StructuralDecompositionStage
-from cad.stage3_hours_estimation import HoursEstimationStage
-from cad.stage4_risk_optimization import RiskOptimizationStage
+from .stage1_technical_analysis import TechnicalAnalysisStage
+from .stage2_structural_decomposition import StructuralDecompositionStage
+from .stage3_hours_estimation import HoursEstimationStage
+from .stage4_risk_optimization import RiskOptimizationStage
 
 logger = logging.getLogger(__name__)
 
