@@ -68,10 +68,13 @@ class MultiModelConfig(BaseModel):
 
     enabled: bool = Field(default=True, description="Enable multi-model pipeline")
     stage1_model: str = Field(default="qwen2.5:14b", description="Technical analysis model (reasoning)")
-    stage2_model: str = Field(default="qwen2.5:7b", description="Structural decomposition model")
-    stage3_model: str = Field(default="qwen2.5:7b", description="Hours estimation model (fast)")
+    stage2_model: str = Field(default="qwen2.5:14b", description="Structural decomposition model (CRITICAL - errors here propagate)")
+    stage3_model: str = Field(default="qwen2.5:7b", description="Hours estimation model (fast + pattern matching)")
     stage4_model: str = Field(default="qwen2.5:14b", description="Risk & optimization model (critical)")
     fallback_model: str = Field(default="qwen2.5:7b", description="Fallback if stage model unavailable")
+
+    # Model family consistency (prefer staying within one family)
+    preferred_family: str = Field(default="qwen2.5", description="Preferred model family for consistency")
 
 
 class UIConfig(BaseModel):

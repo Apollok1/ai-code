@@ -5,7 +5,7 @@ Implementation of AIClient, VisionAIClient, and EmbeddingClient protocols for Ol
 """
 import logging
 import requests
-from typing import Any
+from typing import Any, Callable
 from datetime import datetime, timedelta
 
 from cad.domain.models.config import OllamaConfig
@@ -31,7 +31,7 @@ class ModelCache:
         self.ttl = timedelta(seconds=ttl_seconds)
         self._cache: dict[str, tuple[datetime, list[str]]] = {}
 
-    def get(self, key: str, fetcher: callable, force_refresh: bool = False) -> list[str]:
+    def get(self, key: str, fetcher: Callable, force_refresh: bool = False) -> list[str]:
         """
         Get cached data or fetch if expired.
 
