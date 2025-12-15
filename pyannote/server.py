@@ -95,12 +95,11 @@ async def diarize(audio_file: UploadFile = File(...)):
         if diarization is None:
             diarization = getattr(result, "annotation", None)
 
-        # 3) Awaryjnie: jeśli to krotka / NamedTuple, weź pierwszy element
+        # 3) Awaryjnie: jeśli to krotka / lista, weź pierwszy element
         if diarization is None and isinstance(result, (list, tuple)) and len(result) > 0:
             diarization = result[0]
 
         if diarization is None:
-            # logujemy szczegóły, żeby ewentualnie dalej debugować
             logger.error(
                 f"Nie mogę znaleźć anotacji diarization w wyniku pipeline: "
                 f"type={type(result)}, dir={dir(result)}"
