@@ -111,69 +111,72 @@ class StructuralDecompositionStage:
             logger.error(f"Structural decomposition failed: {e}", exc_info=True)
             raise AIGenerationError(f"Stage 2 failed: {e}")
 
-    def _build_decomposition_prompt(self, context: StageContext) -> str:
-        """Build structural decomposition prompt."""
-        tech_analysis = context.technical_analysis
 
-        return f"""You are a senior CAD/CAM engineer breaking down a mechanical design project into its component structure.
+    def _build_decomposition_prompt(context, tech_analysis, materials, manufacturing_methods,
+                                    estimated_assembly_count, key_challenges) -> str:
+        return f"""
+You are a senior CAD/CAM engineer breaking down a mechanical design project into a realistic component hierarchy.
 
 PROJECT DESCRIPTION:
 {context.description}
 
 TECHNICAL ANALYSIS FROM STAGE 1:
 - Complexity: {tech_analysis.project_complexity}
-- Materials: {', '.join(tech_analysis.materials[:5])}
-- Manufacturing: {', '.join(tech_analysis.manufacturing_methods[:3])}
-- Estimated Assembly Count: {tech_analysis.estimated_assembly_count or 'Unknown'}
-- Key Challenges: {', '.join(tech_analysis.key_challenges[:3])}
+- Materials: {materials}
+- Manufacturing: {manufacturing_methods}
+- Estimated Assembly Count: {estimated_assembly_count}
+- Key Challenges: {key_challenges}
 
-TASK: Break this project down into a HIERARCHICAL COMPONENT STRUCTURE.
+TASK:
+Based on the description and the technical analysis, break this project down into a HIERARCHICAL COMPONENT STRUCTURE that could realistically be implemented in a CAD assembly.
 
-Think about:
-1. What are the major assemblies/modules?
-2. What sub-assemblies does each major assembly contain?
-3. What individual parts/components are in each sub-assembly?
-4. How many of each component is needed (quantity)?
-5. What category does each component belong to? (e.g., "Frame", "Mechanism", "Hydraulics", "Electronics", etc.)
+Think carefully about:
+1. Major assemblies / modules of the system.
+2. Sub-assemblies inside each major assembly.
+3. Individual parts / components under each sub-assembly.
+4. Quantity of each component (integer, >= 1).
+5. High-level category for each component (e.g. "Frame", "Mechanism", "Hydraulics", "Pneumatics",
+   "Drive", "Transmission", "Electrics", "Controls", "Safety", "Other").
 
-OUTPUT FORMAT (JSON):
+CONSTRAINTS:
+- Try to keep the total number of leaf components reasonable (e.g. 10–40 unique components), group similar items.
+- Structure depth should usually be 2–4 levels.
+- If the description is vague, use more generic names (e.g. "Support frame", "Guarding panels") instead of over-precise parts.
+- Use the estimated_assembly_count as a guideline for how many main assemblies are needed.
+- Do NOT invent exotic components that are not implied by the description.
+
+OUTPUT FORMAT:
+Return ONE valid JSON object, and NOTHING else.
+
+JSON SCHEMA:
 {{
-    "reasoning": "Your thinking about how to break down this project (1-2 paragraphs)",
-    "components": [
+  "reasoning": "Your thinking about how to break down this project (1–2 short paragraphs).",
+  "components": [
+    {{
+      "name": "Main Assembly 1",
+      "category": "Frame",
+      "quantity": 1,
+      "children": [
         {{
-            "name": "Main Assembly 1",
-            "category": "Frame",
-            "quantity": 1,
-            "children": [
-                {{
-                    "name": "Sub-assembly 1.1",
-                    "category": "Support Structure",
-                    "quantity": 2,
-                    "children": [
-                        {{
-                            "name": "Bracket",
-                            "category": "Fastener",
-                            "quantity": 4,
-                            "children": []
-                        }}
-                    ]
-                }}
-            ]
-        }},
-        {{
-            "name": "Main Assembly 2",
-            "category": "Mechanism",
-            "quantity": 1,
-            "children": [...]
+          "name": "Sub-assembly 1.1",
+          "category": "Support Structure",
+          "quantity": 2,
+          "children": [
+            {{
+              "name": "Bracket",
+              "category": "Fastener",
+              "quantity": 4,
+              "children": []
+            }}
+          ]
         }}
-    ],
-    "assembly_relationships": {{
-        "Main Assembly 1": ["Sub-assembly 1.1", "Sub-assembly 1.2"],
-        "Sub-assembly 1.1": ["Bracket", "Bolt"]
+      ]
     }}
+  ]
 }}
 
-Be specific and realistic. Create a structure that makes sense for manufacturing and assembly."""
+Output ONLY JSON, strictly following this structure.
+"""
 
     def _parse_component_tree(self, components_data: list[dict]) -> list[ComponentNode]:
         """Parse component tree from JSON data."""
