@@ -24,11 +24,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # Copy requirements and install Python dependencies
-COPY requirements.txt .
+COPY doc-converter/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy refactored application code from /src
-COPY ../src/ ./src/
+COPY src/ ./src/
 
 # Set PYTHONPATH so imports work (from domain., from presentation., etc.)
 ENV PYTHONPATH=/app/src

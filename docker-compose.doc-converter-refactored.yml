@@ -10,7 +10,7 @@ version: '3.8'
 services:
   doc-converter:
     build:
-      context: ${AI_CODE_PATH:-/home/michal/ai-code}
+      context: ${AI_CODE_PATH:-/home/michal/ai-code}  # Build from root so we can access /src
       dockerfile: doc-converter/Dockerfile.refactored
     command: [
       "streamlit", "run", "/app/src/presentation/app.py",

@@ -124,16 +124,17 @@ services:
   # ============================================================================
   doc-converter:
     build:
-      # Buduje z ai-code (tylko raz, przy zmianach w Dockerfile/requirements)
-      context: ${AI_CODE_PATH:-/home/michal/ai-code}/doc-converter
-      dockerfile: Dockerfile
+      # REFACTORED VERSION - Clean architecture (domain/presentation/infrastructure)
+      context: ${AI_CODE_PATH:-/home/michal/ai-code}
+      dockerfile: doc-converter/Dockerfile.refactored
     container_name: doc-converter
     command: [
-      "streamlit", "run", "/app/app/converter.py",
+      "streamlit", "run", "/app/src/presentation/app.py",
       "--server.headless=true", "--server.address=0.0.0.0", "--server.port=8502",
       "--server.fileWatcherType=auto", "--client.toolbarMode=minimal"
     ]
     environment:
+      - PYTHONPATH=/app/src
       - OLLAMA_URL=http://ollama:11434
       - WHISPER_URL=http://whisper:9000
       - PYANNOTE_URL=http://pyannote:8000
@@ -142,8 +143,8 @@ services:
       - STRICT_OFFLINE=1
       - FFMPEG_BINARY=/usr/bin/ffmpeg
     volumes:
-      # MONTUJ BEZPOŚREDNIO Z AI-CODE (zmiany widoczne od razu!)
-      - ${AI_CODE_PATH:-/home/michal/ai-code}/doc-converter/app:/app/app:ro
+      # MONTUJ REFACTORED CODE BEZPOŚREDNIO Z AI-CODE (zmiany widoczne od razu!)
+      - ${AI_CODE_PATH:-/home/michal/ai-code}/src:/app/src:ro
       - ./outputs:/app/outputs
     ports:
       - "8502:8502"
