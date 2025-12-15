@@ -4,6 +4,7 @@ CAD Estimator Pro - Batch Importer
 Parallel batch import of Excel files with pattern learning.
 """
 import logging
+from typing import Callable
 from typing import BinaryIO, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
