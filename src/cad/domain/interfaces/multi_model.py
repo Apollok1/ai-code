@@ -11,7 +11,7 @@ from cad.models.multi_model import (
     StructuralDecomposition,
     PipelineProgress
 )
-from cad.models import Estimate
+from cad.domain.models import Estimate
 
 
 class TechnicalAnalysisStage(Protocol):
