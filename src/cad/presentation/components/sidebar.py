@@ -189,15 +189,15 @@ def render_sidebar(
                 st.caption(f"• {m}")
 
     return {
-        'text_model': selected_text,
-        'vision_model': selected_vision if available_vision_models else None,
-        'use_multi_model': use_multi_model,
-        'stage1_model': session.get_stage1_model() if use_multi_model else None,
-        'stage2_model': session.get_stage2_model() if use_multi_model else None,
-        'stage3_model': session.get_stage3_model() if use_multi_model else None,
-        'stage4_model': session.get_stage4_model() if use_multi_model else None,
-        'allow_web_lookup': allow_web,
-        'hourly_rate': hourly_rate
+        "text_model": selected_text,
+        "vision_model": selected_vision if available_vision_models else None,
+        "use_multi_model": use_multi_model,
+        "stage1_model": session.get_stage1_model() if use_multi_model else None,
+        "stage2_model": session.get_stage2_model() if use_multi_model else None,
+        "stage3_model": session.get_stage3_model() if use_multi_model else None,
+        "stage4_model": session.get_stage4_model() if use_multi_model else None,
+        "allow_web_lookup": allow_web,
+        "hourly_rate": hourly_rate,
     }
 
 
@@ -208,14 +208,20 @@ def render_department_selector() -> DepartmentCode:
     Returns:
         Selected DepartmentCode
     """
+    # Używamy wartości słownika (obiekty z display_name, context, code)
+    departments = list(DEPARTMENTS.values())
+
     selected = st.selectbox(
         "Wybierz dział*",
-        options=list(DEPARTMENTS.keys()),
-        format_func=lambda dept: dept.display_name,
-        help="Wybierz dział do którego należy projekt"
+        options=departments,
+        format_func=lambda dept: getattr(dept, "display_name", str(dept)),
+        help="Wybierz dział do którego należy projekt",
     )
 
-    # Show department context
-    st.info(f"📋 {selected.context[:200]}...")
+    # Show department context (jeśli jest dostępny)
+    context = getattr(selected, "context", None)
+    if context:
+        st.info(f"📋 {context[:200]}...")
 
-    return selected.code
+    # Zwracamy kod działu (DepartmentCode)
+    return getattr(selected, "code", selected)
