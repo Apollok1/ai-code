@@ -85,17 +85,18 @@ async def diarize(audio_file: UploadFile = File(...)):
 
         diarization = None
 
-        # 1) Starsze wersje pyannote: wynik ma od razu .itertracks()
-        if hasattr(result, "itertracks"):
+        # 1) Nowsze pyannote.audio (DiarizeOutput)
+        #    -> używamy speaker_diarization (ew. exclusive_speaker_diarization)
+        if hasattr(result, "speaker_diarization"):
+            diarization = result.speaker_diarization
+        elif hasattr(result, "exclusive_speaker_diarization"):
+            diarization = result.exclusive_speaker_diarization
+
+        # 2) Starsze wersje: wynik ma od razu .itertracks()
+        if diarization is None and hasattr(result, "itertracks"):
             diarization = result
 
-        # 2) Nowsze wersje: DiarizeOutput z polem .diarization albo .annotation
-        if diarization is None:
-            diarization = getattr(result, "diarization", None)
-        if diarization is None:
-            diarization = getattr(result, "annotation", None)
-
-        # 3) Awaryjnie: jeśli to krotka / lista, weź pierwszy element
+        # 3) Awaryjnie: jeśli to krotka/lista, weź pierwszy element
         if diarization is None and isinstance(result, (list, tuple)) and len(result) > 0:
             diarization = result[0]
 
@@ -133,7 +134,6 @@ async def diarize(audio_file: UploadFile = File(...)):
         except Exception:
             pass
         return {"error": str(e)}
-
 
 if __name__ == "__main__":
     import uvicorn
