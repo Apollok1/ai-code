@@ -108,83 +108,71 @@ class RiskOptimizationStage:
             logger.error(f"Risk analysis failed: {e}", exc_info=True)
             raise AIGenerationError(f"Stage 4 failed: {e}")
 
-    def _build_risk_analysis_prompt(self, context: StageContext) -> str:
-        """Build risk analysis prompt."""
-        # Calculate totals
-        total_hours = sum(comp.total_hours for comp in context.estimated_components)
-        avg_confidence = sum(comp.confidence for comp in context.estimated_components) / len(context.estimated_components) if context.estimated_components else 0
-
-        # Get top 10 components by hours
-        top_components = sorted(
-            context.estimated_components,
-            key=lambda c: c.total_hours,
-            reverse=True
-        )[:10]
-
-        components_summary = "\n".join([
-            f"- {comp.name}: {comp.total_hours:.1f}h (confidence: {comp.confidence:.0%})"
-            for comp in top_components
-        ])
-
-        tech_analysis = context.technical_analysis
-        structure = context.structural_decomposition
-
-        return f"""You are a senior CAD/CAM project manager performing CRITICAL RISK ANALYSIS on an estimate.
+    
+    def _build_risk_analysis_prompt(context, tech_analysis, materials, key_challenges,
+                                    structure, total_hours, avg_confidence,
+                                    components_summary: str) -> str:
+        return f"""
+You are a senior CAD/CAM project manager performing a CRITICAL RISK REVIEW of a CAD hours estimate before it is sent to the client.
 
 PROJECT SUMMARY:
 - Description: {context.description}
-- Department: {context.department_code}
-- Total Components: {len(context.estimated_components)}
-- Total Estimated Hours: {total_hours:.1f}h
-- Average Confidence: {avg_confidence:.0%}
+- Department code: {context.department_code}
+- Total components: {len(context.estimated_components)}
+- Total estimated hours: {total_hours} h
+- Average confidence (0–1): {avg_confidence}
 
-TECHNICAL ANALYSIS:
-- Complexity: {tech_analysis.project_complexity if tech_analysis else 'unknown'}
-- Materials: {', '.join(tech_analysis.materials[:3]) if tech_analysis and tech_analysis.materials else 'N/A'}
-- Key Challenges: {', '.join(tech_analysis.key_challenges[:2]) if tech_analysis and tech_analysis.key_challenges else 'N/A'}
+TECHNICAL ANALYSIS (from Stage 1):
+- Complexity level: {tech_analysis.project_complexity}
+- Main materials: {materials}
+- Key technical challenges: {key_challenges}
 
 COMPONENT STRUCTURE:
-- Total Component Count: {structure.total_component_count if structure else 'N/A'}
-- Structure Depth: {structure.max_depth if structure else 'N/A'} levels
+- Total component count: {structure.total_component_count}
+- Structure depth: {structure.max_depth} levels
 
-TOP 10 COMPONENTS BY HOURS:
+TOP COMPONENTS BY HOURS:
 {components_summary}
 
-TASK: Perform a CRITICAL ANALYSIS to identify:
-1. **Risks**: What could go wrong? What might cause this estimate to be inaccurate?
-2. **Optimization Suggestions**: How could we reduce hours or improve accuracy?
-3. **Assumptions**: What assumptions were made in this estimate?
-4. **Warnings**: What should the client be warned about?
+TASK:
+Perform a STRICT, PRACTICAL PROJECT REVIEW and identify:
 
-Think critically like a project manager reviewing an estimate before sending to client.
+1. RISKS – what could realistically go wrong with this estimate?
+   - Technical risks (design complexity, tolerances, new technologies).
+   - Scope risks (unclear requirements, missing interfaces).
+   - Planning risks (underestimated hours, missing tasks, learning curve).
+   - Organizational risks (dependencies on client data, late decisions).
 
-OUTPUT FORMAT (JSON):
+2. OPTIMIZATION SUGGESTIONS – realistic ways to reduce hours or improve reliability:
+   - Reuse of existing designs / patterns.
+   - Standardization and simplification opportunities.
+   - Better splitting of work between team members / senior vs junior.
+
+3. ASSUMPTIONS – what has been implicitly assumed in this estimate?
+   - Data completeness, client collaboration, reuse of templates, etc.
+
+4. WARNINGS – clear statements for the client / PM about important caveats.
+
+CONSTRAINTS:
+- Focus on 3–10 most important items in each category (do not generate huge lists).
+- Be concrete and specific, not generic management buzzwords.
+
+OUTPUT FORMAT:
+Return ONE valid JSON object, and NOTHING else.
+
+JSON SCHEMA:
 {{
-    "reasoning": "Your critical analysis (2-3 paragraphs)",
-    "risks": [
-        {{
-            "category": "technical|schedule|cost|quality|scope",
-            "description": "What the risk is",
-            "impact": "low|medium|high|critical",
-            "mitigation": "How to reduce this risk"
-        }},
-        ...
-    ],
-    "optimization_suggestions": [
-        "Suggestion 1: Consider using standard parts for X to reduce modeling time",
-        "Suggestion 2: ...",
-        ...
-    ],
-    "assumptions": [
-        "Assumption 1: Client will provide CAD files for standard components",
-        "Assumption 2: ...",
-        ...
-    ],
-    "warnings": [
-        "Warning 1: Low confidence on complex assembly X - may need more research",
-        "Warning 2: ...",
-        ...
-    ]
+  "risks": [
+    {{
+      "description": "Concrete risk description",
+      "severity": "low|medium|high|critical",
+      "mitigation": "Concrete mitigation action"
+    }}
+  ],
+  "suggestions": ["suggestion1", "suggestion2", "..."],
+  "assumptions": ["assumption1", "assumption2", "..."],
+  "warnings": ["warning1", "warning2", "..."]
 }}
 
-Be honest and thorough. Better to identify risks now than be surprised later."""
+Output ONLY JSON, strictly following this structure.
+"""
