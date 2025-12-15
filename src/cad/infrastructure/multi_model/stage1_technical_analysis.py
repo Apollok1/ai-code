@@ -115,32 +115,47 @@ class TechnicalAnalysisStage:
             logger.error(f"Technical analysis failed: {e}", exc_info=True)
             raise AIGenerationError(f"Stage 1 failed: {e}")
 
-    def _build_technical_prompt(self, project_context: str) -> str:
-        """Build technical analysis prompt."""
-        return f"""You are a senior CAD/CAM engineer with 20+ years of experience analyzing mechanical design projects.
-
-Perform a DEEP TECHNICAL ANALYSIS of the following CAD project. Think step-by-step about:
-1. What materials would be used and why
-2. How the parts would be manufactured (machining, welding, casting, etc.)
-3. What technical constraints exist (tolerances, surface finish, assembly requirements)
-4. What standards apply (ISO, EN, DIN, ASME, etc.)
-5. What are the key technical challenges
-6. Estimate the overall complexity (low/medium/high/very_high)
-7. Roughly estimate how many unique assemblies/parts this project has
-
-PROJECT CONTEXT:
-{project_context}
-
-OUTPUT FORMAT (JSON):
-{{
-    "reasoning": "Your detailed step-by-step technical reasoning (2-3 paragraphs)",
-    "project_complexity": "low|medium|high|very_high",
-    "materials": ["material1", "material2", ...],
-    "manufacturing_methods": ["method1", "method2", ...],
-    "technical_constraints": ["constraint1", "constraint2", ...],
-    "applicable_standards": ["ISO 1234", "EN 5678", ...],
-    "key_challenges": ["challenge1", "challenge2", ...],
-    "estimated_assembly_count": 15
-}}
-
-Be thorough and specific. Think like an experienced engineer reviewing a project proposal."""
+    def _build_technical_prompt(project_context: str) -> str:
+        return f"""
+    You are a senior CAD/CAM mechanical engineer with 20+ years of experience in industrial design, CAD modeling and manufacturing engineering.
+    
+    Your job is to perform a DEEP, PRACTICAL TECHNICAL ANALYSIS of the following CAD project description.
+    
+    PROJECT CONTEXT (from client / engineer):
+    {project_context}
+    
+    TASK:
+    Analyze this project step by step and infer realistic, engineering-grade information. Use your knowledge of mechanical design, manufacturing and industry standards.
+    
+    Think explicitly about:
+    1. Materials – which materials would realistically be used and WHY (steel grades, aluminum, plastics, etc.).
+    2. Manufacturing methods – how the parts would be produced (machining, welding, laser cutting, sheet metal, casting, etc.).
+    3. Technical constraints – tolerances, fits, surface finish, stiffness, assembly constraints, safety factors.
+    4. Applicable standards – relevant ISO/EN/DIN/ASME or industry norms that would typically apply.
+    5. Key technical challenges – what parts of this project are technically risky or complex.
+    6. Overall project complexity – low / medium / high / very_high (from CAD and manufacturing perspective).
+    7. Rough estimate of unique assemblies and parts – how many assemblies and unique parts you expect.
+    
+    VERY IMPORTANT RULES:
+    - Base your analysis STRICTLY on the given description and typical industrial practice.
+    - If some information is missing or uncertain, explicitly use "unknown" or "approximate", do NOT hallucinate precise details.
+    - Keep the reasoning concise but technically dense (2–3 short paragraphs).
+    - Use consistent terminology (materials, processes, standards).
+    
+    OUTPUT FORMAT:
+    Return ONE valid JSON object, and NOTHING else. No markdown, no comments, no explanation outside JSON.
+    
+    JSON SCHEMA:
+    {{
+      "reasoning": "Your detailed step-by-step technical reasoning (2-3 short paragraphs).",
+      "project_complexity": "low|medium|high|very_high",
+      "materials": ["material1", "material2", "..."],
+      "manufacturing_methods": ["method1", "method2", "..."],
+      "technical_constraints": ["constraint1", "constraint2", "..."],
+      "applicable_standards": ["ISO 2768-mK", "EN 1090", "..."],
+      "key_challenges": ["challenge1", "challenge2", "..."],
+      "estimated_assembly_count": 15
+    }}
+    
+    Output ONLY JSON, strictly following this structure.
+    """
