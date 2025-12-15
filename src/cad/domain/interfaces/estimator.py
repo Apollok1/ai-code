@@ -4,7 +4,7 @@ CAD Estimator Pro - Estimator Protocol Interface
 Protocol for estimation engines.
 """
 from typing import Protocol
-from cad.models import Estimate, Component, DepartmentCode
+from cad.domain.models import Estimate, Component, DepartmentCode
 
 
 class Estimator(Protocol):
