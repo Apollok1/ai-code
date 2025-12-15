@@ -21,7 +21,7 @@ from cad.infrastructure.embeddings.pgvector_service import PgVectorService
 from cad.infrastructure.multi_model import MultiModelOrchestrator
 from cad.application.estimation_pipeline import EstimationPipeline
 from cad.application.batch_importer import BatchImporter
-from cad.state.session_manager import SessionManager
+from cad.presentation.state.session_manager import SessionManager
 from cad.components.sidebar import render_sidebar
 
 # Configure logging
