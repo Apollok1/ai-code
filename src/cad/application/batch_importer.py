@@ -57,7 +57,7 @@ class BatchImporter:
         files: list[tuple[str, BinaryIO]],
         department: DepartmentCode,
         learn_patterns: bool = True,
-        progress_callback: callable | None = None
+        progress_callback: Callable | None = None
     ) -> list[dict]:
         """
         Import batch of Excel files in parallel.
