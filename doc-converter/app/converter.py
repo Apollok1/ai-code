@@ -1430,8 +1430,21 @@ st.caption("Konwersja PDF/DOCX/PPTX/IMG/AUDIO/EMAIL → TXT z OCR, Vision lub Wh
 
 with st.sidebar:
     st.header("⚙️ Ustawienia")
+
     # === MODELE AI ===
     st.subheader("🤖 Modele AI")
+
+    # Help text dla modeli
+    with st.expander("ℹ️ Co to są modele AI?", expanded=False):
+        st.markdown("""
+        **Modele AI** to "mózgi" aplikacji, które przetwarzają tekst i obrazy.
+
+        - **Model tekstowy** - analizuje i podsumowuje dokumenty
+        - **Model wizyjny** - rozpoznaje treść na obrazach/zdjęciach
+
+        💡 **Porada:** Większe modele (np. 14b) są dokładniejsze ale wolniejsze.
+        Mniejsze (7b) są szybsze ale mniej dokładne.
+        """)
     
     # 1) Model tekstowy (główny - dla wszystkich operacji tekstowych)
     available_text_models = [
@@ -1464,41 +1477,81 @@ with st.sidebar:
     
     st.markdown("---")  # Separator
 
-    # Tryb offline
+    # === PRYWATNOŚĆ I INTERNET ===
+    st.subheader("🔒 Prywatność i Internet")
+
+    with st.expander("ℹ️ Co to znaczy?", expanded=False):
+        st.markdown("""
+        **Tryb offline** - blokuje wszystkie połączenia internetowe poza lokalnymi usługami.
+
+        **Web lookup** - pozwala aplikacji pobierać publiczne strony WWW dla uzupełnienia informacji.
+
+        ⚠️ **WAŻNE:** Aplikacja NIE wysyła Twoich dokumentów na zewnątrz!
+        Web lookup pobiera TYLKO publiczne strony (np. Wikipedia) jako kontekst.
+        """)
+
     OFFLINE_MODE = st.checkbox(
-        "Tryb offline (blokuj internet poza lokalnymi usługami)",
+        "🔐 Tryb offline (maksymalna prywatność)",
         value=OFFLINE_MODE,
+        help="Blokuje dostęp do internetu. Używa tylko lokalnych usług.",
         disabled=st.session_state.get("converting", False)
     )
     st.session_state["ALLOW_WEB"] = st.checkbox(
-        "Zezwól na web lookup (pobieranie publicznych stron)",
+        "🌐 Web lookup (pobieranie publicznych stron)",
         value=st.session_state.get("ALLOW_WEB", True),
-        help="Nie wysyła treści dokumentów na zewnątrz. Pobiera tylko publiczne strony dla uzupełnienia wiedzy.",
-        disabled=st.session_state.get("converting", False)
+        help="""Pozwala pobierać publiczne strony WWW.\n\n✅ NIE wysyła Twoich dokumentów\n✅ Pobiera tylko publiczne dane\n✅ Dla Vision: 'opisz obraz'""",
+        disabled=st.session_state.get("converting", False) or OFFLINE_MODE
     )
-    # Web enhancement dla Vision
+
+    # Status indicator
     if st.session_state.get("ALLOW_WEB", False):
-        st.caption("🔍 Web search będzie używany do weryfikacji opisów obrazów (tylko dla trybu 'Vision: opisz obraz')")
+        st.info("🔍 Web search aktywny - Vision może weryfikować opisy")
     else:
-        st.caption("🔒 Web search wyłączony - Vision działa tylko lokalnie")
-   
+        st.success("🔒 Web search wyłączony - maksymalna prywatność")
 
-    # Status adresów
-    def _status_url(name, url):
-        try:
-            host = urlparse(url).hostname or ""
-            st.caption(f"{name}: {url} → {'✅ lokalny/prywatny' if is_private_host(host) else '❌ zewnętrzny'}")
-        except Exception:
-            st.caption(f"{name}: {url} → ⚠️ nie można zweryfikować")
-    _status_url("Ollama", OLLAMA_URL)
-    _status_url("Whisper", WHISPER_URL)
-    _status_url("Pyannote", PYANNOTE_URL)
+    # Status usług w expanderze
+    with st.expander("🔌 Status usług", expanded=False):
+        st.caption("📊 Połączenia z lokalnymi usługami:")
+        def _status_url(name, url, desc=""):
+            try:
+                host = urlparse(url).hostname or ""
+                is_local = is_private_host(host)
+                icon = "✅" if is_local else "❌"
+                status = "lokalny" if is_local else "zewnętrzny"
+                st.caption(f"{icon} **{name}** {desc}")
+                st.caption(f"   └─ `{url}` ({status})")
+            except Exception:
+                st.caption(f"⚠️ **{name}** - nie można zweryfikować")
+        _status_url("Ollama", OLLAMA_URL, "- AI models")
+        _status_url("Whisper", WHISPER_URL, "- Transkrypcja audio")
+        _status_url("Pyannote", PYANNOTE_URL, "- Rozpoznawanie mówców")
 
-    # Vision
+    st.markdown("---")
+
+    # === VISION ===
+    st.subheader("👁️ Vision (analiza obrazów)")
+
+    with st.expander("ℹ️ Co to jest Vision?", expanded=False):
+        st.markdown("""
+        **Vision** to AI który "widzi" obrazy i potrafi je opisać lub przeczytać tekst z nich.
+
+        **Tryby pracy:**
+        - **OCR** - tylko rozpoznawanie tekstu (Tesseract)
+        - **Vision: przepisz tekst** - AI czyta tekst z obrazu (lepsze od OCR)
+        - **Vision: opisz obraz** - AI opisuje CO WIDZI na obrazie
+        - **OCR + Vision** - oba razem
+
+        💡 **Użyj Vision gdy:**
+        • Masz zdjęcia/schematy/rysunki
+        • OCR nie radzi sobie z tekstem
+        • Chcesz opis zawartości obrazu
+        """)
+
     vision_models = list_vision_models()
     use_vision = st.checkbox(
-        "Użyj modelu wizyjnego (Ollama Vision)",
+        "✨ Włącz Vision (AI dla obrazów)",
         value=True if vision_models else False,
+        help="Używa AI do analizy obrazów, zdjęć, schematów, rysunków technicznych",
         disabled=st.session_state.get("converting", False)
     )
     
@@ -1540,7 +1593,11 @@ with st.sidebar:
         disabled=st.session_state.get("converting", False)
     )
 
-    st.subheader("Obrazy (IMG)")
+    st.markdown("---")
+
+    # === OPCJE ZAAWANSOWANE ===
+    with st.expander("🔧 Opcje zaawansowane", expanded=False):
+        st.subheader("Obrazy (IMG)")
     if use_vision and selected_vision:
         # Inicjalizacja domyślnego trybu
         if "image_mode_idx" not in st.session_state:
@@ -1647,6 +1704,41 @@ with st.sidebar:
                 st.code("pip install " + " ".join(sorted(set(rec["pip"])) ), language="bash")
         with st.expander("Pełne szczegóły diagnostyki"):
             st.json(diag, expanded=False)
+
+    # === POMOC ===
+    st.markdown("---")
+    with st.expander("❓ Pomoc i podpowiedzi", expanded=False):
+        st.markdown("""
+        ### 🎯 Szybki start
+
+        1. **Upload pliku** - PDF, Word, zdjęcie, audio
+        2. **Kliknij "Konwertuj"**
+        3. **Gotowe!**
+
+        ### 💡 Wskazówki
+
+        **Dla PDF tekstowych:**
+        - Użyj domyślnych ustawień
+        - Vision nie jest potrzebny
+
+        **Dla skanów/zdjęć:**
+        - Włącz Vision
+        - Wybierz "Vision: opisz obraz"
+
+        **Dla audio:**
+        - Automatycznie używa Whisper (transkrypcja)
+        - Pyannote rozpoznaje mówców (jeśli dostępny)
+
+        ### 🔐 Prywatność
+
+        ✅ Wszystko działa **lokalnie**
+        ✅ Dokumenty **NIE są wysyłane** na zewnątrz
+        ✅ Web lookup pobiera tylko **publiczne strony**
+
+        ### 🆘 Problemy?
+
+        Sprawdź "Status usług" powyżej - wszystkie powinny być zielone (✅).
+        """)
 
 # === FILE UPLOADER ===
 uploaded_files = st.file_uploader(
