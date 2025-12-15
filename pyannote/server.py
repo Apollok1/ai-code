@@ -85,20 +85,43 @@ async def diarize(audio_file: UploadFile = File(...)):
 
         diarization = None
 
-        # 1) Nowsze pyannote.audio (DiarizeOutput)
-        #    -> używamy speaker_diarization (ew. exclusive_speaker_diarization)
-        if hasattr(result, "speaker_diarization"):
-            diarization = result.speaker_diarization
-        elif hasattr(result, "exclusive_speaker_diarization"):
-            diarization = result.exclusive_speaker_diarization
-
-        # 2) Starsze wersje: wynik ma od razu .itertracks()
-        if diarization is None and hasattr(result, "itertracks"):
+        # 0) Jeśli sam wynik ma itertracks (stare pyannote) – użyj go
+        if hasattr(result, "itertracks"):
             diarization = result
 
-        # 3) Awaryjnie: jeśli to krotka/lista, weź pierwszy element
-        if diarization is None and isinstance(result, (list, tuple)) and len(result) > 0:
-            diarization = result[0]
+        # 1) Jeśli to DiarizeOutput / dataclass – spróbuj znanych pól
+        if diarization is None:
+            candidate_attrs = [
+                "speaker_diarization",
+                "exclusive_speaker_diarization",
+                "diarization",
+                "annotation",
+            ]
+            for name in candidate_attrs:
+                value = getattr(result, name, None)
+                if value is not None and hasattr(value, "itertracks"):
+                    diarization = value
+                    logger.info(f"Używam pola '{name}' jako anotacji diarization.")
+                    break
+
+        # 2) Jako ostatnia deska ratunku: przeleć wszystkie pola dataclass
+        if diarization is None and hasattr(result, "__dataclass_fields__"):
+            for field_name in result.__dataclass_fields__.keys():
+                value = getattr(result, field_name, None)
+                if value is not None and hasattr(value, "itertracks"):
+                    diarization = value
+                    logger.info(
+                        f"Używam pola dataclass '{field_name}' jako anotacji diarization."
+                    )
+                    break
+
+        # 3) Jeszcze fallback: jeśli to lista/krotka – sprawdź elementy
+        if diarization is None and isinstance(result, (list, tuple)):
+            for item in result:
+                if hasattr(item, "itertracks"):
+                    diarization = item
+                    logger.info("Używam pierwszego elementu wyników jako anotacji.")
+                    break
 
         if diarization is None:
             logger.error(
@@ -112,9 +135,9 @@ async def diarize(audio_file: UploadFile = File(...)):
         segments = []
         for turn, _, speaker in diarization.itertracks(yield_label=True):
             segments.append({
-                "start": turn.start,
-                "end": turn.end,
-                "speaker": speaker,
+                "start": float(turn.start),
+                "end": float(turn.end),
+                "speaker": str(speaker),
             })
 
         # Cleanup
