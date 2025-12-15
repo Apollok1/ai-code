@@ -180,6 +180,7 @@ class ComponentPattern:
     Learned pattern for a component type (stored in database).
 
     Represents historical data for a canonical component name.
+    Uses full Welford's algorithm with M2 (sum of squared deviations) for variance tracking.
     """
 
     name: str
@@ -188,8 +189,14 @@ class ComponentPattern:
     avg_hours_layout: float
     avg_hours_detail: float
     avg_hours_doc: float
-    confidence: float
-    occurrences: int  # Number of times seen
+
+    # Welford's M2 (sum of squared deviations) for variance tracking
+    m2_hours_layout: float = 0.0
+    m2_hours_detail: float = 0.0
+    m2_hours_doc: float = 0.0
+
+    confidence: float = 0.3
+    occurrences: int = 1  # Number of times seen
     source: str = "actual"  # Source: 'actual', 'historical_excel', etc.
 
     def __post_init__(self):
@@ -216,6 +223,9 @@ class ComponentPattern:
             "avg_hours_3d_layout": self.avg_hours_layout,
             "avg_hours_3d_detail": self.avg_hours_detail,
             "avg_hours_2d": self.avg_hours_doc,
+            "m2_hours_layout": self.m2_hours_layout,
+            "m2_hours_detail": self.m2_hours_detail,
+            "m2_hours_doc": self.m2_hours_doc,
             "avg_hours_total": self.total_hours,
             "confidence": self.confidence,
             "occurrences": self.occurrences,

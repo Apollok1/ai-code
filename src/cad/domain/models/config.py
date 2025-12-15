@@ -54,7 +54,8 @@ class LearningConfig(BaseModel):
 
     enable_pattern_learning: bool = Field(default=True, description="Enable pattern learning from feedback")
     enable_bundle_learning: bool = Field(default=True, description="Enable bundle (parent→sub) learning")
-    welford_outlier_threshold: float = Field(default=3.5, ge=1.0, description="Welford outlier detection threshold (std dev)")
+    welford_outlier_threshold: float = Field(default=3.0, ge=1.0, description="Z-score threshold for outlier detection (e.g., 3.0 = 3 std deviations)")
+    welford_min_n: int = Field(default=5, ge=2, description="Minimal number of observations before applying Z-score outlier detection")
     min_pattern_occurrences: int = Field(default=2, ge=1, description="Min occurrences to keep pattern")
     min_bundle_occurrences: int = Field(default=2, ge=1, description="Min occurrences to keep bundle")
     fuzzy_match_threshold: int = Field(default=88, ge=0, le=100, description="Fuzzy match threshold (0-100)")

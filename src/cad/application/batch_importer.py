@@ -4,8 +4,7 @@ CAD Estimator Pro - Batch Importer
 Parallel batch import of Excel files with pattern learning.
 """
 import logging
-from typing import Callable
-from typing import BinaryIO, Any
+from typing import Any, BinaryIO, Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from cad.domain.models import DepartmentCode, Component, Estimate
@@ -58,7 +57,7 @@ class BatchImporter:
         files: list[tuple[str, BinaryIO]],
         department: DepartmentCode,
         learn_patterns: bool = True,
-        progress_callback: Callable | None = None
+        progress_callback: Callable[[int, int, str], None] | None = None
     ) -> list[dict]:
         """
         Import batch of Excel files in parallel.
