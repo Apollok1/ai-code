@@ -379,28 +379,24 @@ def render_history_page(app: dict, session: SessionManager):
     with tab1:
         st.subheader("📁 Historia projektów")
 
-        # Project ID for details
         project_id_input = st.number_input(
             "ID projektu (szczegóły)",
             min_value=1,
             value=None,
             step=1,
-            help="Wpisz ID projektu, aby zobaczyć szczegóły"
+            help="Wpisz ID projektu, aby zobaczyć szczegóły",
+            key="history_project_details_id",
         )
 
         if project_id_input:
             render_project_details(app, project_id_input)
             st.markdown("---")
 
-        # Filters
-        filters = render_project_filters()
+        # Filters dla tabeli i wykresu
+        filters = render_project_filters(key_prefix="history_main")
 
-        # Projects table
         render_projects_table(app, filters)
-
         st.markdown("---")
-
-        # Accuracy chart
         render_accuracy_chart(app, filters)
 
     with tab2:
@@ -475,19 +471,14 @@ def render_history_page(app: dict, session: SessionManager):
             "- Wzorce komponentów (według działu)"
         )
 
-        # Get filters for projects export
-        filters_for_export = render_project_filters()
+        # Osobne filtry dla exportu (inny prefix kluczy!)
+        filters_for_export = render_project_filters(key_prefix="history_export")
 
         st.markdown("---")
-
-        # Export projects
         render_export_projects(app, filters_for_export)
 
         st.markdown("---")
-
-        # Export patterns
         render_export_patterns(app)
-
 
 def render_admin_page(app: dict, session: SessionManager):
     """Render Admin page."""
