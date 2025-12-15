@@ -5,7 +5,7 @@ Enhanced results display showing outputs from all pipeline stages.
 """
 import streamlit as st
 from typing import Any
-from ...domain.models import Estimate
+from cad.domain.models import Estimate
 
 
 def render_multi_model_results(estimate: Estimate, hourly_rate: int) -> None:

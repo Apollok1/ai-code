@@ -4,7 +4,7 @@ CAD Estimator Pro - Database Protocol Interface
 Protocol-based interface for database operations (PEP 544).
 """
 from typing import Protocol, ContextManager, Any
-from ..models import Project, ProjectVersion, ComponentPattern
+from cad.models import Project, ProjectVersion, ComponentPattern
 
 
 class DatabaseClient(Protocol):

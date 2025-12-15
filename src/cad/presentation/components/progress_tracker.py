@@ -5,7 +5,7 @@ Real-time progress tracking for multi-model pipeline.
 """
 import streamlit as st
 from typing import Any
-from ...domain.models.multi_model import PipelineProgress, PipelineStage
+from cad.domain.models.multi_model import PipelineProgress, PipelineStage
 
 
 STAGE_NAMES = {

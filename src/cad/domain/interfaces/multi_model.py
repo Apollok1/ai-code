@@ -5,13 +5,13 @@ Protocol interfaces for multi-model estimation pipeline.
 """
 from typing import Protocol
 
-from ..models.multi_model import (
+from cad.models.multi_model import (
     StageContext,
     TechnicalAnalysis,
     StructuralDecomposition,
     PipelineProgress
 )
-from ..models import Estimate
+from cad.models import Estimate
 
 
 class TechnicalAnalysisStage(Protocol):

@@ -6,18 +6,18 @@ Main orchestrator for CAD project estimation workflow.
 import logging
 from typing import BinaryIO, Any
 
-from ..domain.models import Estimate, Component, DepartmentCode, Risk, Suggestion
-from ..domain.models.config import AppConfig
-from ..domain.exceptions import AIGenerationError, ParsingError
-from ..infrastructure.ai.ollama_client import OllamaClient
-from ..infrastructure.parsers.excel_parser import CADExcelParser
-from ..infrastructure.parsers.pdf_parser import CADPDFParser
-from ..infrastructure.parsers.component_parser import CADComponentParser
-from ..infrastructure.learning.pattern_learner import PatternLearner
-from ..infrastructure.learning.bundle_learner import BundleLearner
-from ..infrastructure.embeddings.pgvector_service import PgVectorService
-from ..infrastructure.multi_model import MultiModelOrchestrator
-from ..domain.models.multi_model import StageContext
+from cad.domain.models import Estimate, Component, DepartmentCode, Risk, Suggestion
+from cad.domain.models.config import AppConfig
+from cad.domain.exceptions import AIGenerationError, ParsingError
+from cad.infrastructure.ai.ollama_client import OllamaClient
+from cad.infrastructure.parsers.excel_parser import CADExcelParser
+from cad.infrastructure.parsers.pdf_parser import CADPDFParser
+from cad.infrastructure.parsers.component_parser import CADComponentParser
+from cad.infrastructure.learning.pattern_learner import PatternLearner
+from cad.infrastructure.learning.bundle_learner import BundleLearner
+from cad.infrastructure.embeddings.pgvector_service import PgVectorService
+from cad.infrastructure.multi_model import MultiModelOrchestrator
+from cad.domain.models.multi_model import StageContext
 
 logger = logging.getLogger(__name__)
 

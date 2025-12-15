@@ -6,13 +6,13 @@ Factory functions for dependency injection and easy setup.
 import logging
 from typing import Any
 
-from ..domain.models.config import AppConfig
-from ..infrastructure.database.postgres_client import PostgresClient
-from ..infrastructure.ai.ollama_client import OllamaClient
-from ..infrastructure.parsers.excel_parser import CADExcelParser
-from ..infrastructure.parsers.pdf_parser import CADPDFParser
-from ..infrastructure.parsers.component_parser import CADComponentParser
-from ..infrastructure.multi_model import MultiModelOrchestrator
+from cad.domain.models.config import AppConfig
+from cad.infrastructure.database.postgres_client import PostgresClient
+from cad.infrastructure.ai.ollama_client import OllamaClient
+from cad.infrastructure.parsers.excel_parser import CADExcelParser
+from cad.infrastructure.parsers.pdf_parser import CADPDFParser
+from cad.infrastructure.parsers.component_parser import CADComponentParser
+from cad.infrastructure.multi_model import MultiModelOrchestrator
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +117,7 @@ def quick_setup(
         - pdf_parser: CADPDFParser
         - component_parser: CADComponentParser
     """
-    from ..domain.models.config import AppConfig, DatabaseConfig, OllamaConfig
+    from cad.domain.models.config import AppConfig, DatabaseConfig, OllamaConfig
 
     config = AppConfig(
         database=DatabaseConfig(host=db_host),

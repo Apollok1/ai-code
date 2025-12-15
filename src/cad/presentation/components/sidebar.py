@@ -6,9 +6,9 @@ Sidebar configuration UI for model selection and settings.
 import streamlit as st
 from typing import Any
 
-from ...domain.models import DepartmentCode, DEPARTMENTS
-from ...domain.models.config import AppConfig
-from ...presentation.state.session_manager import SessionManager
+from cad.domain.models import DepartmentCode, DEPARTMENTS
+from cad.domain.models.config import AppConfig
+from cad.presentation.state.session_manager import SessionManager
 
 
 def render_sidebar(

@@ -6,8 +6,8 @@ Service for generating and managing embeddings using pgvector for semantic searc
 import logging
 from typing import Any
 
-from ...domain.exceptions import EmbeddingError
-from ...infrastructure.ai.ollama_client import OllamaClient
+from cad.domain.exceptions import EmbeddingError
+from cad.infrastructure.ai.ollama_client import OllamaClient
 
 logger = logging.getLogger(__name__)
 
