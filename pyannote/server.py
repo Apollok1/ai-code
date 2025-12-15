@@ -78,7 +78,7 @@ async def diarize(audio_file: UploadFile = File(...)):
             tmp_path = tmp.name
 
         # Run diarization
-        diarization = pipeline(tmp_path)
+        output = pipeline(tmp_path)
 
         # Convert to JSON-serializable format
         segments = []
