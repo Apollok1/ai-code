@@ -22,7 +22,7 @@ from cad.infrastructure.multi_model import MultiModelOrchestrator
 from cad.application.estimation_pipeline import EstimationPipeline
 from cad.application.batch_importer import BatchImporter
 from cad.presentation.state.session_manager import SessionManager
-from cad.components.sidebar import render_sidebar
+from cad.presentation.components.sidebar import render_sidebar
 
 # Configure logging
 logging.basicConfig(
