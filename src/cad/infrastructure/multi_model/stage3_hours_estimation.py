@@ -141,60 +141,63 @@ class HoursEstimationStage:
             logger.error(f"Hours estimation failed: {e}", exc_info=True)
             raise AIGenerationError(f"Stage 3 failed: {e}")
 
-    def _build_estimation_prompt(
-        self,
-        context: StageContext,
-        components: list[ComponentNode],
-        complexity_multiplier: float
-    ) -> str:
-        """Build hours estimation prompt."""
-        tech_analysis = context.technical_analysis
+    
 
-        components_list = "\n".join([
-            f"- {node.name} (category: {node.category}, qty: {node.quantity})"
-            for node in components[:30]  # Limit to 30 components
-        ])
-
-        return f"""You are a CAD/CAM estimator calculating hours for each component.
+    def _build_estimation_prompt(context, tech_analysis, complexity_multiplier,
+                             materials, components_list: str) -> str:
+        return f"""
+You are a CAD/CAM estimator calculating realistic engineering hours for each component of a mechanical project.
 
 PROJECT CONTEXT:
 - Description: {context.description}
-- Department: {context.department_code}
-- Complexity: {tech_analysis.project_complexity if tech_analysis else 'medium'}
-- Complexity Multiplier: {complexity_multiplier}x
-- Materials: {', '.join(tech_analysis.materials[:3]) if tech_analysis else 'N/A'}
+- Department code: {context.department_code}
+- Complexity level: {tech_analysis.project_complexity}
+- Complexity multiplier: {complexity_multiplier}x
+- Dominant materials: {materials}
 
-COMPONENTS TO ESTIMATE:
+COMPONENTS TO ESTIMATE (from previous stage):
 {components_list}
 
-TASK: Estimate hours for each component in THREE phases:
-1. **hours_3d_layout**: Initial 3D modeling and layout (positioning in assembly)
-2. **hours_3d_detail**: Detailed 3D modeling with all features
-3. **hours_2d**: 2D drawings creation with dimensions and annotations
+Each component listed above ALREADY has a name. You MUST:
+- Keep the component names EXACTLY as given (do not translate, do not rename).
+- Provide hour estimates for THREE phases:
+  1. hours_3d_layout  – initial 3D positioning and basic shapes in the assembly,
+  2. hours_3d_detail  – full detailed 3D modeling with all relevant features,
+  3. hours_2d         – 2D manufacturing drawings with dimensions and annotations.
 
-Consider:
-- Component complexity (number of features, surfaces, details)
-- Manufacturing requirements (tolerances, surface finish)
-- Standard vs custom parts (standard parts = less time)
-- Repetition (similar components = faster after first)
+CONSIDER:
+- Geometric and functional complexity of each component.
+- Manufacturing requirements (tolerances, surface finish, weld symbols, GD&T).
+- Standard vs custom parts (standard = much less time).
+- Repetition: if several components are very similar, later ones are faster than the first.
+- The overall project complexity and department type (more safety-critical = more hours).
 
-OUTPUT FORMAT (JSON):
+CONSTRAINTS:
+- Use realistic ranges, e.g. 0.1–200 hours per component per phase (most parts will be much lower).
+- Use decimal numbers (e.g. 1.5, 3.0), not strings.
+- If there is almost no work for a phase, you can use 0.0 or a very small value (e.g. 0.2).
+- If you are very uncertain, keep hours modest and reduce confidence.
+
+OUTPUT FORMAT:
+Return ONE valid JSON object, and NOTHING else.
+
+JSON SCHEMA:
 {{
-    "reasoning": "Your estimation strategy (1 paragraph)",
-    "estimates": [
-        {{
-            "name": "Component Name",
-            "hours_3d_layout": 2.0,
-            "hours_3d_detail": 8.0,
-            "hours_2d": 4.0,
-            "confidence": 0.7,
-            "reasoning": "Why these hours make sense"
-        }},
-        ...
-    ]
+  "reasoning": "Your global estimation strategy (1 short paragraph).",
+  "estimates": [
+    {{
+      "name": "Component Name (exactly as in input)",
+      "hours_3d_layout": 2.0,
+      "hours_3d_detail": 8.0,
+      "hours_2d": 4.0,
+      "confidence": 0.7,
+      "reasoning": "Why these hours make sense for this component."
+    }}
+  ]
 }}
 
-Be realistic. A simple bracket might be 1-3 total hours, a complex gearbox might be 50-100 hours."""
+Output ONLY JSON, strictly following this structure.
+"""
 
     def _find_pattern_for_component(self, component_name: str, department: str) -> dict | None:
         """Find historical pattern for component."""
