@@ -13,7 +13,7 @@ from cad.infrastructure.factory import (
     create_ai_client,
     create_excel_parser,
     create_pdf_parser,
-    create_component_parser
+    create_component_parser,
 )
 from cad.infrastructure.learning.pattern_learner import PatternLearner
 from cad.infrastructure.learning.bundle_learner import BundleLearner
@@ -27,7 +27,7 @@ from cad.presentation.components.sidebar import render_sidebar
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ st.set_page_config(
     page_title="CAD Estimator Pro",
     page_icon="🚀",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
 
@@ -91,7 +91,7 @@ def init_app() -> dict[str, Any]:
         pattern_learner=pattern_learner,
         bundle_learner=bundle_learner,
         pgvector_service=pgvector_service,
-        multi_model_orchestrator=multi_model
+        multi_model_orchestrator=multi_model,
     )
 
     # Create batch importer
@@ -100,21 +100,21 @@ def init_app() -> dict[str, Any]:
         db_client=db,
         excel_parser=excel_parser,
         pattern_learner=pattern_learner,
-        bundle_learner=bundle_learner
+        bundle_learner=bundle_learner,
     )
 
     logger.info("✅ Initialization complete (multi-model pipeline ready)")
 
     return {
-        'config': config,
-        'db': db,
-        'ai': ai,
-        'pipeline': pipeline,
-        'batch_importer': batch_importer,
-        'pattern_learner': pattern_learner,
-        'bundle_learner': bundle_learner,
-        'pgvector': pgvector_service,
-        'multi_model': multi_model
+        "config": config,
+        "db": db,
+        "ai": ai,
+        "pipeline": pipeline,
+        "batch_importer": batch_importer,
+        "pattern_learner": pattern_learner,
+        "bundle_learner": bundle_learner,
+        "pgvector": pgvector_service,
+        "multi_model": multi_model,
     }
 
 
@@ -135,13 +135,30 @@ def main():
 
     # Get available models
     try:
-        all_models = app['ai'].list_available_models()
-        text_models = [m for m in all_models if not any(
-            m.startswith(p) for p in ("llava", "bakllava", "moondream", "qwen2-vl", "qwen2.5vl", "nomic-embed")
-        )]
-        vision_models = [m for m in all_models if any(
-            m.startswith(p) for p in ("llava", "bakllava", "moondream", "qwen2-vl", "qwen2.5vl")
-        )]
+        all_models = app["ai"].list_available_models()
+        text_models = [
+            m
+            for m in all_models
+            if not any(
+                m.startswith(p)
+                for p in (
+                    "llava",
+                    "bakllava",
+                    "moondream",
+                    "qwen2-vl",
+                    "qwen2.5vl",
+                    "nomic-embed",
+                )
+            )
+        ]
+        vision_models = [
+            m
+            for m in all_models
+            if any(
+                m.startswith(p)
+                for p in ("llava", "bakllava", "moondream", "qwen2-vl", "qwen2.5vl")
+            )
+        ]
     except Exception as e:
         logger.warning(f"Failed to list models: {e}")
         text_models = ["llama3:latest"]
@@ -150,9 +167,9 @@ def main():
     # Render sidebar
     sidebar_config = render_sidebar(
         session=session,
-        app_config=app['config'],
+        app_config=app["config"],
         available_text_models=text_models,
-        available_vision_models=vision_models
+        available_vision_models=vision_models,
     )
 
     # Navigation
@@ -161,7 +178,7 @@ def main():
     page = st.sidebar.radio(
         "Nawigacja",
         ["📊 Dashboard", "🆕 Nowy projekt", "📚 Historia i Uczenie", "🛠️ Admin"],
-        label_visibility="collapsed"
+        label_visibility="collapsed",
     )
 
     # Routing
@@ -177,24 +194,27 @@ def main():
 
 # ==================== PAGES ====================
 
+
 def render_dashboard_page(app: dict, session: SessionManager):
     """Render Dashboard page."""
     st.header("📊 Dashboard")
 
     # Quick stats
     try:
-        with app['db'].get_connection() as conn:
+        with app["db"].get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT COUNT(*) FROM projects")
                 project_count = cur.fetchone()[0]
 
-                cur.execute("SELECT COUNT(*) FROM component_patterns WHERE occurrences > 2")
+                cur.execute(
+                    "SELECT COUNT(*) FROM component_patterns WHERE occurrences > 2"
+                )
                 pattern_count = cur.fetchone()[0]
 
         col1, col2, col3 = st.columns(3)
         col1.metric("📁 Projekty", project_count)
         col2.metric("🧩 Wzorce", pattern_count)
-        col3.metric("🤖 Status AI", "✅ Online" if app['ai'] else "❌ Offline")
+        col3.metric("🤖 Status AI", "✅ Online" if app["ai"] else "❌ Offline")
 
     except Exception as e:
         st.error(f"Błąd pobierania statystyk: {e}")
@@ -206,8 +226,11 @@ def render_new_project_page(app: dict, session: SessionManager, config: dict):
     """Render New Project page."""
     st.header("🆕 Nowy Projekt")
 
-    from cad.components.file_uploader import render_file_uploader, render_text_input
-    from cad.components.sidebar import render_department_selector
+    from cad.presentation.components.file_uploader import (
+        render_file_uploader,
+        render_text_input,
+    )
+    from cad.presentation.components.sidebar import render_department_selector
 
     # Department selection
     department = render_department_selector()
@@ -215,7 +238,9 @@ def render_new_project_page(app: dict, session: SessionManager, config: dict):
     # Project details
     col1, col2 = st.columns(2)
     with col1:
-        project_name = st.text_input("Nazwa projektu*", placeholder="np. Stacja dociskania omega")
+        project_name = st.text_input(
+            "Nazwa projektu*", placeholder="np. Stacja dociskania omega"
+        )
         client = st.text_input("Klient", placeholder="np. Firma sp. z o.o.")
 
     # Description and files
@@ -224,15 +249,18 @@ def render_new_project_page(app: dict, session: SessionManager, config: dict):
 
     # Estimate button
     if st.button("🤖 Analizuj z AI", use_container_width=True, type="primary"):
-        if not description and not files['excel']:
+        if not description and not files["excel"]:
             st.warning("⚠️ Podaj opis lub wgraj plik Excel")
         else:
             # Check if multi-model is enabled
-            use_multi_model = config.get('use_multi_model', False)
+            use_multi_model = config.get("use_multi_model", False)
 
             if use_multi_model:
                 # Multi-model with progress tracking
-                from cad.components.progress_tracker import render_progress_placeholder, ProgressTracker
+                from cad.presentation.components.progress_tracker import (
+                    render_progress_placeholder,
+                    ProgressTracker,
+                )
 
                 progress_placeholder = render_progress_placeholder()
                 tracker = ProgressTracker(progress_placeholder)
@@ -244,37 +272,48 @@ def render_new_project_page(app: dict, session: SessionManager, config: dict):
                         full_text += "\n\n" + additional_text
 
                     # Estimate with progress callback
-                    estimate = app['pipeline'].estimate_from_description(
+                    estimate = app["pipeline"].estimate_from_description(
                         description=full_text,
                         department=department,
-                        pdf_files=files['pdfs'],
-                        excel_file=files['excel'],
+                        pdf_files=files["pdfs"],
+                        excel_file=files["excel"],
                         use_multi_model=True,
-                        stage1_model=config.get('stage1_model'),
-                        stage2_model=config.get('stage2_model'),
-                        stage3_model=config.get('stage3_model'),
-                        stage4_model=config.get('stage4_model')
+                        stage1_model=config.get("stage1_model"),
+                        stage2_model=config.get("stage2_model"),
+                        stage3_model=config.get("stage3_model"),
+                        stage4_model=config.get("stage4_model"),
                     )
 
                     # Clear progress, show success
                     progress_placeholder.empty()
                     session.set_estimate(estimate)
-                    st.success(f"✅ Multi-Model Pipeline zakończony: {estimate.total_hours:.1f}h, {estimate.component_count} komponentów")
+                    st.success(
+                        f"✅ Multi-Model Pipeline zakończony: "
+                        f"{estimate.total_hours:.1f}h, {estimate.component_count} komponentów"
+                    )
 
                     # Display enhanced results
-                    from cad.components.multi_model_results import render_multi_model_results
-                    render_multi_model_results(estimate, config['hourly_rate'])
+                    from cad.presentation.components.multi_model_results import (
+                        render_multi_model_results,
+                    )
+
+                    render_multi_model_results(estimate, config["hourly_rate"])
 
                     # Also show standard component list
                     st.markdown("---")
                     st.markdown("### 📋 Lista Komponentów (szczegóły)")
-                    from cad.components.results_display import render_components_list
+                    from cad.presentation.components.results_display import (
+                        render_components_list,
+                    )
+
                     render_components_list(estimate)
 
                 except Exception as e:
                     progress_placeholder.empty()
                     st.error(f"❌ Multi-Model Pipeline nie powiódł się: {e}")
-                    logger.error(f"Multi-model estimation failed: {e}", exc_info=True)
+                    logger.error(
+                        f"Multi-model estimation failed: {e}", exc_info=True
+                    )
 
             else:
                 # Single-model with spinner
@@ -286,22 +325,29 @@ def render_new_project_page(app: dict, session: SessionManager, config: dict):
                             full_text += "\n\n" + additional_text
 
                         # Estimate (single-model)
-                        estimate = app['pipeline'].estimate_from_description(
+                        estimate = app["pipeline"].estimate_from_description(
                             description=full_text,
                             department=department,
-                            pdf_files=files['pdfs'],
-                            excel_file=files['excel'],
-                            use_multi_model=False
+                            pdf_files=files["pdfs"],
+                            excel_file=files["excel"],
+                            use_multi_model=False,
                         )
 
                         # Save to session
                         session.set_estimate(estimate)
 
-                        st.success(f"✅ Analiza zakończona: {estimate.total_hours:.1f}h, {estimate.component_count} komponentów")
+                        st.success(
+                            f"✅ Analiza zakończona: "
+                            f"{estimate.total_hours:.1f}h, {estimate.component_count} komponentów"
+                        )
 
                         # Display results
-                        from cad.components.results_display import render_estimate_summary, render_components_list
-                        render_estimate_summary(estimate, config['hourly_rate'])
+                        from cad.presentation.components.results_display import (
+                            render_estimate_summary,
+                            render_components_list,
+                        )
+
+                        render_estimate_summary(estimate, config["hourly_rate"])
                         st.markdown("---")
                         render_components_list(estimate)
 
@@ -317,9 +363,11 @@ def render_history_page(app: dict, session: SessionManager):
 
     # Show patterns count
     try:
-        with app['db'].get_connection() as conn:
+        with app["db"].get_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT COUNT(*) FROM component_patterns WHERE occurrences > 2")
+                cur.execute(
+                    "SELECT COUNT(*) FROM component_patterns WHERE occurrences > 2"
+                )
                 pattern_count = cur.fetchone()[0]
 
         st.metric("🧩 Wzorce w bazie", pattern_count)
@@ -351,7 +399,7 @@ def render_admin_page(app: dict, session: SessionManager):
     with tab1:
         st.subheader("📊 Statystyki bazy")
         try:
-            with app['db'].get_connection() as conn:
+            with app["db"].get_connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute("SELECT COUNT(*) FROM projects")
                     projects = cur.fetchone()[0]
@@ -376,7 +424,7 @@ def render_admin_page(app: dict, session: SessionManager):
 
         if st.button("🗑️ Usuń wzorce z confidence < 0.1"):
             try:
-                deleted = app['db'].delete_patterns_with_low_confidence(0.1)
+                deleted = app["db"].delete_patterns_with_low_confidence(0.1)
                 st.success(f"✅ Usunięto {deleted} wzorców")
             except Exception as e:
                 st.error(f"Błąd: {e}")
@@ -386,11 +434,13 @@ def render_admin_page(app: dict, session: SessionManager):
         if st.button("🔄 Przelicz wszystkie embeddingi"):
             with st.spinner("Przeliczam embeddingi..."):
                 try:
-                    counts = app['pgvector'].batch_update_embeddings(
+                    counts = app["pgvector"].batch_update_embeddings(
                         update_projects=True,
-                        update_patterns=True
+                        update_patterns=True,
                     )
-                    st.success(f"✅ Przeliczono {counts['projects']} projektów i {counts['patterns']} wzorców")
+                    st.success(
+                        f"✅ Przeliczono {counts['projects']} projektów i {counts['patterns']} wzorców"
+                    )
                 except Exception as e:
                     st.error(f"Błąd: {e}")
 
