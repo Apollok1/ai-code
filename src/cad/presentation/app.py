@@ -343,22 +343,150 @@ def render_new_project_page(app: dict, session: SessionManager, config: dict):
 
 def render_history_page(app: dict, session: SessionManager):
     """Render History & Learning page."""
+    from cad.presentation.components.project_history import (
+        render_project_filters,
+        render_projects_table,
+        render_project_details,
+        render_accuracy_chart,
+        render_export_projects,
+        render_export_patterns,
+    )
+    from cad.presentation.components.learning import (
+        render_add_actual_hours,
+        render_learning_stats,
+        render_pattern_improvements,
+        render_batch_import,
+    )
+    from cad.presentation.components.pattern_analysis import (
+        render_pattern_search,
+        render_top_patterns,
+        render_low_confidence_patterns,
+        render_bundle_analysis,
+        render_top_bundles,
+    )
+
     st.header("📚 Historia i Uczenie")
-    st.info("💡 Pełna funkcjonalność historii i uczenia będzie dostępna w kolejnej iteracji")
 
-    # Show patterns count
-    try:
-        with app["db"].get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT COUNT(*) FROM component_patterns WHERE occurrences > 2"
-                )
-                pattern_count = cur.fetchone()[0]
+    # Main tabs
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "📁 Historia projektów",
+        "🧠 Uczenie",
+        "🔍 Wzorce",
+        "🔗 Bundles",
+        "📥 Export"
+    ])
 
-        st.metric("🧩 Wzorce w bazie", pattern_count)
+    with tab1:
+        st.subheader("📁 Historia projektów")
 
-    except Exception as e:
-        st.error(f"Błąd: {e}")
+        # Project ID for details
+        project_id_input = st.number_input(
+            "ID projektu (szczegóły)",
+            min_value=1,
+            value=None,
+            step=1,
+            help="Wpisz ID projektu, aby zobaczyć szczegóły"
+        )
+
+        if project_id_input:
+            render_project_details(app, project_id_input)
+            st.markdown("---")
+
+        # Filters
+        filters = render_project_filters()
+
+        # Projects table
+        render_projects_table(app, filters)
+
+        st.markdown("---")
+
+        # Accuracy chart
+        render_accuracy_chart(app, filters)
+
+    with tab2:
+        st.subheader("🧠 System uczenia")
+
+        # Stats
+        render_learning_stats(app)
+
+        st.markdown("---")
+
+        # Add actual hours
+        col1, col2 = st.columns([1, 1])
+
+        with col1:
+            st.markdown("### ⏱️ Dodaj actual hours")
+            project_id_for_feedback = st.number_input(
+                "ID projektu",
+                min_value=1,
+                value=None,
+                step=1,
+                key="feedback_project_id",
+                help="Wpisz ID projektu, aby dodać rzeczywiste godziny"
+            )
+
+            if project_id_for_feedback:
+                render_add_actual_hours(app, project_id_for_feedback)
+
+        with col2:
+            st.markdown("### 🔄 Ostatnio zaktualizowane")
+            render_pattern_improvements(app, limit=10)
+
+        st.markdown("---")
+
+        # Batch import
+        render_batch_import(app)
+
+    with tab3:
+        st.subheader("🔍 Analiza wzorców")
+
+        # Search
+        render_pattern_search(app)
+
+        st.markdown("---")
+
+        # Top patterns
+        col1, col2 = st.columns(2)
+
+        with col1:
+            render_top_patterns(app, limit=15)
+
+        with col2:
+            render_low_confidence_patterns(app, threshold=0.5, limit=15)
+
+    with tab4:
+        st.subheader("🔗 Analiza relacji (Bundles)")
+
+        # Bundle search
+        render_bundle_analysis(app)
+
+        st.markdown("---")
+
+        # Top bundles
+        render_top_bundles(app, limit=20)
+
+    with tab5:
+        st.subheader("📥 Export danych")
+
+        st.info(
+            "💡 **Export danych do CSV/Excel**\n\n"
+            "Możesz wyeksportować:\n"
+            "- Projekty (z filtrami)\n"
+            "- Wzorce komponentów (według działu)"
+        )
+
+        # Get filters for projects export
+        filters_for_export = render_project_filters()
+
+        st.markdown("---")
+
+        # Export projects
+        render_export_projects(app, filters_for_export)
+
+        st.markdown("---")
+
+        # Export patterns
+        render_export_patterns(app)
 
 
 def render_admin_page(app: dict, session: SessionManager):

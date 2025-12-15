@@ -215,3 +215,143 @@ class BatchImporter:
                 'status': 'error',
                 'error': str(e)
             }
+
+    def import_from_excel(
+        self,
+        excel_file: BinaryIO,
+        department: str,
+        mark_as_historical: bool = True
+    ) -> dict:
+        """
+        Import single Excel file and learn patterns.
+
+        Wrapper for UI - simplified interface for single file import.
+
+        Args:
+            excel_file: Excel file stream
+            department: Department code ('131'-'135')
+            mark_as_historical: Mark project as historical
+
+        Returns:
+            Dict with import results:
+            {
+                'projects_imported': 1,
+                'patterns_learned': 15,
+                'bundles_learned': 5,
+                'errors': []
+            }
+        """
+        try:
+            dept_code = DepartmentCode(department)
+        except ValueError:
+            logger.error(f"Invalid department code: {department}")
+            return {
+                'projects_imported': 0,
+                'patterns_learned': 0,
+                'bundles_learned': 0,
+                'errors': [f"Invalid department code: {department}"]
+            }
+
+        try:
+            # Parse Excel
+            excel_data = self.excel_parser.parse(excel_file)
+            components_data = excel_data['components']
+
+            # Extract description from A1
+            excel_file.seek(0)
+            description = self.excel_parser.extract_description_from_a1(excel_file)
+            filename = getattr(excel_file, 'name', 'uploaded_file.xlsx')
+
+            if not description:
+                description = f"Projekt historyczny: {filename}"
+
+            # Convert to Component objects (skip summary rows)
+            components = []
+            for comp_data in components_data:
+                if comp_data.get('is_summary'):
+                    continue
+
+                component = Component(
+                    name=comp_data.get('name', 'Unknown'),
+                    hours_3d_layout=float(comp_data.get('hours_3d_layout', 0)),
+                    hours_3d_detail=float(comp_data.get('hours_3d_detail', 0)),
+                    hours_2d=float(comp_data.get('hours_2d', 0)),
+                    confidence=0.7,  # Historical data has decent confidence
+                    confidence_reason="Historical Excel import",
+                    comment=comp_data.get('comment', '')
+                )
+                components.append(component)
+
+            # Create estimate
+            estimate = Estimate.from_components(components)
+
+            # Save project
+            from cad.domain.models import Project
+            project = Project(
+                id=None,
+                name=filename.replace('.xlsx', '').replace('.xls', ''),
+                department=dept_code,
+                estimate=estimate,
+                description=description,
+                is_historical=mark_as_historical
+            )
+
+            project_id = self.db.save_project(project)
+            logger.info(f"✅ Saved historical project: {project.name} (ID={project_id})")
+
+            # Learn patterns
+            patterns_learned = 0
+            bundles_learned = 0
+            errors = []
+
+            for component in components:
+                try:
+                    # Learn pattern for this component
+                    self.pattern_learner.learn_from_component(
+                        name=component.name,
+                        department=dept_code.value,
+                        hours_layout=component.hours_3d_layout,
+                        hours_detail=component.hours_3d_detail,
+                        hours_doc=component.hours_2d,
+                        source='historical_excel'
+                    )
+                    patterns_learned += 1
+
+                    # Learn bundles from sub-components
+                    if component.subcomponents:
+                        subs = [
+                            {'name': sub.name, 'quantity': sub.quantity}
+                            for sub in component.subcomponents
+                        ]
+                        learned = self.bundle_learner.learn_from_component_with_subs(
+                            component.name,
+                            subs,
+                            dept_code.value
+                        )
+                        bundles_learned += learned
+
+                except Exception as e:
+                    error_msg = f"Pattern learning failed for '{component.name}': {e}"
+                    logger.warning(error_msg)
+                    errors.append(error_msg)
+                    continue
+
+            logger.info(
+                f"📚 Learned {patterns_learned} patterns and {bundles_learned} bundles from '{filename}'"
+            )
+
+            return {
+                'projects_imported': 1,
+                'patterns_learned': patterns_learned,
+                'bundles_learned': bundles_learned,
+                'errors': errors
+            }
+
+        except Exception as e:
+            logger.error(f"Excel import failed: {e}", exc_info=True)
+            return {
+                'projects_imported': 0,
+                'patterns_learned': 0,
+                'bundles_learned': 0,
+                'errors': [str(e)]
+            }
