@@ -177,6 +177,15 @@ def speaker_mapper_form(file_name: str, original_text: str, current_text: str) -
     return None
 # === OFFLINE GUARD ===
 def is_private_host(host: str) -> bool:
+    # Whitelist known local Docker service names
+    LOCAL_SERVICES = {"whisper", "pyannote", "ollama", "anythingllm", "localhost", "127.0.0.1", "::1"}
+    if host.lower() in LOCAL_SERVICES:
+        return True
+
+    # Check if hostname ends with .local (Docker internal)
+    if host.endswith(".local"):
+        return True
+
     try:
         infos = socket.getaddrinfo(host, None)
         for info in infos:
