@@ -12,9 +12,12 @@ from io import BytesIO
 from cad.domain.models.department import DepartmentCode, DEPARTMENTS
 
 
-def render_project_filters() -> dict:
+def render_project_filters(key_prefix: str = "history_filters") -> dict:
     """
     Render project filters.
+
+    Args:
+        key_prefix: Prefix for Streamlit widget keys (to avoid duplicate IDs)
 
     Returns:
         Dict with filter values
@@ -27,7 +30,8 @@ def render_project_filters() -> dict:
         department_filter = st.selectbox(
             "Dział",
             options=["Wszystkie"] + [f"{d.value} - {DEPARTMENTS[d].name}" for d in DepartmentCode],
-            index=0
+            index=0,
+            key=f"{key_prefix}_department",
         )
 
     with col2:
@@ -35,22 +39,23 @@ def render_project_filters() -> dict:
             "Okres",
             options=[7, 14, 30, 60, 90, 180, 365, -1],
             format_func=lambda x: f"Ostatnie {x} dni" if x > 0 else "Wszystkie",
-            index=4  # Default 90 days
+            index=4,  # Default 90 days
+            key=f"{key_prefix}_days_back",
         )
 
     with col3:
         has_actual = st.selectbox(
             "Status",
             options=["Wszystkie", "Z actual hours", "Bez actual hours"],
-            index=0
+            index=0,
+            key=f"{key_prefix}_has_actual",
         )
 
     return {
         "department": None if department_filter == "Wszystkie" else department_filter.split(" - ")[0],
         "days_back": days_back if days_back > 0 else None,
-        "has_actual": None if has_actual == "Wszystkie" else (has_actual == "Z actual hours")
+        "has_actual": None if has_actual == "Wszystkie" else (has_actual == "Z actual hours"),
     }
-
 
 def render_projects_table(app: dict, filters: dict):
     """
