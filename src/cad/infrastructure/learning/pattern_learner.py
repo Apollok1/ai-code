@@ -8,10 +8,10 @@ import logging
 from typing import Any
 from datetime import datetime
 
-from ...domain.models import ComponentPattern
-from ...domain.models.config import LearningConfig
-from ...domain.exceptions import PatternLearningError
-from ...infrastructure.parsers.component_parser import CADComponentParser
+from cad.domain.models import ComponentPattern
+from cad.domain.models.config import LearningConfig
+from cad.domain.exceptions import PatternLearningError
+from cad.infrastructure.parsers.component_parser import CADComponentParser
 
 logger = logging.getLogger(__name__)
 

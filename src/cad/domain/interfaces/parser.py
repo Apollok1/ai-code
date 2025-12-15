@@ -4,7 +4,7 @@ CAD Estimator Pro - Parser Protocol Interfaces
 Protocols for file parsers (Excel, PDF, JSON).
 """
 from typing import Protocol, BinaryIO
-from ..models import Component
+from cad.models import Component
 
 
 class ExcelParser(Protocol):

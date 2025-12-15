@@ -6,21 +6,21 @@ Coordinates execution of all 4 pipeline stages sequentially.
 import logging
 from typing import Callable
 
-from ...domain.models.multi_model import (
+from cad.domain.models.multi_model import (
     StageContext,
     PipelineStage,
     PipelineProgress
 )
-from ...domain.models import Estimate, EstimatePhases
-from ...domain.models.config import MultiModelConfig
-from ...domain.interfaces.ai_client import AIClient
-from ...domain.interfaces.database import DatabaseClient
-from ...domain.exceptions import AIGenerationError, ValidationError
+from cad.domain.models import Estimate, EstimatePhases
+from cad.domain.models.config import MultiModelConfig
+from cad.domain.interfaces.ai_client import AIClient
+from cad.domain.interfaces.database import DatabaseClient
+from cad.domain.exceptions import AIGenerationError, ValidationError
 
-from .stage1_technical_analysis import TechnicalAnalysisStage
-from .stage2_structural_decomposition import StructuralDecompositionStage
-from .stage3_hours_estimation import HoursEstimationStage
-from .stage4_risk_optimization import RiskOptimizationStage
+from cad.stage1_technical_analysis import TechnicalAnalysisStage
+from cad.stage2_structural_decomposition import StructuralDecompositionStage
+from cad.stage3_hours_estimation import HoursEstimationStage
+from cad.stage4_risk_optimization import RiskOptimizationStage
 
 logger = logging.getLogger(__name__)
 
@@ -244,8 +244,8 @@ class MultiModelOrchestrator:
         logger.warning("Single-model fallback not fully implemented yet")
 
         # Create minimal estimate with placeholder data
-        from ...domain.models.component import Component
-        from ...domain.models.estimate import Risk
+        from cad.domain.models.component import Component
+        from cad.domain.models.estimate import Risk
 
         components = [
             Component(

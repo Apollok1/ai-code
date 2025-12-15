@@ -7,10 +7,10 @@ import json
 import logging
 from typing import Any
 
-from ...domain.models.multi_model import StageContext, TechnicalAnalysis
-from ...domain.models.config import MultiModelConfig
-from ...domain.interfaces.ai_client import AIClient
-from ...domain.exceptions import AIGenerationError, ValidationError
+from cad.domain.models.multi_model import StageContext, TechnicalAnalysis
+from cad.domain.models.config import MultiModelConfig
+from cad.domain.interfaces.ai_client import AIClient
+from cad.domain.exceptions import AIGenerationError, ValidationError
 
 logger = logging.getLogger(__name__)
 

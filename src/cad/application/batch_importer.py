@@ -7,11 +7,11 @@ import logging
 from typing import BinaryIO, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from ..domain.models import DepartmentCode, Component, Estimate
-from ..domain.models.config import AppConfig
-from ..infrastructure.parsers.excel_parser import CADExcelParser
-from ..infrastructure.learning.pattern_learner import PatternLearner
-from ..infrastructure.learning.bundle_learner import BundleLearner
+from cad.domain.models import DepartmentCode, Component, Estimate
+from cad.domain.models.config import AppConfig
+from cad.infrastructure.parsers.excel_parser import CADExcelParser
+from cad.infrastructure.learning.pattern_learner import PatternLearner
+from cad.infrastructure.learning.bundle_learner import BundleLearner
 
 logger = logging.getLogger(__name__)
 
@@ -154,7 +154,7 @@ class BatchImporter:
             estimate = Estimate.from_components(components)
 
             # Save project
-            from ..domain.models import Project
+            from cad.domain.models import Project
             project = Project(
                 id=None,
                 name=filename.replace('.xlsx', '').replace('.xls', ''),

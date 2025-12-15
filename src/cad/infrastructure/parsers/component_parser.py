@@ -5,7 +5,7 @@ Implementation of ComponentParser protocol for canonicalization and parsing.
 """
 import logging
 import re
-from ...domain.exceptions import ParsingError
+from cad.domain.exceptions import ParsingError
 
 logger = logging.getLogger(__name__)
 

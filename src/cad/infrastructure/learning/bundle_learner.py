@@ -6,9 +6,9 @@ Learns typical component bundles (parent→sub relationships) from historical da
 import logging
 from typing import Any
 
-from ...domain.models.config import LearningConfig
-from ...domain.exceptions import PatternLearningError
-from ...infrastructure.parsers.component_parser import CADComponentParser
+from cad.domain.models.config import LearningConfig
+from cad.domain.exceptions import PatternLearningError
+from cad.infrastructure.parsers.component_parser import CADComponentParser
 
 logger = logging.getLogger(__name__)
 

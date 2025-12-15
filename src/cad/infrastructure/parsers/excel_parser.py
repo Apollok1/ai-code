@@ -9,7 +9,7 @@ from typing import BinaryIO
 import pandas as pd
 from openpyxl import load_workbook
 
-from ...domain.exceptions import ExcelParsingError
+from cad.domain.exceptions import ExcelParsingError
 
 logger = logging.getLogger(__name__)
 

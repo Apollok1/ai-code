@@ -4,7 +4,7 @@ CAD Estimator Pro - Results Display Component
 Display estimation results with components breakdown.
 """
 import streamlit as st
-from ...domain.models import Estimate
+from cad.domain.models import Estimate
 
 
 def render_estimate_summary(estimate: Estimate, hourly_rate: int) -> None:

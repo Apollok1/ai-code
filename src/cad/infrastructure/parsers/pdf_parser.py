@@ -7,7 +7,7 @@ import logging
 from typing import BinaryIO
 from PyPDF2 import PdfReader
 
-from ...domain.exceptions import PDFParsingError
+from cad.domain.exceptions import PDFParsingError
 
 logger = logging.getLogger(__name__)
 

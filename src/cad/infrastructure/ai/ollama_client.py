@@ -8,8 +8,8 @@ import requests
 from typing import Any
 from datetime import datetime, timedelta
 
-from ...domain.models.config import OllamaConfig
-from ...domain.exceptions import AIGenerationError, AIResponseParsingError, EmbeddingError
+from cad.domain.models.config import OllamaConfig
+from cad.domain.exceptions import AIGenerationError, AIResponseParsingError, EmbeddingError
 
 logger = logging.getLogger(__name__)
 
