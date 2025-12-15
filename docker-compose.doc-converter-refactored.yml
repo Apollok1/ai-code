@@ -1,0 +1,32 @@
+# Docker Compose override for REFACTORED doc-converter
+#
+# Usage:
+#   docker-compose -f docker-compose.direct-mount.yml \
+#                  -f docker-compose.doc-converter-refactored.yml \
+#                  up -d doc-converter
+
+version: '3.8'
+
+services:
+  doc-converter:
+    build:
+      context: ${AI_CODE_PATH:-/home/michal/ai-code}
+      dockerfile: doc-converter/Dockerfile.refactored
+    command: [
+      "streamlit", "run", "/app/src/presentation/app.py",
+      "--server.headless=true", "--server.address=0.0.0.0", "--server.port=8502",
+      "--server.fileWatcherType=auto", "--client.toolbarMode=minimal"
+    ]
+    environment:
+      - PYTHONPATH=/app/src
+      - OLLAMA_URL=http://ollama:11434
+      - WHISPER_URL=http://whisper:9000
+      - PYANNOTE_URL=http://pyannote:8000
+      - ANYTHINGLLM_URL=${ANYTHINGLLM_URL}
+      - ANYTHINGLLM_API_KEY=${ANYTHINGLLM_API_KEY}
+      - STRICT_OFFLINE=1
+      - FFMPEG_BINARY=/usr/bin/ffmpeg
+    volumes:
+      # Mount refactored source code (direct mount for development)
+      - ${AI_CODE_PATH:-/home/michal/ai-code}/src:/app/src:ro
+      - ./outputs:/app/outputs
