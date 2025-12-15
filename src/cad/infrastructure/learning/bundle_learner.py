@@ -169,7 +169,7 @@ class BundleLearner:
                 ...
             ]
         """
-        min_occ = min_occurrences or self.config.min_bundle_occurrences
+        min_occ = self.config.min_bundle_occurrences if min_occurrences is None else min_occurrences
         parent_key = self.component_parser.canonicalize_component_name(parent_name)
 
         if not parent_key:

@@ -50,12 +50,11 @@ def render_add_actual_hours(app: dict, project_id: int):
 
             if submitted:
                 try:
-                    # Calculate accuracy
-                    if project.estimated_hours > 0:
-                        accuracy = min(
-                            project.estimated_hours / actual_hours,
-                            actual_hours / project.estimated_hours
-                        )
+                    # Calculate accuracy (symetryczna miara dopasowania, bez dzielenia przez zero)
+                    if project.estimated_hours > 0 and actual_hours > 0:
+                        smaller = min(project.estimated_hours, actual_hours)
+                        larger = max(project.estimated_hours, actual_hours)
+                        accuracy = smaller / larger  # 1.0 = idealnie, 0.5 = 2x różnica itd.
                     else:
                         accuracy = 0.0
 
@@ -234,11 +233,25 @@ def render_batch_import(app: dict):
 
     st.info(
         "💡 **Jak to działa:**\n\n"
-        "1. Wgraj plik Excel z historycznymi projektami\n"
-        "2. System automatycznie wyekstrahuje komponenty i godziny\n"
-        "3. Wzorce zostaną nauczone z danych historycznych\n"
-        "4. Przyszłe predykcje będą bardziej dokładne"
+        "1. Wybierz dział dla danych historycznych\n"
+        "2. Wgraj plik Excel z historycznymi projektami\n"
+        "3. System automatycznie wyekstrahuje komponenty i godziny\n"
+        "4. Wzorce zostaną nauczone z danych historycznych\n"
+        "5. Przyszłe predykcje będą bardziej dokładne"
     )
+
+    # Department selection
+    from cad.domain.models.department import DepartmentCode, DEPARTMENTS
+
+    dept_options = list(DEPARTMENTS.keys())
+    selected_dept = st.selectbox(
+        "Dział dla danych historycznych",
+        options=dept_options,
+        format_func=lambda d: f"{d.value} - {DEPARTMENTS[d].name}",
+        index=0,  # Default: 131 Automotive
+        help="Wybierz dział, dla którego importujesz dane historyczne"
+    )
+    dept_code_str = selected_dept.value  # '131', '132', etc.
 
     uploaded_file = st.file_uploader(
         "Wybierz plik Excel",
@@ -261,10 +274,10 @@ def render_batch_import(app: dict):
                         # Reset file pointer
                         uploaded_file.seek(0)
 
-                        # Use BatchImporter
+                        # Use BatchImporter with selected department
                         results = app["batch_importer"].import_from_excel(
                             excel_file=uploaded_file,
-                            department="131",  # TODO: make selectable
+                            department=dept_code_str,
                             mark_as_historical=True
                         )
 

@@ -86,7 +86,7 @@ class PatternLearner:
                     hours_doc
                 )
             else:
-                # Create new pattern
+                # Create new pattern (first observation, M2 = 0)
                 updated = ComponentPattern(
                     name=name,
                     pattern_key=pattern_key,
@@ -94,6 +94,9 @@ class PatternLearner:
                     avg_hours_layout=hours_layout,
                     avg_hours_detail=hours_detail,
                     avg_hours_doc=hours_doc,
+                    m2_hours_layout=0.0,  # First observation, no variance yet
+                    m2_hours_detail=0.0,
+                    m2_hours_doc=0.0,
                     confidence=0.3,  # Low confidence for first observation
                     occurrences=1,
                     source=source
@@ -109,6 +112,44 @@ class PatternLearner:
             logger.error(f"Pattern learning failed for '{name}': {e}", exc_info=True)
             raise PatternLearningError(f"Failed to learn pattern: {e}", component_name=name)
 
+    def _is_outlier_zscore(
+        self,
+        new: float,
+        mean: float,
+        m2: float,
+        n: int
+    ) -> bool:
+        """
+        Pełny outlier check na bazie Z-score:
+        z = |x - mean| / std, gdzie std = sqrt(variance),
+        variance = M2 / (n - 1).
+
+        Zwraca True, jeśli z > threshold.
+
+        Args:
+            new: New observation
+            mean: Current mean
+            m2: Current M2 (sum of squared deviations)
+            n: Current number of observations
+
+        Returns:
+            True if outlier detected
+        """
+        if n < max(2, self.config.welford_min_n):
+            # Za mało danych na sensowną wariancję
+            return False
+
+        variance = m2 / (n - 1) if n > 1 else 0.0
+        if variance <= 0:
+            return False
+
+        std = variance ** 0.5
+        if std == 0:
+            return False
+
+        z = abs(new - mean) / std
+        return z > self.config.welford_outlier_threshold
+
     def _welford_update(
         self,
         pattern: ComponentPattern,
@@ -117,14 +158,12 @@ class PatternLearner:
         new_doc: float
     ) -> ComponentPattern:
         """
-        Update pattern using Welford's online algorithm.
+        Pełny Welford dla trzech wymiarów (layout/detail/doc) + Z-score outlier detection.
 
-        Welford's algorithm:
-        - M(n) = M(n-1) + (x(n) - M(n-1)) / n
-        - M2(n) = M2(n-1) + (x(n) - M(n-1)) * (x(n) - M(n))
-        - Variance = M2(n) / (n-1)
-
-        With outlier detection using Z-score threshold.
+        Welford (dla pojedynczej serii x_n):
+        - M_n = M_{n-1} + (x_n - M_{n-1}) / n
+        - M2_n = M2_{n-1} + (x_n - M_{n-1}) * (x_n - M_n)
+        - variance = M2_n / (n-1)
 
         Args:
             pattern: Existing pattern
@@ -133,65 +172,88 @@ class PatternLearner:
             new_doc: New doc hours observation
 
         Returns:
-            Updated ComponentPattern
+            Updated ComponentPattern with M2 tracking
         """
         n = pattern.occurrences
-        threshold = self.config.welford_outlier_threshold
 
-        # Check for outliers (Z-score based)
-        # For simplicity, we'll use a heuristic: if new value > threshold * current_mean, it's an outlier
-        # (In production, you'd track M2 for proper variance calculation)
-
+        # --- OUTLIER DETECTION NA BAZIE Z-SCORE ---
         is_outlier = False
-        if n > 2:  # Need at least 3 observations for outlier detection
-            if (abs(new_layout - pattern.avg_hours_layout) > threshold * pattern.avg_hours_layout or
-                abs(new_detail - pattern.avg_hours_detail) > threshold * pattern.avg_hours_detail or
-                abs(new_doc - pattern.avg_hours_doc) > threshold * pattern.avg_hours_doc):
-                is_outlier = True
-                logger.warning(f"Outlier detected for '{pattern.name}': "
-                             f"L={new_layout:.1f} (avg={pattern.avg_hours_layout:.1f}), "
-                             f"D={new_detail:.1f} (avg={pattern.avg_hours_detail:.1f}), "
-                             f"Doc={new_doc:.1f} (avg={pattern.avg_hours_doc:.1f})")
-
-        if is_outlier:
-            # Don't update pattern, but increment occurrences (so we track we saw it)
-            # In production, you might want to create a separate "outlier" pattern
-            return ComponentPattern(
-                name=pattern.name,
-                pattern_key=pattern.pattern_key,
-                department_code=pattern.department_code,
-                avg_hours_layout=pattern.avg_hours_layout,
-                avg_hours_detail=pattern.avg_hours_detail,
-                avg_hours_doc=pattern.avg_hours_doc,
-                confidence=pattern.confidence,
-                occurrences=pattern.occurrences + 1,
-                source=pattern.source
+        if (
+            self._is_outlier_zscore(
+                new_layout,
+                pattern.avg_hours_layout,
+                getattr(pattern, "m2_hours_layout", 0.0),
+                n,
+            )
+            or self._is_outlier_zscore(
+                new_detail,
+                pattern.avg_hours_detail,
+                getattr(pattern, "m2_hours_detail", 0.0),
+                n,
+            )
+            or self._is_outlier_zscore(
+                new_doc,
+                pattern.avg_hours_doc,
+                getattr(pattern, "m2_hours_doc", 0.0),
+                n,
+            )
+        ):
+            is_outlier = True
+            logger.warning(
+                f"Outlier (Z-score) for '{pattern.name}': "
+                f"L={new_layout:.1f} (avg={pattern.avg_hours_layout:.1f}), "
+                f"D={new_detail:.1f} (avg={pattern.avg_hours_detail:.1f}), "
+                f"Doc={new_doc:.1f} (avg={pattern.avg_hours_doc:.1f})"
             )
 
-        # Welford update (running mean)
+        if is_outlier:
+            # Ignorujemy outlier: NIE zmieniamy średnich, M2 ani liczby obserwacji
+            return pattern
+
+        # --- WELFORD UPDATE DLA KAŻDEJ SKŁADOWEJ ---
+
         n_new = n + 1
-        delta_layout = new_layout - pattern.avg_hours_layout
-        delta_detail = new_detail - pattern.avg_hours_detail
-        delta_doc = new_doc - pattern.avg_hours_doc
 
-        new_avg_layout = pattern.avg_hours_layout + delta_layout / n_new
-        new_avg_detail = pattern.avg_hours_detail + delta_detail / n_new
-        new_avg_doc = pattern.avg_hours_doc + delta_doc / n_new
+        # Layout
+        old_mean_L = pattern.avg_hours_layout
+        old_m2_L = getattr(pattern, "m2_hours_layout", 0.0)
+        delta_L = new_layout - old_mean_L
+        mean_L = old_mean_L + delta_L / n_new
+        delta2_L = new_layout - mean_L
+        m2_L = old_m2_L + delta_L * delta2_L
 
-        # Calculate confidence (increases with more observations, max 0.95)
-        # Confidence = 1 - (1 / sqrt(n))
+        # Detail
+        old_mean_D = pattern.avg_hours_detail
+        old_m2_D = getattr(pattern, "m2_hours_detail", 0.0)
+        delta_D = new_detail - old_mean_D
+        mean_D = old_mean_D + delta_D / n_new
+        delta2_D = new_detail - mean_D
+        m2_D = old_m2_D + delta_D * delta2_D
+
+        # Doc
+        old_mean_doc = pattern.avg_hours_doc
+        old_m2_doc = getattr(pattern, "m2_hours_doc", 0.0)
+        delta_doc = new_doc - old_mean_doc
+        mean_doc = old_mean_doc + delta_doc / n_new
+        delta2_doc = new_doc - mean_doc
+        m2_doc = old_m2_doc + delta_doc * delta2_doc
+
+        # Confidence rośnie z sqrt(n), max 0.95
         confidence = min(0.95, 1.0 - (1.0 / (n_new ** 0.5)))
 
         return ComponentPattern(
             name=pattern.name,
             pattern_key=pattern.pattern_key,
             department_code=pattern.department_code,
-            avg_hours_layout=new_avg_layout,
-            avg_hours_detail=new_avg_detail,
-            avg_hours_doc=new_avg_doc,
+            avg_hours_layout=mean_L,
+            avg_hours_detail=mean_D,
+            avg_hours_doc=mean_doc,
+            m2_hours_layout=m2_L,
+            m2_hours_detail=m2_D,
+            m2_hours_doc=m2_doc,
             confidence=confidence,
             occurrences=n_new,
-            source=pattern.source
+            source=pattern.source,
         )
 
     def learn_from_project_feedback(
