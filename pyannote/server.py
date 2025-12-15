@@ -78,7 +78,19 @@ async def diarize(audio_file: UploadFile = File(...)):
             tmp_path = tmp.name
 
         # Run diarization
-        output = pipeline(tmp_path)
+        result = pipeline(tmp_path)
+
+        # Obsługa zarówno starego, jak i nowego API pyannote
+        # stare wersje: pipeline() zwraca Annotation z itertracks()
+        if hasattr(result, "itertracks"):
+            diarization = result
+        # nowsze wersje: pipeline() zwraca DiarizeOutput z .diarization / .annotation
+        elif hasattr(result, "diarization"):
+            diarization = result.diarization
+        elif hasattr(result, "annotation"):
+            diarization = result.annotation
+        else:
+            raise RuntimeError(f"Nieoczekiwany typ wyniku pipeline: {type(result)}")
 
         # Convert to JSON-serializable format
         segments = []
@@ -98,7 +110,14 @@ async def diarize(audio_file: UploadFile = File(...)):
         }
     except Exception as e:
         logger.error(f"Diarization error: {e}")
+        # spróbuj posprzątać plik tymczasowy także przy błędzie
+        try:
+            if 'tmp_path' in locals() and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+        except Exception:
+            pass
         return {"error": str(e)}
+
 
 if __name__ == "__main__":
     import uvicorn
