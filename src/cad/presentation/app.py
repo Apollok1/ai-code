@@ -21,8 +21,8 @@ from cad.infrastructure.embeddings.pgvector_service import PgVectorService
 from cad.infrastructure.multi_model import MultiModelOrchestrator
 from cad.application.estimation_pipeline import EstimationPipeline
 from cad.application.batch_importer import BatchImporter
-from cad.state.session_manager import SessionManager
-from cad.components.sidebar import render_sidebar
+from cad.presentation.state.session_manager import SessionManager
+from cad.presentation.components.sidebar import render_sidebar
 
 # Configure logging
 logging.basicConfig(
@@ -206,8 +206,8 @@ def render_new_project_page(app: dict, session: SessionManager, config: dict):
     """Render New Project page."""
     st.header("🆕 Nowy Projekt")
 
-    from cad.components.file_uploader import render_file_uploader, render_text_input
-    from cad.components.sidebar import render_department_selector
+    from cad.presentation.components.file_uploader import render_file_uploader, render_text_input
+    from cad.presentation.components.sidebar import render_department_selector
 
     # Department selection
     department = render_department_selector()
@@ -232,7 +232,7 @@ def render_new_project_page(app: dict, session: SessionManager, config: dict):
 
             if use_multi_model:
                 # Multi-model with progress tracking
-                from cad.components.progress_tracker import render_progress_placeholder, ProgressTracker
+                from cad.presentation.components.progress_tracker import render_progress_placeholder, ProgressTracker
 
                 progress_placeholder = render_progress_placeholder()
                 tracker = ProgressTracker(progress_placeholder)
@@ -262,13 +262,13 @@ def render_new_project_page(app: dict, session: SessionManager, config: dict):
                     st.success(f"✅ Multi-Model Pipeline zakończony: {estimate.total_hours:.1f}h, {estimate.component_count} komponentów")
 
                     # Display enhanced results
-                    from cad.components.multi_model_results import render_multi_model_results
+                    from cad.presentation.components.multi_model_results import render_multi_model_results
                     render_multi_model_results(estimate, config['hourly_rate'])
 
                     # Also show standard component list
                     st.markdown("---")
                     st.markdown("### 📋 Lista Komponentów (szczegóły)")
-                    from cad.components.results_display import render_components_list
+                    from cad.presentation.components.results_display import render_components_list
                     render_components_list(estimate)
 
                 except Exception as e:
@@ -300,7 +300,7 @@ def render_new_project_page(app: dict, session: SessionManager, config: dict):
                         st.success(f"✅ Analiza zakończona: {estimate.total_hours:.1f}h, {estimate.component_count} komponentów")
 
                         # Display results
-                        from cad.components.results_display import render_estimate_summary, render_components_list
+                        from cad.presentation.components.results_display import render_estimate_summary, render_components_list
                         render_estimate_summary(estimate, config['hourly_rate'])
                         st.markdown("---")
                         render_components_list(estimate)
