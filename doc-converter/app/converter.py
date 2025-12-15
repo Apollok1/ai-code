@@ -654,7 +654,7 @@ def diarize_audio(file):
             size_bytes = os.path.getsize(converted_audio_path)
             timeout_read = calculate_timeout(size_bytes, base=300, per_mb=30)
             
-            files = {'file': (os.path.basename(converted_audio_path), converted_file, 'audio/wav')}
+            files = {'audio_file': (os.path.basename(converted_audio_path), converted_file, 'audio/wav')}
             
             r = http_post(
                 f"{pyannote_url}/diarize",
