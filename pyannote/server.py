@@ -70,6 +70,7 @@ async def diarize(audio_file: UploadFile = File(...)):
     if not model_loaded:
         return {"error": "Model not loaded"}
 
+    tmp_path = None
     try:
         # Save uploaded file temporarily
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
@@ -80,39 +81,55 @@ async def diarize(audio_file: UploadFile = File(...)):
         # Run diarization
         result = pipeline(tmp_path)
 
-        # Obsługa zarówno starego, jak i nowego API pyannote
-        # stare wersje: pipeline() zwraca Annotation z itertracks()
+        # --- Rozpakowanie wyniku pipeline ---
+
+        diarization = None
+
+        # 1) Starsze wersje pyannote: wynik ma od razu .itertracks()
         if hasattr(result, "itertracks"):
             diarization = result
-        # nowsze wersje: pipeline() zwraca DiarizeOutput z .diarization / .annotation
-        elif hasattr(result, "diarization"):
-            diarization = result.diarization
-        elif hasattr(result, "annotation"):
-            diarization = result.annotation
-        else:
-            raise RuntimeError(f"Nieoczekiwany typ wyniku pipeline: {type(result)}")
 
-        # Convert to JSON-serializable format
+        # 2) Nowsze wersje: DiarizeOutput z polem .diarization albo .annotation
+        if diarization is None:
+            diarization = getattr(result, "diarization", None)
+        if diarization is None:
+            diarization = getattr(result, "annotation", None)
+
+        # 3) Awaryjnie: jeśli to krotka / NamedTuple, weź pierwszy element
+        if diarization is None and isinstance(result, (list, tuple)) and len(result) > 0:
+            diarization = result[0]
+
+        if diarization is None:
+            # logujemy szczegóły, żeby ewentualnie dalej debugować
+            logger.error(
+                f"Nie mogę znaleźć anotacji diarization w wyniku pipeline: "
+                f"type={type(result)}, dir={dir(result)}"
+            )
+            return {"error": "Unsupported diarization output format"}
+
+        # --- Konwersja na JSON-serializable format ---
+
         segments = []
         for turn, _, speaker in diarization.itertracks(yield_label=True):
             segments.append({
                 "start": turn.start,
                 "end": turn.end,
-                "speaker": speaker
+                "speaker": speaker,
             })
 
         # Cleanup
-        os.unlink(tmp_path)
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
         return {
             "segments": segments,
-            "num_speakers": len(set(s["speaker"] for s in segments))
+            "num_speakers": len(set(s["speaker"] for s in segments)),
         }
+
     except Exception as e:
         logger.error(f"Diarization error: {e}")
-        # spróbuj posprzątać plik tymczasowy także przy błędzie
         try:
-            if 'tmp_path' in locals() and os.path.exists(tmp_path):
+            if tmp_path and os.path.exists(tmp_path):
                 os.unlink(tmp_path)
         except Exception:
             pass
