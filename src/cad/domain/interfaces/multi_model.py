@@ -3,9 +3,9 @@ CAD Estimator Pro - Multi-Model Pipeline Interfaces
 
 Protocol interfaces for multi-model estimation pipeline.
 """
-from typing import Protocol
+from typing import Protocol, Callable
 
-from cad.models.multi_model import (
+from cad.domain.models.multi_model import (
     StageContext,
     TechnicalAnalysis,
     StructuralDecomposition,
@@ -125,7 +125,7 @@ class MultiModelOrchestrator(Protocol):
         self,
         context: StageContext,
         enable_multi_model: bool = True,
-        progress_callback: callable | None = None
+        progress_callback: Callable | None = None
     ) -> Estimate:
         """
         Execute complete multi-model pipeline.
