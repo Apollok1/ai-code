@@ -2260,7 +2260,7 @@ if st.session_state.get("converted"):
             st.markdown(f"### 📄 {name}")
             st.markdown(summary_md)
 
-            col_a, col_b = st.columns(2)
+            col_a, col_b, col_c = st.columns(3)
             with col_a:
                 st.download_button(
                     "⬇️ Pobierz MD",
@@ -2279,6 +2279,20 @@ if st.session_state.get("converted"):
                     key=f"dl_json_doc_{safe_filename(name)}",
                     disabled=st.session_state.get("converting", False)
                 )
+            with col_c:
+                if st.button("💾 Zapisz (MD+JSON) na dysk", key=f"btn_save_sum_doc_{safe_filename(name)}",
+                             disabled=st.session_state.get("converting", False)):
+                    out_dir = st.session_state.get("run_dir") or create_run_dir("outputs")
+                    st.session_state["run_dir"] = out_dir
+                    base = safe_filename(name)
+
+                    md_path = os.path.join(out_dir, f"{base}_summary.md")
+                    json_path = os.path.join(out_dir, f"{base}_summary.json")
+
+                    save_text(md_path, summary_md)
+                    save_text(json_path, json.dumps(summary_json, ensure_ascii=False, indent=2))
+
+                    st.success(f"Zapisano podsumowanie do: {out_dir}")
 
 # Reset sesji (nie rusza plików na dysku)
 st.markdown("---")
