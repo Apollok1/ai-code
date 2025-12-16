@@ -4,7 +4,8 @@ CAD Estimator Pro - Estimation Pipeline
 Main orchestrator for CAD project estimation workflow.
 """
 import logging
-from typing import BinaryIO, Any
+from typing import BinaryIO, Any, Dict
+
 
 from cad.domain.models import Estimate, Component, DepartmentCode, Risk, Suggestion
 from cad.domain.models.config import AppConfig
@@ -564,3 +565,210 @@ EXPECTED JSON STRUCTURE:
             )
 
         return scaled
+
+    # ================= PROJECT BRAIN: PRE-CHECK WYMAGAŃ =================
+
+    def precheck_requirements(
+        self,
+        description: str,
+        department: DepartmentCode,
+        pdf_files: list[BinaryIO] | None = None,
+        excel_file: BinaryIO | None = None,
+        model: str | None = None,
+    ) -> Dict[str, Any]:
+        """
+        Project Brain – wstępna analiza wymagań przed estymacją.
+
+        Zwraca JSON:
+        {
+          "missing_info": [...],
+          "clarifying_questions": [...],
+          "suggested_components": [...],
+          "risk_flags": [
+            {"description":"...", "impact":"low/medium/high", "mitigation":""}
+          ]
+        }
+        """
+        if not description or not description.strip():
+            return {
+                "missing_info": ["Brak opisu projektu."],
+                "clarifying_questions": [],
+                "suggested_components": [],
+                "risk_flags": [],
+            }
+
+        # Parse Excel (opcjonalnie)
+        excel_components: list[dict] = []
+        if excel_file:
+            try:
+                excel_data = self.excel_parser.parse(excel_file)
+                excel_components = excel_data.get("components", [])
+            except Exception as e:
+                logger.warning(f"[Precheck] Excel parsing failed: {e}")
+
+        # Parse PDF (opcjonalnie)
+        pdf_text = ""
+        if pdf_files:
+            try:
+                pdf_texts = [self.pdf_parser.extract_text(f) for f in pdf_files]
+                pdf_text = "\n\n".join(pdf_texts)
+            except Exception as e:
+                logger.warning(f"[Precheck] PDF parsing failed: {e}")
+
+        # Podobne projekty (opcjonalnie)
+        similar_projects: list[dict] = []
+        try:
+            similar_projects = self.pgvector.find_similar_projects(
+                description, department.value, limit=3
+            )
+        except Exception as e:
+            logger.warning(f"[Precheck] Semantic search failed: {e}")
+
+        prompt = self._build_precheck_prompt(
+            description,
+            department,
+            excel_components,
+            pdf_text,
+            similar_projects,
+        )
+
+        model_to_use = model or self.config.ollama.text_model
+
+        try:
+            ai_response = self.ai.generate_text(
+                prompt,
+                model=model_to_use,
+                json_mode=True,
+                timeout=self.config.ollama.timeout_seconds,
+            )
+            logger.info(f"[Precheck] AI response received ({len(ai_response)} chars)")
+        except Exception as e:
+            logger.error(f"[Precheck] AI generation failed: {e}", exc_info=True)
+            return {
+                "missing_info": ["Nie udało się przeprowadzić automatycznej analizy wymagań."],
+                "clarifying_questions": [],
+                "suggested_components": [],
+                "risk_flags": [],
+            }
+
+        import json as _json
+
+        try:
+            data = _json.loads(ai_response)
+        except _json.JSONDecodeError:
+            start_idx = ai_response.find("{")
+            end_idx = ai_response.rfind("}") + 1
+            if start_idx >= 0 and end_idx > start_idx:
+                try:
+                    data = _json.loads(ai_response[start_idx:end_idx])
+                except Exception:
+                    data = {}
+            else:
+                data = {}
+
+        if not isinstance(data, dict):
+            data = {}
+
+        missing_info = data.get("missing_info", [])
+        clarifying_questions = data.get("clarifying_questions") or data.get("questions", [])
+        suggested_components = data.get("suggested_components", [])
+        risk_flags = data.get("risk_flags", [])
+
+        return {
+            "missing_info": missing_info or [],
+            "clarifying_questions": clarifying_questions or [],
+            "suggested_components": suggested_components or [],
+            "risk_flags": risk_flags or [],
+        }
+
+    def _build_precheck_prompt(
+        self,
+        description: str,
+        department: DepartmentCode,
+        excel_components: list[dict],
+        pdf_text: str,
+        similar_projects: list[dict],
+    ) -> str:
+        """Prompt dla Project Brain pre-check – wykrywa braki w wymaganiach i pytania doprecyzowujące."""
+        if excel_components:
+            names = [c.get("name", "Unknown") for c in excel_components[:8]]
+            excel_summary = f"{len(excel_components)} komponentów (np.: " + ", ".join(names) + ")"
+        else:
+            excel_summary = "brak jawnej listy komponentów"
+
+        pdf_preview = pdf_text[:1200] if pdf_text else "brak osobnych specyfikacji PDF"
+
+        if similar_projects:
+            similar_lines = []
+            for p in similar_projects[:3]:
+                name = p.get("name", "N/A")
+                est = p.get("estimated_hours", 0.0) or 0.0
+                sim = p.get("similarity", 0.0) or 0.0
+                similar_lines.append(f"- {name}: {est:.1f}h (similarity: {sim:.0%})")
+            similar_block = "\n".join(similar_lines)
+        else:
+            similar_block = "brak podobnych projektów w bazie"
+
+        return f"""
+Jesteś doświadczonym inżynierem CAD/CAM i PM. Twoim zadaniem jest analiza, czy opis projektu ma wystarczające informacje
+do wykonania REALISTYCZNEJ estymacji godzin projektowych.
+
+PROJECT CONTEXT:
+- Department code: {department.value}
+- Description (from user):
+{description}
+
+EXCEL HINTS:
+{excel_summary}
+
+PDF SPECIFICATIONS (truncated):
+{pdf_preview}
+
+SIMILAR HISTORICAL PROJECTS (if any):
+{similar_block}
+
+ZADANIE:
+1. Wypisz, jakich kluczowych informacji technicznych BRAKUJE w tym opisie, aby dobrze oszacować godziny CAD.
+2. Sformułuj pytania doprecyzowujące do klienta / konstruktora.
+3. Zaproponuj typowe komponenty / obszary, o których warto pamiętać (np. osłony, napędy, czujniki, dokumentacja).
+4. Opcjonalnie wypisz 1–5 potencjalnych ryzyk wynikających z braków w wymaganiach.
+
+ZWŁASZCZA WEŹ POD UWAGĘ:
+- Wymiary, masę, obciążenia.
+- Materiały / normy.
+- Napędy, sterowanie, bezpieczeństwo.
+- Środowisko pracy (temperatura, wilgoć, spożywka, pył).
+- Liczbę modułów / osi / stacji.
+
+FORMAT WYJŚCIA (TYLKO JSON, bez komentarzy, bez markdownu):
+{{
+  "missing_info": [
+    "brak długości i szerokości ramy",
+    "nie podano wymagań dokładności pozycjonowania",
+    "brak informacji o środowisku pracy (temperatura, wilgoć, spożywka, pył)"
+  ],
+  "clarifying_questions": [
+    "Jaka jest dokładna długość, szerokość i wysokość konstrukcji?",
+    "Jaka jest masa maksymalna przenoszonego detalu / ładunku?",
+    "W jakim środowisku będzie pracowała konstrukcja (temperatura, wilgoć, pył, kontakt z żywnością)?"
+  ],
+  "suggested_components": [
+    "osłony bezpieczeństwa wokół stref ruchomych",
+    "czujniki krańcowe / bezpieczeństwa",
+    "elementy poziomowania i kotwienia do posadzki"
+  ],
+  "risk_flags": [
+    {{
+      "description": "Brak informacji o środowisku pracy (spożywka / pył), co wpływa na dobór materiałów i zabezpieczeń.",
+      "impact": "medium",
+      "mitigation": "Doprecyzować wymagania higieniczne / IP przed rozpoczęciem szczegółowego projektu."
+    }}
+  ]
+}}
+
+ZASADY:
+- Nie wymyślaj fikcyjnych danych – wskazuj TYLKO to, czego naprawdę brakuje.
+- Listy powinny być zwięzłe (3–10 pozycji), ale konkretne.
+- Pisz wyłącznie po polsku.
+- Zwróć TYLKO jeden obiekt JSON w powyższym formacie.
+"""
