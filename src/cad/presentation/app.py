@@ -227,6 +227,31 @@ def render_new_project_page(app: dict, session: SessionManager, config: dict):
     """Render New Project page."""
     st.header("🆕 Nowy Projekt")
 
+    # Krótka pomoc: jak dobrze opisać projekt
+    with st.expander("ℹ️ Jak opisać projekt, żeby AI dobrze policzyło?", expanded=False):
+        st.markdown("""
+**Podaj jak najwięcej KONKRETNYCH informacji technicznych:**
+
+1. **Rodzaj konstrukcji**  
+   - np. *„Rama stalowa pod przenośnik taśmowy”*, *„Stół obrotowy do spawania”*  
+
+2. **Wymiary i masa** (chociaż orientacyjnie)  
+   - długość / szerokość / wysokość, masa całkowita, zakres ruchu  
+
+3. **Materiał i technologia**  
+   - np. S235JR, stal nierdzewna, aluminium, spawana / skręcana / profil zamknięty  
+
+4. **Napędy i sterowanie**  
+   - silniki (moc, typ), siłowniki, przekładnie, czujniki, PLC / sterownik  
+
+5. **Wymagania specjalne**  
+   - bezpieczeństwo (osłony, kurtyny), czystość (spożywka), dokładność pozycjonowania  
+
+💡 Im więcej z powyższych punktów podasz, tym:
+- lepsza będzie struktura komponentów,
+- dokładniejsze będą godziny.
+        """)
+
     from cad.presentation.components.file_uploader import render_file_uploader, render_text_input
     from cad.presentation.components.sidebar import render_department_selector
 
@@ -245,37 +270,106 @@ def render_new_project_page(app: dict, session: SessionManager, config: dict):
     description, additional_text = render_text_input()
     files = render_file_uploader()
 
-    # Estimate button
+    # Pełny tekst (opis + dodatkowy)
+    full_text = (description or "").strip()
+    if additional_text:
+        full_text = (full_text + "\n\n" + additional_text.strip()).strip()
+
+    # --- PRZYCISK: PRE-CHECK WYMAGAŃ (Project Brain) ---
+    if st.button("🔍 Pre-check wymagań (Project Brain)", type="secondary"):
+        if not full_text:
+            st.warning("⚠️ Najpierw wpisz opis projektu (wymagania techniczne).")
+        else:
+            with st.spinner("Analizuję wymagania projektu (Project Brain)..."):
+                precheck = app["pipeline"].precheck_requirements(
+                    description=full_text,
+                    department=department,
+                    pdf_files=files["pdfs"],
+                    excel_file=files["excel"],
+                    model=None,
+                )
+
+            st.subheader("🧭 Project Brain – pre‑check wymagań")
+
+            missing = precheck.get("missing_info") or []
+            questions = precheck.get("clarifying_questions") or []
+            suggested = precheck.get("suggested_components") or []
+            risk_flags = precheck.get("risk_flags") or []
+
+            col_a, col_b = st.columns(2)
+
+            with col_a:
+                st.markdown("### 🔎 Brakujące informacje")
+                if missing:
+                    for m in missing:
+                        st.markdown(f"- {m}")
+                else:
+                    st.markdown("- Brak oczywistych braków (wg AI)")
+
+                st.markdown("### ❓ Pytania doprecyzowujące")
+                if questions:
+                    for q in questions:
+                        st.markdown(f"- {q}")
+                else:
+                    st.markdown("- Brak szczególnych pytań (wg AI)")
+
+            with col_b:
+                st.markdown("### 🧩 Sugerowane obszary / komponenty")
+                if suggested:
+                    for s_item in suggested:
+                        st.markdown(f"- {s_item}")
+                else:
+                    st.markdown("- Brak dodatkowych sugestii")
+
+                st.markdown("### ⚠️ Potencjalne ryzyka z braków wymagań")
+                if risk_flags:
+                    for r in risk_flags:
+                        if isinstance(r, dict):
+                            desc = r.get("description", "")
+                            impact = r.get("impact", "")
+                            mit = r.get("mitigation", "")
+                            st.markdown(f"- {desc} (wpływ: {impact}) → mitygacja: {mit}")
+                        else:
+                            st.markdown(f"- {r}")
+                else:
+                    st.markdown("- Brak zidentyfikowanych ryzyk (wg AI)")
+
+            st.info(
+                "ℹ️ Uzupełnij opis / wymagania powyższymi informacjami, a następnie uruchom estymację."
+            )
+
+    st.markdown("---")
+
+    # --- PRZYCISK: ANALIZA Z AI (single / multi-model) ---
     if st.button("🤖 Analizuj z AI", use_container_width=True, type="primary"):
         if not description and not files["excel"]:
             st.warning("⚠️ Podaj opis lub wgraj plik Excel")
         else:
-            # Check if multi-model is enabled
+            if is_description_poor(full_text):
+                st.warning(
+                    "⚠️ Opis projektu jest dość ogólny. AI policzy szacunkowo, "
+                    "ale warto dodać: długość, masę, materiał, typ napędu, "
+                    "liczbę osi / modułów, wymagania bezpieczeństwa.\n\n"
+                    "Możesz też użyć przycisku **'Pre-check wymagań (Project Brain)'** powyżej."
+                )
+
             use_multi_model = config.get("use_multi_model", False)
 
             if use_multi_model:
-                # Multi-model with progress tracking
                 from cad.presentation.components.progress_tracker import (
                     render_progress_placeholder,
                     ProgressTracker,
                 )
 
                 progress_placeholder = render_progress_placeholder()
-                tracker = ProgressTracker(progress_placeholder)  # na przyszłość, gdy podepniesz callbacki
+                tracker = ProgressTracker(progress_placeholder)
 
                 try:
-                    # Combine texts
-                    full_text = description
-                    if additional_text:
-                        full_text += "\n\n" + additional_text
-
-                    # Pokaż komunikat, że ruszył 4‑etapowy pipeline
                     progress_placeholder.info(
                         "⏳ Uruchomiono Multi‑Model Pipeline (4 etapy: "
                         "analiza techniczna → struktura → godziny → ryzyka)..."
                     )
 
-                    # Spinner na czas pracy całego pipeline'u
                     with st.spinner("Analizuję projekt (4‑etapowy Multi‑Model Pipeline)..."):
                         estimate = app["pipeline"].estimate_from_description(
                             description=full_text,
@@ -289,7 +383,6 @@ def render_new_project_page(app: dict, session: SessionManager, config: dict):
                             stage4_model=config.get("stage4_model"),
                         )
 
-                    # Clear progress, show success
                     progress_placeholder.empty()
                     session.set_estimate(estimate)
                     st.success(
@@ -297,14 +390,12 @@ def render_new_project_page(app: dict, session: SessionManager, config: dict):
                         f"{estimate.total_hours:.1f}h, {estimate.component_count} komponentów"
                     )
 
-                    # Display enhanced results
                     from cad.presentation.components.multi_model_results import (
                         render_multi_model_results,
                     )
 
                     render_multi_model_results(estimate, config["hourly_rate"])
 
-                    # Also show standard component list
                     st.markdown("---")
                     st.markdown("### 📋 Lista Komponentów (szczegóły)")
                     from cad.presentation.components.results_display import (
@@ -319,15 +410,8 @@ def render_new_project_page(app: dict, session: SessionManager, config: dict):
                     logger.error(f"Multi-model estimation failed: {e}", exc_info=True)
 
             else:
-                # Single-model with spinner
                 with st.spinner("Analizuję projekt (single‑model)..."):
                     try:
-                        # Combine texts
-                        full_text = description
-                        if additional_text:
-                            full_text += "\n\n" + additional_text
-
-                        # Estimate (single-model)
                         estimate = app["pipeline"].estimate_from_description(
                             description=full_text,
                             department=department,
@@ -336,7 +420,6 @@ def render_new_project_page(app: dict, session: SessionManager, config: dict):
                             use_multi_model=False,
                         )
 
-                        # Save to session
                         session.set_estimate(estimate)
 
                         st.success(
@@ -344,7 +427,6 @@ def render_new_project_page(app: dict, session: SessionManager, config: dict):
                             f"{estimate.total_hours:.1f}h, {estimate.component_count} komponentów"
                         )
 
-                        # Display results
                         from cad.presentation.components.results_display import (
                             render_estimate_summary,
                             render_components_list,
@@ -357,6 +439,7 @@ def render_new_project_page(app: dict, session: SessionManager, config: dict):
                     except Exception as e:
                         st.error(f"❌ Analiza nie powiodła się: {e}")
                         logger.error(f"Estimation failed: {e}", exc_info=True)
+
 
 def render_history_page(app: dict, session: SessionManager):
     """Render History & Learning page."""
