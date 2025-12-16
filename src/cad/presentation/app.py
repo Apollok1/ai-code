@@ -255,10 +255,13 @@ def render_new_project_page(app: dict, session: SessionManager, config: dict):
 
             if use_multi_model:
                 # Multi-model with progress tracking
-                from cad.presentation.components.progress_tracker import render_progress_placeholder, ProgressTracker
+                from cad.presentation.components.progress_tracker import (
+                    render_progress_placeholder,
+                    ProgressTracker,
+                )
 
                 progress_placeholder = render_progress_placeholder()
-                tracker = ProgressTracker(progress_placeholder)
+                tracker = ProgressTracker(progress_placeholder)  # na przyszłość, gdy podepniesz callbacki
 
                 try:
                     # Combine texts
@@ -266,47 +269,58 @@ def render_new_project_page(app: dict, session: SessionManager, config: dict):
                     if additional_text:
                         full_text += "\n\n" + additional_text
 
-                    # Estimate with progress callback
-                    estimate = app["pipeline"].estimate_from_description(
-                        description=full_text,
-                        department=department,
-                        pdf_files=files["pdfs"],
-                        excel_file=files["excel"],
-                        use_multi_model=True,
-                        stage1_model=config.get("stage1_model"),
-                        stage2_model=config.get("stage2_model"),
-                        stage3_model=config.get("stage3_model"),
-                        stage4_model=config.get("stage4_model"),
+                    # Pokaż komunikat, że ruszył 4‑etapowy pipeline
+                    progress_placeholder.info(
+                        "⏳ Uruchomiono Multi‑Model Pipeline (4 etapy: "
+                        "analiza techniczna → struktura → godziny → ryzyka)..."
                     )
+
+                    # Spinner na czas pracy całego pipeline'u
+                    with st.spinner("Analizuję projekt (4‑etapowy Multi‑Model Pipeline)..."):
+                        estimate = app["pipeline"].estimate_from_description(
+                            description=full_text,
+                            department=department,
+                            pdf_files=files["pdfs"],
+                            excel_file=files["excel"],
+                            use_multi_model=True,
+                            stage1_model=config.get("stage1_model"),
+                            stage2_model=config.get("stage2_model"),
+                            stage3_model=config.get("stage3_model"),
+                            stage4_model=config.get("stage4_model"),
+                        )
 
                     # Clear progress, show success
                     progress_placeholder.empty()
                     session.set_estimate(estimate)
                     st.success(
-                        f"✅ Multi-Model Pipeline zakończony: "
+                        f"✅ Multi‑Model Pipeline zakończony: "
                         f"{estimate.total_hours:.1f}h, {estimate.component_count} komponentów"
                     )
 
                     # Display enhanced results
-                    from cad.presentation.components.multi_model_results import render_multi_model_results
-                    render_multi_model_results(estimate, config['hourly_rate'])
+                    from cad.presentation.components.multi_model_results import (
+                        render_multi_model_results,
+                    )
+
+                    render_multi_model_results(estimate, config["hourly_rate"])
 
                     # Also show standard component list
                     st.markdown("---")
                     st.markdown("### 📋 Lista Komponentów (szczegóły)")
-                    from cad.presentation.components.results_display import render_components_list
+                    from cad.presentation.components.results_display import (
+                        render_components_list,
+                    )
+
                     render_components_list(estimate)
 
                 except Exception as e:
                     progress_placeholder.empty()
-                    st.error(f"❌ Multi-Model Pipeline nie powiódł się: {e}")
-                    logger.error(
-                        f"Multi-model estimation failed: {e}", exc_info=True
-                    )
+                    st.error(f"❌ Multi‑Model Pipeline nie powiódł się: {e}")
+                    logger.error(f"Multi-model estimation failed: {e}", exc_info=True)
 
             else:
                 # Single-model with spinner
-                with st.spinner("Analizuję projekt (single-model)..."):
+                with st.spinner("Analizuję projekt (single‑model)..."):
                     try:
                         # Combine texts
                         full_text = description
@@ -331,15 +345,18 @@ def render_new_project_page(app: dict, session: SessionManager, config: dict):
                         )
 
                         # Display results
-                        from cad.presentation.components.results_display import render_estimate_summary, render_components_list
-                        render_estimate_summary(estimate, config['hourly_rate'])
+                        from cad.presentation.components.results_display import (
+                            render_estimate_summary,
+                            render_components_list,
+                        )
+
+                        render_estimate_summary(estimate, config["hourly_rate"])
                         st.markdown("---")
                         render_components_list(estimate)
 
                     except Exception as e:
                         st.error(f"❌ Analiza nie powiodła się: {e}")
                         logger.error(f"Estimation failed: {e}", exc_info=True)
-
 
 def render_history_page(app: dict, session: SessionManager):
     """Render History & Learning page."""
