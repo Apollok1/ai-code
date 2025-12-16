@@ -31,7 +31,7 @@ class HoursEstimationStage:
         self,
         ai_client: AIClient,
         db_client: DatabaseClient,
-        config: MultiModelConfig
+        config: MultiModelConfig,
     ):
         """
         Initialize hours estimation stage.
@@ -68,12 +68,13 @@ class HoursEstimationStage:
         logger.info(f"Stage 3: Hours Estimation (model: {model_to_use})")
 
         # Get all components from structure
-        all_nodes = context.structural_decomposition.all_components
+        all_nodes: list[ComponentNode] = context.structural_decomposition.all_components
 
         # Get complexity multiplier from technical analysis
         complexity_multiplier = 1.0
         if context.technical_analysis:
-            complexity_multiplier = context.technical_analysis.complexity_score
+            # zakładam, że masz pole complexity_score w TechnicalAnalysis
+            complexity_multiplier = context.technical_analysis.complexity_score or 1.0
 
         # Build estimation prompt
         prompt = self._build_estimation_prompt(context, all_nodes, complexity_multiplier)
@@ -83,100 +84,137 @@ class HoursEstimationStage:
             response = self.ai_client.generate_text(
                 prompt=prompt,
                 model=model_to_use,
-                json_mode=True
+                json_mode=True,
             )
 
             # Parse JSON response
             try:
                 estimates_data = json.loads(response)
             except json.JSONDecodeError:
-                start_idx = response.find('{')
-                end_idx = response.rfind('}') + 1
+                start_idx = response.find("{")
+                end_idx = response.rfind("}") + 1
                 if start_idx >= 0 and end_idx > start_idx:
                     estimates_data = json.loads(response[start_idx:end_idx])
                 else:
-                    raise AIGenerationError(f"Invalid JSON response from model: {response[:200]}")
+                    raise AIGenerationError(
+                        f"Invalid JSON response from model: {response[:200]}"
+                    )
 
             # Convert to Component objects
-            components = []
-            estimates = estimates_data.get('estimates', [])
+            components: list[Component] = []
+            estimates = estimates_data.get("estimates", [])
 
             for est in estimates:
+                name = est.get("name", "Unknown component")
+
                 # Get pattern match if available
                 pattern = self._find_pattern_for_component(
-                    est['name'],
-                    context.department_code
+                    name,
+                    context.department_code,
                 )
 
-                # Use pattern if available, otherwise use AI estimate
                 if pattern:
-                    hours_3d_layout = pattern.get('avg_hours_3d_layout', est['hours_3d_layout'])
-                    hours_3d_detail = pattern.get('avg_hours_3d_detail', est['hours_3d_detail'])
-                    hours_2d = pattern.get('avg_hours_2d', est['hours_2d'])
-                    confidence = min(pattern.get('confidence', 0.5), 0.85)
-                    confidence_reason = f"Based on {pattern.get('occurrence_count', 0)} historical examples"
+                    hours_3d_layout = pattern.get("avg_hours_3d_layout", est.get("hours_3d_layout", 0.0))
+                    hours_3d_detail = pattern.get("avg_hours_3d_detail", est.get("hours_3d_detail", 0.0))
+                    hours_2d = pattern.get("avg_hours_2d", est.get("hours_2d", 0.0))
+                    confidence = min(pattern.get("confidence", 0.5), 0.9)
+                    confidence_reason = f"Pattern match from {pattern.get('occurrence_count', 0)} historical examples"
                 else:
-                    hours_3d_layout = est['hours_3d_layout'] * complexity_multiplier
-                    hours_3d_detail = est['hours_3d_detail'] * complexity_multiplier
-                    hours_2d = est['hours_2d'] * complexity_multiplier
-                    confidence = est.get('confidence', 0.5)
-                    confidence_reason = est.get('reasoning', 'AI estimate')
+                    # AI baseline * complexity multiplier
+                    base_layout = float(est.get("hours_3d_layout", 0.0))
+                    base_detail = float(est.get("hours_3d_detail", 0.0))
+                    base_2d = float(est.get("hours_2d", 0.0))
+
+                    hours_3d_layout = base_layout * complexity_multiplier
+                    hours_3d_detail = base_detail * complexity_multiplier
+                    hours_2d = base_2d * complexity_multiplier
+
+                    confidence = float(est.get("confidence", 0.5))
+                    confidence_reason = est.get("reasoning", "AI estimate (baseline * complexity_multiplier)")
 
                 component = Component(
-                    name=est['name'],
+                    name=name,
                     hours_3d_layout=hours_3d_layout,
                     hours_3d_detail=hours_3d_detail,
                     hours_2d=hours_2d,
                     confidence=confidence,
                     confidence_reason=confidence_reason,
                     is_summary=False,
-                    subcomponents=()
+                    subcomponents=(),
                 )
                 components.append(component)
 
-            # Return updated context
             return context.with_estimated_components(components)
 
         except Exception as e:
             logger.error(f"Hours estimation failed: {e}", exc_info=True)
             raise AIGenerationError(f"Stage 3 failed: {e}")
 
-    
+    def _build_estimation_prompt(
+        self,
+        context: StageContext,
+        all_nodes: list[ComponentNode],
+        complexity_multiplier: float,
+    ) -> str:
+        """
+        Build prompt for Stage 3 based on:
+        - description
+        - department
+        - technical_analysis (materials, complexity)
+        - component tree (all_nodes)
+        """
+        tech = context.technical_analysis
+        project_complexity = tech.project_complexity if tech else "medium"
+        materials = ", ".join(tech.materials or []) if tech and tech.materials else "unknown"
 
-    def _build_estimation_prompt(context, tech_analysis, complexity_multiplier,
-                             materials, components_list: str) -> str:
+        # Lista komponentów w prostym formacie tekstowym
+        components_lines: list[str] = []
+        for node in all_nodes:
+            qty = getattr(node, "quantity", 1)
+            cat = getattr(node, "category", "") or "Other"
+            components_lines.append(
+                f"- name: {node.name}, category: {cat}, quantity: {qty}"
+            )
+        components_list = "\n".join(components_lines) if components_lines else "none"
+
         return f"""
 You are a CAD/CAM estimator calculating realistic engineering hours for each component of a mechanical project.
 
 PROJECT CONTEXT:
 - Description: {context.description}
 - Department code: {context.department_code}
-- Complexity level: {tech_analysis.project_complexity}
-- Complexity multiplier: {complexity_multiplier}x
+- Complexity level (from Stage 1): {project_complexity}
+- Complexity multiplier (numeric factor): {complexity_multiplier}x
 - Dominant materials: {materials}
 
 COMPONENTS TO ESTIMATE (from previous stage):
 {components_list}
 
-Each component listed above ALREADY has a name. You MUST:
+INSTRUCTIONS:
+Each component listed above ALREADY has a name and quantity. You MUST:
 - Keep the component names EXACTLY as given (do not translate, do not rename).
-- Provide hour estimates for THREE phases:
+- Provide hour estimates for THREE phases PER ONE UNIT of the component:
   1. hours_3d_layout  – initial 3D positioning and basic shapes in the assembly,
   2. hours_3d_detail  – full detailed 3D modeling with all relevant features,
   3. hours_2d         – 2D manufacturing drawings with dimensions and annotations.
+
+IMPORTANT:
+- The hours you provide are BASELINE values for a “typical” medium-complexity project.
+- A separate complexity_multiplier (={complexity_multiplier}x) will be applied later in the pipeline.
+- Therefore: do NOT try to manually multiply for higher complexity; just give a solid medium-complexity baseline.
 
 CONSIDER:
 - Geometric and functional complexity of each component.
 - Manufacturing requirements (tolerances, surface finish, weld symbols, GD&T).
 - Standard vs custom parts (standard = much less time).
 - Repetition: if several components are very similar, later ones are faster than the first.
-- The overall project complexity and department type (more safety-critical = more hours).
+- Safety-critical and load-bearing parts usually require more detail and documentation.
 
 CONSTRAINTS:
-- Use realistic ranges, e.g. 0.1–200 hours per component per phase (most parts will be much lower).
+- Use realistic ranges, e.g. 0.3–80 hours per component per phase (most parts will be much lower).
 - Use decimal numbers (e.g. 1.5, 3.0), not strings.
 - If there is almost no work for a phase, you can use 0.0 or a very small value (e.g. 0.2).
-- If you are very uncertain, keep hours modest and reduce confidence.
+- If you are uncertain, err slightly on the side of overestimation rather than strong underestimation.
 
 OUTPUT FORMAT:
 Return ONE valid JSON object, and NOTHING else.
@@ -202,11 +240,10 @@ Output ONLY JSON, strictly following this structure.
     def _find_pattern_for_component(self, component_name: str, department: str) -> dict | None:
         """Find historical pattern for component."""
         try:
-            # Use fuzzy search to find similar components
             patterns = self.db_client.search_component_patterns(
                 query=component_name,
                 department=department,
-                limit=1
+                limit=1,
             )
             if patterns:
                 return patterns[0]
