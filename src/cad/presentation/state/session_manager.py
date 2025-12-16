@@ -21,6 +21,7 @@ class EstimationState:
     clarifying_answers: dict[str, str] = field(default_factory=dict)
     questions_answered: bool = False
     ai_brief: dict[str, Any] = field(default_factory=dict)
+    precheck_results: dict[str, Any] | None = None  # Brain module pre-check results
 
 
 @dataclass
@@ -155,6 +156,16 @@ class SessionManager:
         """Set AI-generated project brief."""
         state = self.get_estimation_state()
         state.ai_brief = brief
+        self.set_estimation_state(state)
+
+    def get_precheck_results(self) -> dict[str, Any] | None:
+        """Get brain module pre-check results."""
+        return self.get_estimation_state().precheck_results
+
+    def set_precheck_results(self, precheck: dict[str, Any]) -> None:
+        """Set brain module pre-check results."""
+        state = self.get_estimation_state()
+        state.precheck_results = precheck
         self.set_estimation_state(state)
 
     # UI configuration

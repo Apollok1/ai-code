@@ -25,9 +25,8 @@ def render_multi_model_results(estimate: Estimate, hourly_rate: int) -> None:
     is_multi_model = metadata.get("multi_model", False)
 
     if not is_multi_model:
-        st.info(
-            "ℹ️ To jest estymacja single-model. Dla szczegółowych wyników użyj Multi-Model Pipeline."
-        )
+        # Render single-model summary instead
+        render_single_model_summary(estimate, hourly_rate)
         return
 
     st.markdown("## 🎯 Wyniki Multi-Model Pipeline")
@@ -281,3 +280,250 @@ def render_risks_and_suggestions(estimate: Estimate, metadata: dict) -> None:
         with st.expander("⚠️ Ostrzeżenia", expanded=False):
             for warning in warnings_list:
                 st.warning(warning)
+
+
+# ==================== SINGLE-MODEL SUMMARY ====================
+
+
+def render_single_model_summary(estimate: Estimate, hourly_rate: int) -> None:
+    """
+    Render comprehensive summary for single-model estimation.
+
+    Similar to multi-model display but tailored for single-model pipeline.
+
+    Args:
+        estimate: Complete estimate
+        hourly_rate: Hourly rate for cost calculation
+    """
+    metadata = estimate.generation_metadata or {}
+
+    st.markdown("## 📊 Wyniki Single-Model Estimation")
+    st.markdown("Estymacja wykonana przez pojedynczy model AI z wzbogaceniem o wzorce.")
+
+    # ====== 0. SZYBKIE PODSUMOWANIE PROJEKTU ======
+    render_single_model_quick_summary(estimate, metadata, hourly_rate)
+
+    # ====== 1. WYKORZYSTANE ŹRÓDŁA DANYCH ======
+    render_single_model_data_sources(metadata)
+
+    # ====== 2. WZORCE I UCZENIE ======
+    render_single_model_patterns(estimate, metadata)
+
+    # ====== 3. ESTYMACJA GODZIN ======
+    st.markdown("---")
+    st.markdown("### 3️⃣ Estymacja Godzin")
+    st.markdown(f"**Całkowita liczba godzin:** {estimate.total_hours:.1f}h")
+    st.markdown(f"**Liczba komponentów:** {estimate.component_count}")
+    st.markdown(f"**Średnia pewność (overall):** {estimate.overall_confidence:.0%}")
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("3D Layout", f"{estimate.phases.hours_3d_layout:.1f}h")
+    col2.metric("3D Detail", f"{estimate.phases.hours_3d_detail:.1f}h")
+    col3.metric("2D Dokumentacja", f"{estimate.phases.hours_2d:.1f}h")
+
+    # ====== 4. KOSZT ======
+    st.markdown("---")
+    st.markdown("### 💰 Podsumowanie Kosztów")
+    total_cost = estimate.total_hours * hourly_rate
+    col1, col2 = st.columns(2)
+    col1.metric("Łączny czas", f"{estimate.total_hours:.1f}h")
+    col2.metric("Łączny koszt", f"{total_cost:,.0f} PLN", delta=f"{hourly_rate} PLN/h")
+
+    # ====== 5. PRE-CHECK (jeśli był wykonany) ======
+    render_precheck_info(metadata)
+
+
+def render_single_model_quick_summary(
+    estimate: Estimate, metadata: dict, hourly_rate: int
+) -> None:
+    """Szybkie podsumowanie dla single-model."""
+    st.markdown("---")
+    st.subheader("📝 Szybkie podsumowanie projektu")
+
+    # Opis projektu (jeśli dostępny)
+    description = _get_description_from_estimate(estimate, metadata)
+
+    # Średni confidence komponentów
+    components: list[Component] = list(estimate.components or [])
+    if components:
+        avg_conf = sum(c.confidence for c in components) / len(components)
+    else:
+        avg_conf = 0.0
+
+    # Pattern matches
+    pattern_matches = sum(
+        1
+        for c in components
+        if getattr(c, "confidence_reason", "") and "pattern" in getattr(c, "confidence_reason", "").lower()
+    )
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("⏱️ Łącznie godzin", f"{estimate.total_hours:.1f} h")
+        st.metric("🧩 Komponenty", estimate.component_count)
+    with col2:
+        cost = estimate.total_hours * float(hourly_rate or 0)
+        st.metric("💰 Koszt (szacunek)", f"{cost:,.0f} PLN")
+        st.metric("🎯 Wzorce użyte", f"{pattern_matches}/{estimate.component_count}")
+    with col3:
+        st.metric("✅ Średni confidence", f"{avg_conf*100:.1f}%")
+        conf_level = "🟢 HIGH" if avg_conf > 0.7 else ("🟡 MEDIUM" if avg_conf > 0.4 else "🔴 LOW")
+        st.metric("📊 Poziom pewności", conf_level)
+
+    if description:
+        with st.expander("📝 Opis projektu (zestawienie)", expanded=False):
+            st.write(description)
+
+    # Top komponenty wg godzin
+    st.markdown("### 🏗️ Najbardziej czasochłonne komponenty")
+
+    if not components:
+        st.caption("Brak komponentów do wyświetlenia.")
+    else:
+        sorted_components = sorted(
+            components, key=lambda c: c.total_hours, reverse=True
+        )
+        top_n = sorted_components[:5]
+
+        for comp in top_n:
+            with st.expander(
+                f"{comp.name} — {comp.total_hours:.1f}h "
+                f"(Layout: {comp.hours_3d_layout:.1f}h, Detail: {comp.hours_3d_detail:.1f}h, 2D: {comp.hours_2d:.1f}h)",
+                expanded=False,
+            ):
+                st.write(f"**Łącznie:** {comp.total_hours:.1f} h")
+                st.write(
+                    f"- 3D Layout: **{comp.hours_3d_layout:.1f} h**\n"
+                    f"- 3D Detail: **{comp.hours_3d_detail:.1f} h**\n"
+                    f"- 2D dokumentacja: **{comp.hours_2d:.1f} h**"
+                )
+                st.write(f"**Confidence:** {comp.confidence*100:.1f}%")
+                if getattr(comp, "confidence_reason", None):
+                    st.caption(f"Powód: {comp.confidence_reason}")
+                if getattr(comp, "category", None):
+                    st.write(f"**Kategoria:** {comp.category}")
+                if getattr(comp, "comment", None):
+                    st.write(f"**Komentarz:** {comp.comment}")
+
+
+def render_single_model_data_sources(metadata: dict) -> None:
+    """Render information about data sources used."""
+    st.markdown("---")
+    st.markdown("### 1️⃣ Wykorzystane źródła danych")
+
+    # Similar projects
+    similar_count = 0
+    if "similar_projects" in metadata:
+        similar_projects = metadata.get("similar_projects", [])
+        similar_count = len(similar_projects) if similar_projects else 0
+
+    # Excel/PDF files
+    had_excel = metadata.get("had_excel_file", False)
+    had_pdf = metadata.get("had_pdf_files", False)
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("🔍 Podobne projekty", similar_count)
+    with col2:
+        excel_icon = "✅" if had_excel else "❌"
+        st.metric(f"{excel_icon} Excel hints", "Tak" if had_excel else "Nie")
+    with col3:
+        pdf_icon = "✅" if had_pdf else "❌"
+        st.metric(f"{pdf_icon} PDF specs", "Tak" if had_pdf else "Nie")
+
+    # Show similar projects if available
+    if similar_count > 0:
+        with st.expander("🔍 Podobne projekty (z bazy)", expanded=False):
+            similar_projects = metadata.get("similar_projects", [])
+            for proj in similar_projects[:5]:
+                name = proj.get("name", "N/A")
+                est = proj.get("estimated_hours", 0.0) or 0.0
+                sim = proj.get("similarity", 0.0) or 0.0
+                st.markdown(f"- **{name}**: {est:.1f}h (similarity: {sim:.0%})")
+
+
+def render_single_model_patterns(estimate: Estimate, metadata: dict) -> None:
+    """Render pattern matching information."""
+    st.markdown("---")
+    st.markdown("### 2️⃣ Wzorce i Uczenie")
+
+    components: list[Component] = list(estimate.components or [])
+
+    # Count pattern matches
+    pattern_matches = sum(
+        1
+        for c in components
+        if getattr(c, "confidence_reason", "")
+        and "pattern" in getattr(c, "confidence_reason", "").lower()
+    )
+
+    ai_generated = len(components) - pattern_matches
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("🎯 Komponenty ze wzorców", pattern_matches)
+    with col2:
+        st.metric("🤖 Wygenerowane przez AI", ai_generated)
+    with col3:
+        pattern_pct = (pattern_matches / len(components) * 100) if components else 0
+        st.metric("📊 % pokrycia wzorcami", f"{pattern_pct:.0f}%")
+
+    # Show scaling info if present
+    scaling_info = metadata.get("scaling_info")
+    if scaling_info:
+        with st.expander("⚖️ Skalowanie minimalnych godzin", expanded=False):
+            st.info(
+                f"Estymacja została przeskalowana, aby osiągnąć minimalny próg godzin dla tego działu. "
+                f"Szczegóły: {scaling_info}"
+            )
+
+
+def render_precheck_info(metadata: dict) -> None:
+    """Render pre-check (brain module) results if available."""
+    precheck = metadata.get("precheck_results")
+    if not precheck:
+        return
+
+    st.markdown("---")
+    st.markdown("### 🧭 Project Brain – Pre-check wymagań")
+
+    missing = precheck.get("missing_info", [])
+    questions = precheck.get("clarifying_questions", [])
+    suggested = precheck.get("suggested_components", [])
+    risk_flags = precheck.get("risk_flags", [])
+
+    if not any([missing, questions, suggested, risk_flags]):
+        st.info("Pre-check został wykonany, ale nie znaleziono istotnych uwag.")
+        return
+
+    col_a, col_b = st.columns(2)
+
+    with col_a:
+        if missing:
+            with st.expander("🔎 Brakujące informacje", expanded=False):
+                for m in missing:
+                    st.markdown(f"- {m}")
+
+        if questions:
+            with st.expander("❓ Pytania doprecyzowujące", expanded=False):
+                for q in questions:
+                    st.markdown(f"- {q}")
+
+    with col_b:
+        if suggested:
+            with st.expander("🧩 Sugerowane obszary/komponenty", expanded=False):
+                for s_item in suggested:
+                    st.markdown(f"- {s_item}")
+
+        if risk_flags:
+            with st.expander("⚠️ Potencjalne ryzyka z braków wymagań", expanded=False):
+                for r in risk_flags:
+                    if isinstance(r, dict):
+                        desc = r.get("description", "")
+                        impact = r.get("impact", "")
+                        mit = r.get("mitigation", "")
+                        st.markdown(f"- {desc} (wpływ: {impact})")
+                        if mit:
+                            st.caption(f"  Mitygacja: {mit}")
+                    else:
+                        st.markdown(f"- {r}")

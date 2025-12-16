@@ -284,8 +284,21 @@ class EstimationPipeline:
         # Enrich with pattern matching
         components = self._enrich_with_patterns(components, department)
 
+        # Track pre-scaling total for metadata
+        total_before_scaling = sum(
+            c.total_hours for c in components
+            if not getattr(c, "is_summary", False)
+        )
+
         # Minimalne godziny — skalowanie w górę, jeśli total jest nienaturalnie niski
         components = self._apply_minimum_hours_to_components(components, department)
+
+        # Check if scaling was applied
+        total_after_scaling = sum(
+            c.total_hours for c in components
+            if not getattr(c, "is_summary", False)
+        )
+        was_scaled = abs(total_after_scaling - total_before_scaling) > 0.1
 
         # Create estimate
         estimate = Estimate.from_components(
@@ -296,6 +309,28 @@ class EstimationPipeline:
             warnings=[],
             raw_ai_response=ai_response,
         )
+
+        # Enrich with single-model metadata
+        if not estimate.generation_metadata:
+            estimate.generation_metadata = {}
+
+        estimate.generation_metadata.update({
+            "multi_model": False,
+            "pipeline_type": "single_model",
+            "had_excel_file": excel_file is not None,
+            "had_pdf_files": pdf_files is not None and len(pdf_files) > 0,
+            "similar_projects": similar_projects if similar_projects else [],
+            "similar_projects_count": len(similar_projects) if similar_projects else 0,
+            "description": description,
+            "department": department.value,
+        })
+
+        if was_scaled:
+            scale_factor = total_after_scaling / total_before_scaling if total_before_scaling > 0 else 1.0
+            estimate.generation_metadata["scaling_info"] = (
+                f"Przeskalowano z {total_before_scaling:.1f}h do {total_after_scaling:.1f}h "
+                f"(współczynnik: {scale_factor:.2f}x)"
+            )
 
         logger.info(
             f"✅ Estimation complete (single-model): {estimate.total_hours:.1f}h, {estimate.component_count} components"
