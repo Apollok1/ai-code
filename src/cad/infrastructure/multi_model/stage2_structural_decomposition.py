@@ -10,7 +10,7 @@ from typing import Any
 from cad.domain.models.multi_model import (
     StageContext,
     StructuralDecomposition,
-    ComponentNode
+    ComponentNode,
 )
 from cad.domain.models.config import MultiModelConfig
 from cad.domain.interfaces.ai_client import AIClient
@@ -71,7 +71,7 @@ class StructuralDecompositionStage:
             response = self.ai_client.generate_text(
                 prompt=prompt,
                 model=model_to_use,
-                json_mode=True
+                json_mode=True,
             )
 
             # Parse JSON response
@@ -79,15 +79,19 @@ class StructuralDecompositionStage:
                 structure_data = json.loads(response)
             except json.JSONDecodeError:
                 # Try to extract JSON from response
-                start_idx = response.find('{')
-                end_idx = response.rfind('}') + 1
+                start_idx = response.find("{")
+                end_idx = response.rfind("}") + 1
                 if start_idx >= 0 and end_idx > start_idx:
                     structure_data = json.loads(response[start_idx:end_idx])
                 else:
-                    raise AIGenerationError(f"Invalid JSON response from model: {response[:200]}")
+                    raise AIGenerationError(
+                        f"Invalid JSON response from model: {response[:200]}"
+                    )
 
             # Parse component tree
-            root_components = self._parse_component_tree(structure_data.get('components', []))
+            root_components = self._parse_component_tree(
+                structure_data.get("components", [])
+            )
 
             # Calculate metrics
             all_nodes = []
@@ -96,24 +100,36 @@ class StructuralDecompositionStage:
 
             max_depth = self._calculate_max_depth(root_components)
 
-            # Extract assembly relationships
-            assembly_rels = structure_data.get('assembly_relationships', {})
+            # Extract assembly relationships (opcjonalne pole z modelu)
+            assembly_rels = structure_data.get("assembly_relationships", {})
 
             return StructuralDecomposition(
                 root_components=tuple(root_components),
                 total_component_count=len(all_nodes),
                 max_depth=max_depth,
                 assembly_relationships=assembly_rels,
-                raw_structure=structure_data.get('reasoning', '')
+                raw_structure=structure_data.get("reasoning", ""),
             )
 
         except Exception as e:
             logger.error(f"Structural decomposition failed: {e}", exc_info=True)
             raise AIGenerationError(f"Stage 2 failed: {e}")
 
+    def _build_decomposition_prompt(self, context: StageContext) -> str:
+        """
+        Zbuduj prompt dla Stage 2 na podstawie:
+        - context.description
+        - context.technical_analysis (Stage 1)
+        """
+        tech_analysis = context.technical_analysis
+        if tech_analysis is None:
+            raise ValidationError("Stage 2 requires technical_analysis from Stage 1")
 
-    def _build_decomposition_prompt(context, tech_analysis, materials, manufacturing_methods,
-                                    estimated_assembly_count, key_challenges) -> str:
+        materials = ", ".join(tech_analysis.materials or []) or "unknown"
+        manufacturing_methods = ", ".join(tech_analysis.manufacturing_methods or []) or "unknown"
+        estimated_assembly_count = tech_analysis.estimated_assembly_count or 5
+        key_challenges = "; ".join(tech_analysis.key_challenges or []) or "none"
+
         return f"""
 You are a senior CAD/CAM engineer breaking down a mechanical design project into a realistic component hierarchy.
 
@@ -188,19 +204,19 @@ Output ONLY JSON, strictly following this structure.
 
     def _parse_component_node(self, data: dict, parent_name: str | None) -> ComponentNode:
         """Recursively parse component node."""
-        children_data = data.get('children', [])
+        children_data = data.get("children", [])
         children = tuple(
-            self._parse_component_node(child_data, parent_name=data['name'])
+            self._parse_component_node(child_data, parent_name=data["name"])
             for child_data in children_data
         )
 
         return ComponentNode(
-            name=data['name'],
-            category=data.get('category'),
-            quantity=data.get('quantity', 1),
+            name=data["name"],
+            category=data.get("category"),
+            quantity=data.get("quantity", 1),
             parent_name=parent_name,
             children=children,
-            metadata=data.get('metadata', {})
+            metadata=data.get("metadata", {}),
         )
 
     def _calculate_max_depth(self, roots: list[ComponentNode], current_depth: int = 1) -> int:
@@ -211,7 +227,9 @@ Output ONLY JSON, strictly following this structure.
         max_child_depth = current_depth
         for root in roots:
             if root.children:
-                child_depth = self._calculate_max_depth(list(root.children), current_depth + 1)
+                child_depth = self._calculate_max_depth(
+                    list(root.children), current_depth + 1
+                )
                 max_child_depth = max(max_child_depth, child_depth)
 
         return max_child_depth
