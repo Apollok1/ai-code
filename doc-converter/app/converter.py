@@ -542,72 +542,193 @@ def ocr_image_bytes(img_bytes: bytes, lang: str = 'pol+eng') -> str:
 #            podsumowania audio oraz Project Brain (zadania/ryzyka/brief + web lookup)
 
 # === AUDIO: Whisper / Pyannote ===
-def extract_audio_whisper(file):
-    """Audio → tekst przez Whisper ASR. Zwraca (text, pages, meta)."""
+
+def split_audio_into_chunks(input_path: str, chunk_minutes: int = 10):
+    """
+    Dzieli plik audio na mniejsze chunki o określonej długości.
+
+    Args:
+        input_path: Ścieżka do pliku audio
+        chunk_minutes: Długość każdego chunka w minutach
+
+    Returns:
+        Lista tupli: [(chunk_path, start_offset_seconds), ...]
+    """
+    try:
+        # Pobierz długość pliku audio
+        probe_cmd = [
+            'ffprobe', '-v', 'error',
+            '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1',
+            input_path
+        ]
+        result = subprocess.run(probe_cmd, capture_output=True, text=True, check=True)
+        total_duration = float(result.stdout.strip())
+
+        chunk_seconds = chunk_minutes * 60
+        chunks = []
+
+        # Jeśli plik krótszy niż chunk, zwróć go bez dzielenia
+        if total_duration <= chunk_seconds:
+            return [(input_path, 0.0)]
+
+        # Dziel na chunki
+        start = 0.0
+        chunk_idx = 0
+        while start < total_duration:
+            chunk_path = tempfile.NamedTemporaryFile(suffix='.wav', delete=False).name
+            duration = min(chunk_seconds, total_duration - start)
+
+            # ffmpeg: wytnij fragment
+            split_cmd = [
+                'ffmpeg', '-i', input_path,
+                '-ss', str(start),
+                '-t', str(duration),
+                '-ar', '16000',  # 16kHz
+                '-ac', '1',      # mono
+                '-y',
+                chunk_path
+            ]
+
+            subprocess.run(split_cmd, capture_output=True, check=True)
+            chunks.append((chunk_path, start))
+
+            logger.info(f"Utworzono chunk {chunk_idx}: {start:.1f}s - {start+duration:.1f}s")
+
+            start += duration
+            chunk_idx += 1
+
+        return chunks
+
+    except Exception as e:
+        logger.error(f"Błąd podczas dzielenia audio: {e}")
+        return [(input_path, 0.0)]  # Fallback: zwróć oryginalny plik
+
+
+def extract_audio_whisper(file, enable_chunking=False, chunk_minutes=10):
+    """
+    Audio → tekst przez Whisper ASR. Zwraca (text, pages, meta).
+
+    Args:
+        file: Plik audio
+        enable_chunking: Czy włączyć dzielenie na części (dla długich plików)
+        chunk_minutes: Długość każdego chunka w minutach (domyślnie 10)
+    """
     try:
         size_bytes = get_file_size(file)
-        timeout_read = calculate_timeout(size_bytes, base=600, per_mb=60)
-
         file.seek(0)
         raw = file.read()
-        mime = getattr(file, "type", None) or "application/octet-stream"
         fname = file.name
 
-        # Downsample dla dużych plików
+        # Zapisz do pliku tymczasowego
+        with tempfile.NamedTemporaryFile(suffix=os.path.splitext(fname)[1], delete=False) as tmp_in:
+            tmp_in.write(raw)
+            input_path = tmp_in.name
+
+        # Konwersja do WAV 16kHz mono (dla spójności)
+        converted_path = tempfile.NamedTemporaryFile(suffix='.wav', delete=False).name
         try:
-            if size_bytes > 25 * 1024 * 1024:
-                from pydub import AudioSegment
-                with tempfile.NamedTemporaryFile(suffix=os.path.splitext(fname)[1], delete=False) as tmp_in:
-                    tmp_in.write(raw)
-                    tmp_in_path = tmp_in.name
-                audio = AudioSegment.from_file(tmp_in_path)
-                audio = audio.set_channels(1).set_frame_rate(16000)
-                buf = io.BytesIO()
-                audio.export(buf, format="wav", parameters=["-acodec", "pcm_s16le"])
-                raw = buf.getvalue()
-                mime = "audio/wav"
-                fname = os.path.splitext(fname)[0] + "_16k.wav"
+            convert_cmd = [
+                'ffmpeg', '-i', input_path,
+                '-ar', '16000',
+                '-ac', '1',
+                '-y',
+                converted_path
+            ]
+            subprocess.run(convert_cmd, capture_output=True, check=True)
+        except Exception as e:
+            logger.warning(f"Konwersja audio nie powiodła się: {e}, używam oryginalnego pliku")
+            converted_path = input_path
+
+        try:
+            # Podział na chunki jeśli włączone
+            if enable_chunking:
+                chunks = split_audio_into_chunks(converted_path, chunk_minutes)
+                logger.info(f"Podzielono audio na {len(chunks)} części")
+            else:
+                chunks = [(converted_path, 0.0)]
+
+            # Przetwarzanie każdego chunka
+            all_segments = []
+            all_texts = []
+            total_duration = 0.0
+
+            for chunk_idx, (chunk_path, time_offset) in enumerate(chunks):
+                logger.info(f"Przetwarzanie chunka {chunk_idx + 1}/{len(chunks)} (offset: {time_offset:.1f}s)")
+
+                # Odczytaj chunk
+                with open(chunk_path, 'rb') as cf:
+                    chunk_data = cf.read()
+
+                chunk_size = len(chunk_data)
+                timeout_read = calculate_timeout(chunk_size, base=300, per_mb=30)
+
+                # Wyślij do Whisper
+                files = {"audio_file": (f"chunk_{chunk_idx}.wav", chunk_data, "audio/wav")}
+                r = http_post(
+                    f"{WHISPER_URL}/asr?task=transcribe&language=pl&word_timestamps=false&output=json",
+                    files=files,
+                    timeout=(30, timeout_read)
+                )
+                r.raise_for_status()
+
                 try:
-                    os.remove(tmp_in_path)
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                    result = r.json()
+                except json.JSONDecodeError as je:
+                    logger.error(f"Whisper JSON decode error: {je}")
+                    continue
 
-        files = {"audio_file": (fname, raw, mime)}
-        r = http_post(
-            f"{WHISPER_URL}/asr?task=transcribe&language=pl&word_timestamps=false&output=json",
-            files=files,
-            timeout=(30, timeout_read)
-        )
-        r.raise_for_status()
+                # Przetwórz segmenty z chunka
+                segments = result.get("segments", [])
+                chunk_duration = result.get("duration", 0.0)
 
-        try:
-            result = r.json()
-        except json.JSONDecodeError as je:
-            logger.error(f"Whisper JSON decode error: {je}, response: {r.text[:500]}")
-            return "[BŁĄD: Whisper zwrócił nieprawidłowy format]", 0, {"type": "audio", "error": "invalid_json"}
+                for seg in segments:
+                    # Dodaj offset czasowy do timestampów
+                    seg["start"] = seg.get("start", 0) + time_offset
+                    seg["end"] = seg.get("end", 0) + time_offset
+                    all_segments.append(seg)
 
-        text_res = result.get("text", "") or ""
-        segments = result.get("segments", [])
-        meta = {
-            "type": "audio",
-            "segments_count": len(segments),
-            "duration": result.get("duration"),
-            "language": result.get("language"),
-            "segments": segments
-        }
+                total_duration = max(total_duration, time_offset + chunk_duration)
 
-        if segments:
-            lines = ["=== TRANSKRYPCJA Z TIMESTAMPAMI ===", ""]
-            for seg in segments:
-                start = seg.get("start", 0)
-                end = seg.get("end", 0)
-                txt = (seg.get("text") or "").strip()
-                lines.append(f"[{start:.1f}s - {end:.1f}s] {txt}")
-            text_res = "\n".join(lines)
+                # Usuń plik chunka jeśli to nie oryginalny
+                if chunk_path != converted_path:
+                    try:
+                        os.remove(chunk_path)
+                    except Exception:
+                        pass
 
-        return text_res, 1, meta
+            # Złóż wyniki
+            meta = {
+                "type": "audio",
+                "segments_count": len(all_segments),
+                "duration": total_duration,
+                "language": "pl",
+                "segments": all_segments,
+                "chunked": enable_chunking,
+                "chunks_count": len(chunks) if enable_chunking else 1
+            }
+
+            if all_segments:
+                lines = ["=== TRANSKRYPCJA Z TIMESTAMPAMI ===", ""]
+                for seg in all_segments:
+                    start = seg.get("start", 0)
+                    end = seg.get("end", 0)
+                    txt = (seg.get("text") or "").strip()
+                    lines.append(f"[{start:.1f}s - {end:.1f}s] {txt}")
+                text_res = "\n".join(lines)
+            else:
+                text_res = "[Brak transkrypcji]"
+
+            return text_res, 1, meta
+
+        finally:
+            # Cleanup
+            try:
+                os.remove(input_path)
+                if converted_path != input_path:
+                    os.remove(converted_path)
+            except Exception:
+                pass
 
     except requests.exceptions.Timeout:
         logger.error("Whisper timeout")
@@ -660,12 +781,18 @@ def pick_speaker_for_interval(diar_segments: list, start: float, end: float) -> 
     return best_spk
 
 
-def diarize_audio(file):
+def diarize_audio(file, enable_chunking=False, chunk_minutes=10):
     """
     Wysyła plik audio do serwera pyannote, konwertując go w locie do WAV 16kHz mono.
+
+    Args:
+        file: Plik audio
+        enable_chunking: Czy włączyć dzielenie na części (dla długich plików)
+        chunk_minutes: Długość każdego chunka w minutach (domyślnie 10)
     """
     pyannote_url = os.getenv("PYANNOTE_URL", PYANNOTE_URL).rstrip("/")
 
+    # Zapisz plik do temp
     with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.name)[1]) as tmp_in:
         file.seek(0)
         tmp_in.write(file.read())
@@ -673,8 +800,8 @@ def diarize_audio(file):
 
     converted_audio_path = None
     try:
-        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_out:
-            converted_audio_path = tmp_out.name
+        # Konwersja do WAV 16kHz mono
+        converted_audio_path = tempfile.NamedTemporaryFile(suffix='.wav', delete=False).name
 
         logger.info(f"Konwertowanie pliku audio do WAV 16kHz mono dla pyannote...")
         command = [
@@ -693,19 +820,49 @@ def diarize_audio(file):
         )
         logger.info(f"Konwersja zakończona. Plik tymczasowy: {converted_audio_path}")
 
-        with open(converted_audio_path, "rb") as converted_file:
-            size_bytes = os.path.getsize(converted_audio_path)
-            timeout_read = calculate_timeout(size_bytes, base=300, per_mb=30)
+        # Podział na chunki jeśli włączone
+        if enable_chunking:
+            chunks = split_audio_into_chunks(converted_audio_path, chunk_minutes)
+            logger.info(f"Podzielono audio na {len(chunks)} części dla diaryzacji")
+        else:
+            chunks = [(converted_audio_path, 0.0)]
 
-            files = {'audio_file': (os.path.basename(converted_audio_path), converted_file, 'audio/wav')}
+        # Przetwarzanie każdego chunka
+        all_segments = []
 
-            r = http_post(
-                f"{pyannote_url}/diarize",
-                files=files,
-                timeout=(30, timeout_read)
-            )
-            r.raise_for_status()
-            return r.json()
+        for chunk_idx, (chunk_path, time_offset) in enumerate(chunks):
+            logger.info(f"Diaryzacja chunka {chunk_idx + 1}/{len(chunks)} (offset: {time_offset:.1f}s)")
+
+            with open(chunk_path, "rb") as chunk_file:
+                size_bytes = os.path.getsize(chunk_path)
+                timeout_read = calculate_timeout(size_bytes, base=300, per_mb=30)
+
+                files = {'audio_file': (f"chunk_{chunk_idx}.wav", chunk_file, 'audio/wav')}
+
+                r = http_post(
+                    f"{pyannote_url}/diarize",
+                    files=files,
+                    timeout=(30, timeout_read)
+                )
+                r.raise_for_status()
+                chunk_result = r.json()
+
+            # Normalizuj i dodaj offset czasowy
+            chunk_segments = normalize_diarization(chunk_result)
+            for seg in chunk_segments:
+                seg["start"] += time_offset
+                seg["end"] += time_offset
+                all_segments.append(seg)
+
+            # Usuń plik chunka jeśli to nie oryginalny
+            if chunk_path != converted_audio_path:
+                try:
+                    os.remove(chunk_path)
+                except Exception:
+                    pass
+
+        # Zwróć w formacie zgodnym z normalize_diarization
+        return {"segments": all_segments, "chunked": enable_chunking}
 
     except subprocess.CalledProcessError as e:
         logger.error(f"Błąd ffmpeg podczas konwersji audio: {e.stderr}")
@@ -723,10 +880,17 @@ def diarize_audio(file):
             os.remove(converted_audio_path)
 
 
-def extract_audio_with_speakers(file):
-    """Whisper + Pyannote = transkrypcja z identyfikacją głosów."""
+def extract_audio_with_speakers(file, enable_chunking=False, chunk_minutes=10):
+    """
+    Whisper + Pyannote = transkrypcja z identyfikacją głosów.
+
+    Args:
+        file: Plik audio
+        enable_chunking: Czy włączyć dzielenie na części
+        chunk_minutes: Długość chunka w minutach
+    """
     try:
-        text_only, _, meta = extract_audio_whisper(file)
+        text_only, _, meta = extract_audio_whisper(file, enable_chunking, chunk_minutes)
         segments = meta.get("segments", [])
         if not segments:
             return text_only, 1, meta
@@ -738,8 +902,14 @@ def extract_audio_with_speakers(file):
 
         st.info("🎤 Identyfikuję głosy...")
         file.seek(0)
-        diarization = diarize_audio(file)
-        diar_segments = normalize_diarization(diarization)
+        diarization = diarize_audio(file, enable_chunking, chunk_minutes)
+
+        # diarize_audio teraz zwraca dict z kluczem "segments"
+        if "error" in diarization:
+            st.warning(f"Błąd diaryzacji: {diarization['error']} — zwracam samą transkrypcję.")
+            return text_only, 1, meta
+
+        diar_segments = diarization.get("segments", [])
         if not diar_segments:
             st.warning("Pyannote nie zwrócił poprawnych segmentów — zwracam samą transkrypcję.")
             return text_only, 1, meta
@@ -1068,8 +1238,20 @@ def parse_msg_email(file):
 
 
 # === ROUTER ===
-def process_file(file, use_vision: bool, vision_model: str, ocr_limit: int, image_mode: str):
-    """Router do odpowiedniego ekstraktora."""
+def process_file(file, use_vision: bool, vision_model: str, ocr_limit: int, image_mode: str,
+                 enable_audio_chunking: bool = False, audio_chunk_minutes: int = 10):
+    """
+    Router do odpowiedniego ekstraktora.
+
+    Args:
+        file: Plik do przetworzenia
+        use_vision: Czy używać vision models
+        vision_model: Nazwa modelu vision
+        ocr_limit: Limit stron dla OCR
+        image_mode: Tryb przetwarzania obrazów
+        enable_audio_chunking: Czy włączyć dzielenie audio na chunki
+        audio_chunk_minutes: Długość chunka audio w minutach
+    """
     name = file.name.lower()
 
     if name.endswith('.pdf'):
@@ -1083,8 +1265,8 @@ def process_file(file, use_vision: bool, vision_model: str, ocr_limit: int, imag
     elif name.endswith(('.mp3', '.wav', '.m4a', '.ogg', '.flac')):
         ok, _ = check_pyannote_health(PYANNOTE_URL)
         if ok:
-            return extract_audio_with_speakers(file)
-        return extract_audio_whisper(file)
+            return extract_audio_with_speakers(file, enable_audio_chunking, audio_chunk_minutes)
+        return extract_audio_whisper(file, enable_audio_chunking, audio_chunk_minutes)
     elif name.endswith('.eml'):
         return extract_eml(file)
     elif name.endswith('.msg'):
@@ -1863,7 +2045,50 @@ with st.sidebar:
         )
     image_mode = IMAGE_MODE_MAP.get(image_mode_label, "ocr")
 
+    # === AUDIO PROCESSING ===
+    st.markdown("---")
+    st.subheader("🎙️ Przetwarzanie Audio")
+
+    with st.expander("ℹ️ Po co dzielenie audio na części?", expanded=False):
+        st.markdown("""
+        **Audio Chunking** dzieli długie nagrania (60+ min) na mniejsze części przed wysłaniem do Whisper/Pyannote.
+
+        **Korzyści:**
+        - ✅ Unika timeoutów dla długich plików
+        - ✅ Mniejsze zużycie pamięci
+        - ✅ Lepsza niezawodność przetwarzania
+
+        **Kiedy włączyć?**
+        - Nagrania > 30-60 minut
+        - Problemy z timeoutami
+        - Ograniczona pamięć serwera
+        """)
+
+    enable_audio_chunking = st.checkbox(
+        "🔪 Dziel długie audio na części (chunking)",
+        value=False,
+        help="Włącz dla nagrań >60min lub gdy występują timeouty",
+        disabled=st.session_state.get("converting", False)
+    )
+
+    audio_chunk_minutes = st.slider(
+        "Długość chunka audio (minuty)",
+        min_value=5,
+        max_value=30,
+        value=10,
+        step=5,
+        help="Krótsze chunki = bezpieczniej, dłuższe = szybciej",
+        disabled=st.session_state.get("converting", False) or not enable_audio_chunking
+    )
+
+    st.session_state["enable_audio_chunking"] = enable_audio_chunking
+    st.session_state["audio_chunk_minutes"] = audio_chunk_minutes
+
+    if enable_audio_chunking:
+        st.info(f"✂️ Audio będzie dzielone na części po {audio_chunk_minutes} min")
+
     # Zapis lokalny
+    st.markdown("---")
     st.subheader("Zapis lokalny")
     enable_local_save = st.checkbox(
         "Zapisz wyniki lokalnie (folder)", value=False,
@@ -2038,7 +2263,14 @@ if st.session_state.get("converting", False):
         st.subheader(f"📄 {file.name}")
 
         try:
-            extracted_text, pages, meta = process_file(file, use_vision, selected_vision, ocr_pages_limit, image_mode)
+            # Pobierz ustawienia audio chunking z session state
+            enable_audio_chunking = st.session_state.get("enable_audio_chunking", False)
+            audio_chunk_minutes = st.session_state.get("audio_chunk_minutes", 10)
+
+            extracted_text, pages, meta = process_file(
+                file, use_vision, selected_vision, ocr_pages_limit, image_mode,
+                enable_audio_chunking, audio_chunk_minutes
+            )
 
             st.session_state["results"].append({
                 "name": file.name,
