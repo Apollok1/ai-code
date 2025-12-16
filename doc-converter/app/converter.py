@@ -1115,6 +1115,7 @@ def send_to_anythingllm(text: str, filename: str):
 
 
 # === PODSUMOWANIA AUDIO I DOKUMENTÓW (Map-Reduce JSON + Markdown) ===
+# === PODSUMOWANIA AUDIO (Map-Reduce JSON + Markdown) ===
 
 MAP_PROMPT_TEMPLATE = """
 Jesteś asystentem ds. spotkań (PL). Otrzymasz FRAGMENT transkrypcji rozmowy z klientem
@@ -1131,19 +1132,19 @@ BARDZO WAŻNE ZASADY:
 - Jeśli występują oznaczenia SPEAKER_x – zachowaj je, nie tłumacz ich na imiona.
 
 WYMAGANY FORMAT WYJŚCIOWY (Tylko poprawny JSON, bez komentarzy, bez markdownu):
-{
+{{
   "summary": "1-2 krótkie akapity skrótu (po polsku)",
   "key_points": ["punkt 1", "punkt 2"],
   "decisions": ["decyzja 1", "decyzja 2"],
   "to_be_decided": ["kwestia do ustalenia 1", "kwestia 2"],
   "action_items": [
-    { "owner":"", "task":"", "due":"", "notes":"" }
+    {{ "owner":"", "task":"", "due":"", "notes":"" }}
   ],
   "risks": [
-    { "risk":"", "impact":"niski/średni/wysoki", "mitigation":"" }
+    {{ "risk":"", "impact":"niski/średni/wysoki", "mitigation":"" }}
   ],
   "open_questions": ["pytanie 1", "pytanie 2"]
-}
+}}
 
 DODATKOWE WSKAZÓWKI:
 - "summary" ma być zwięzłym opisem tego fragmentu (maks. 5 zdań).
@@ -1174,19 +1175,19 @@ WEJŚCIE (lista JSON-ów z poprzedniego kroku):
 
 WYMAGANY FORMAT WYJŚCIOWY:
 Zwróć TYLKO JEDEN obiekt JSON (bez komentarzy, bez markdownu), dokładnie w tej strukturze:
-{
+{{
   "summary": "skondensowany skrót całości (1-3 akapity, po polsku)",
   "key_points": ["..."],
   "decisions": ["..."],
   "to_be_decided": ["..."],
   "action_items": [
-    { "owner":"", "task":"", "due":"", "notes":"" }
+    {{ "owner":"", "task":"", "due":"", "notes":"" }}
   ],
   "risks": [
-    { "risk":"", "impact":"niski/średni/wysoki", "mitigation":"" }
+    {{ "risk":"", "impact":"niski/średni/wysoki", "mitigation":"" }}
   ],
   "open_questions": ["..."]
-}
+}}
 
 ZASADY:
 - Usuwaj duplikaty w listach (ale nie usuwaj ważnych szczegółów).
@@ -1208,18 +1209,18 @@ Twoje zadanie:
 - Wyciągnąć kluczowe informacje, potencjalne zadania, ryzyka i pytania.
 
 FORMAT WYJŚCIOWY (TYLKO JSON, bez komentarzy/markdownu):
-{
+{{
   "summary": "1-3 akapity skrótu (po polsku)",
   "key_points": ["punkt 1", "punkt 2"],
   "decisions": ["decyzja 1", "decyzja 2"],
   "action_items": [
-    {"owner":"","task":"","due":"","priority":"low/medium/high","notes":""}
+    {{"owner":"","task":"","due":"","priority":"low/medium/high","notes":""}}
   ],
   "risks": [
-    {"risk":"","impact":"low/medium/high","mitigation":""}
+    {{"risk":"","impact":"low/medium/high","mitigation":""}}
   ],
   "open_questions": ["pytanie 1","pytanie 2"]
-}
+}}
 
 ZASADY:
 - Nie wymyślaj informacji – jeśli czegoś w tekście nie ma, zostaw puste [] lub "".
