@@ -118,6 +118,64 @@ def init_app() -> dict[str, Any]:
     }
 
 
+def is_description_poor(description: str) -> bool:
+    """
+    Check if project description is too generic/poor.
+
+    Args:
+        description: Project description text
+
+    Returns:
+        True if description is poor, False otherwise
+    """
+    if not description or not description.strip():
+        return True
+
+    description_lower = description.lower().strip()
+
+    # Check minimum length (at least 50 characters)
+    if len(description_lower) < 50:
+        return True
+
+    # Check for technical keywords that indicate good description
+    technical_keywords = [
+        # Dimensions & measurements
+        'mm', 'cm', 'm', 'długość', 'szerokość', 'wysokość', 'wymiar', 'masa', 'kg', 'ton',
+        # Materials
+        'stal', 'aluminium', 'nierdzew', 's235', 's355', 'materiał',
+        # Components & systems
+        'silnik', 'napęd', 'siłownik', 'przekładnia', 'łożysko', 'czujnik', 'sensor',
+        'przenośnik', 'rama', 'konstrukcja', 'moduł', 'stacja',
+        # Processes & technologies
+        'spawanie', 'obróbka', 'montaż', 'precyzja', 'dokładność',
+        # Standards & requirements
+        'norma', 'bezpieczeństwo', 'osłona', 'ce', 'ip',
+        # Quantities & specs
+        'oś', 'osi', 'stopień', 'stopnie', 'zakres', 'obciążenie', 'wydajność'
+    ]
+
+    # Count how many technical keywords are present
+    keyword_count = sum(1 for keyword in technical_keywords if keyword in description_lower)
+
+    # Good description should have at least 3 technical keywords
+    if keyword_count < 3:
+        return True
+
+    # Check for very generic phrases that indicate poor description
+    generic_phrases = [
+        'prosty projekt', 'standardowy', 'zwykły', 'typowy',
+        'do ustalenia', 'tbd', 'todo'
+    ]
+
+    generic_count = sum(1 for phrase in generic_phrases if phrase in description_lower)
+
+    # If too many generic phrases, it's poor
+    if generic_count >= 2:
+        return True
+
+    return False
+
+
 def main():
     """Main application entry point."""
     st.title("🚀 CAD Estimator Pro")
@@ -310,6 +368,9 @@ def render_new_project_page(app: dict, session: SessionManager, config: dict):
                     model=None,
                 )
 
+            # Save precheck results to session for later attachment to estimate
+            session.set_precheck_results(precheck)
+
             st.subheader("🧭 Project Brain – pre‑check wymagań")
 
             missing = precheck.get("missing_info") or []
@@ -441,6 +502,13 @@ def render_new_project_page(app: dict, session: SessionManager, config: dict):
                             use_multi_model=False,
                         )
 
+                        # Attach precheck results from session if available
+                        precheck = session.get_precheck_results()
+                        if precheck:
+                            if not estimate.generation_metadata:
+                                estimate.generation_metadata = {}
+                            estimate.generation_metadata["precheck_results"] = precheck
+
                         session.set_estimate(estimate)
 
                         st.success(
@@ -448,13 +516,18 @@ def render_new_project_page(app: dict, session: SessionManager, config: dict):
                             f"{estimate.total_hours:.1f}h, {estimate.component_count} komponentów"
                         )
 
+                        # Use comprehensive single-model summary (via multi_model_results)
+                        from cad.presentation.components.multi_model_results import (
+                            render_multi_model_results,
+                        )
                         from cad.presentation.components.results_display import (
-                            render_estimate_summary,
                             render_components_list,
                         )
 
-                        render_estimate_summary(estimate, config["hourly_rate"])
+                        render_multi_model_results(estimate, config["hourly_rate"])
+
                         st.markdown("---")
+                        st.markdown("### 📋 Lista Komponentów (szczegóły)")
                         render_components_list(estimate)
 
                     except Exception as e:

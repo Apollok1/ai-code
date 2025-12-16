@@ -284,8 +284,21 @@ class EstimationPipeline:
         # Enrich with pattern matching
         components = self._enrich_with_patterns(components, department)
 
+        # Track pre-scaling total for metadata
+        total_before_scaling = sum(
+            c.total_hours for c in components
+            if not getattr(c, "is_summary", False)
+        )
+
         # Minimalne godziny — skalowanie w górę, jeśli total jest nienaturalnie niski
         components = self._apply_minimum_hours_to_components(components, department)
+
+        # Check if scaling was applied
+        total_after_scaling = sum(
+            c.total_hours for c in components
+            if not getattr(c, "is_summary", False)
+        )
+        was_scaled = abs(total_after_scaling - total_before_scaling) > 0.1
 
         # Create estimate
         estimate = Estimate.from_components(
@@ -296,6 +309,28 @@ class EstimationPipeline:
             warnings=[],
             raw_ai_response=ai_response,
         )
+
+        # Enrich with single-model metadata
+        if not estimate.generation_metadata:
+            estimate.generation_metadata = {}
+
+        estimate.generation_metadata.update({
+            "multi_model": False,
+            "pipeline_type": "single_model",
+            "had_excel_file": excel_file is not None,
+            "had_pdf_files": pdf_files is not None and len(pdf_files) > 0,
+            "similar_projects": similar_projects if similar_projects else [],
+            "similar_projects_count": len(similar_projects) if similar_projects else 0,
+            "description": description,
+            "department": department.value,
+        })
+
+        if was_scaled:
+            scale_factor = total_after_scaling / total_before_scaling if total_before_scaling > 0 else 1.0
+            estimate.generation_metadata["scaling_info"] = (
+                f"Przeskalowano z {total_before_scaling:.1f}h do {total_after_scaling:.1f}h "
+                f"(współczynnik: {scale_factor:.2f}x)"
+            )
 
         logger.info(
             f"✅ Estimation complete (single-model): {estimate.total_hours:.1f}h, {estimate.component_count} components"
@@ -479,32 +514,243 @@ EXPECTED JSON STRUCTURE:
     def _enrich_with_patterns(
         self, components: list[Component], department: DepartmentCode
     ) -> list[Component]:
-        """Enrich components with pattern data."""
+        """
+        Enrich components with pattern data using multi-strategy matching:
+        1. Exact pattern key match (canonicalized name)
+        2. Vector similarity search (semantic matching)
+        3. Keep AI estimate if no matches found
+        """
         enriched: list[Component] = []
 
         for component in components:
+            # Strategy 1: Try exact pattern match
             pattern = self.pattern_learner.get_pattern_for_component(
                 component.name, department.value
             )
 
             if pattern and pattern.occurrences >= 3:
+                # High confidence exact match - use pattern fully
                 enriched_component = Component(
                     name=component.name,
                     hours_3d_layout=pattern.avg_hours_layout,
                     hours_3d_detail=pattern.avg_hours_detail,
                     hours_2d=pattern.avg_hours_doc,
                     confidence=pattern.confidence,
-                    confidence_reason=f"Pattern match (n={pattern.occurrences})",
+                    confidence_reason=f"Exact pattern match (n={pattern.occurrences})",
                     category=component.category,
                     comment=component.comment,
                     subcomponents=component.subcomponents,
-                    metadata={"pattern_key": pattern.pattern_key},
+                    metadata={"pattern_key": pattern.pattern_key, "match_type": "exact"},
                 )
                 enriched.append(enriched_component)
+                logger.debug(f"✓ Exact match: {component.name} → {pattern.pattern_key}")
+
+            elif pattern and pattern.occurrences >= 1:
+                # Low occurrence exact match - use weighted blending
+                blended = self._blend_pattern_with_ai(
+                    component, pattern, blend_strategy="low_occurrence"
+                )
+                enriched.append(blended)
+                logger.debug(f"⚖️ Blended match: {component.name} (n={pattern.occurrences})")
+
             else:
-                enriched.append(component)
+                # Strategy 2: Try vector similarity search
+                similar_patterns = self.pgvector.find_similar_components(
+                    name=component.name,
+                    department=department.value,
+                    limit=3,
+                    similarity_threshold=0.70  # 70% similarity minimum
+                )
+
+                if similar_patterns and len(similar_patterns) > 0:
+                    best_match = similar_patterns[0]
+
+                    # Check if best match has enough occurrences
+                    if best_match.get('occurrences', 0) >= 3:
+                        # Use similar pattern with adjusted confidence
+                        similarity_score = best_match.get('similarity', 0.0)
+                        base_confidence = best_match.get('confidence', 0.5)
+                        # Adjust confidence based on similarity
+                        adjusted_confidence = base_confidence * similarity_score
+
+                        enriched_component = Component(
+                            name=component.name,
+                            hours_3d_layout=best_match['avg_hours_3d_layout'],
+                            hours_3d_detail=best_match['avg_hours_3d_detail'],
+                            hours_2d=best_match['avg_hours_2d'],
+                            confidence=adjusted_confidence,
+                            confidence_reason=(
+                                f"Similar to '{best_match['name']}' "
+                                f"(similarity: {similarity_score:.0%}, n={best_match['occurrences']})"
+                            ),
+                            category=component.category,
+                            comment=component.comment,
+                            subcomponents=component.subcomponents,
+                            metadata={
+                                "pattern_key": best_match['pattern_key'],
+                                "match_type": "vector_similar",
+                                "similarity": similarity_score,
+                                "similar_to": best_match['name']
+                            },
+                        )
+                        enriched.append(enriched_component)
+                        logger.info(
+                            f"🔍 Vector match: {component.name} → {best_match['name']} "
+                            f"(sim: {similarity_score:.0%})"
+                        )
+                    else:
+                        # Similar pattern but low occurrences - blend
+                        blended = self._blend_similar_pattern_with_ai(
+                            component, best_match
+                        )
+                        enriched.append(blended)
+                        logger.debug(
+                            f"⚖️ Blended similar: {component.name} → {best_match['name']}"
+                        )
+                else:
+                    # Strategy 3: No match found - keep AI estimate
+                    enriched.append(component)
+                    logger.debug(f"🤖 AI estimate kept: {component.name}")
 
         return enriched
+
+    def _blend_pattern_with_ai(
+        self,
+        component: Component,
+        pattern: ComponentPattern,
+        blend_strategy: str = "low_occurrence"
+    ) -> Component:
+        """
+        Blend pattern data with AI estimate based on pattern occurrence count.
+
+        Args:
+            component: AI-generated component
+            pattern: Matched pattern with low occurrences
+            blend_strategy: Blending strategy
+
+        Returns:
+            Blended component
+        """
+        n = pattern.occurrences
+
+        # Determine blend weights based on occurrences
+        if n == 1:
+            # Very low confidence - 40% pattern, 60% AI
+            pattern_weight = 0.4
+        elif n == 2:
+            # Low confidence - 70% pattern, 30% AI
+            pattern_weight = 0.7
+        else:
+            # Should not reach here, but default to pattern
+            pattern_weight = 1.0
+
+        ai_weight = 1.0 - pattern_weight
+
+        # Blend hours
+        blended_layout = (
+            pattern.avg_hours_layout * pattern_weight +
+            component.hours_3d_layout * ai_weight
+        )
+        blended_detail = (
+            pattern.avg_hours_detail * pattern_weight +
+            component.hours_3d_detail * ai_weight
+        )
+        blended_doc = (
+            pattern.avg_hours_doc * pattern_weight +
+            component.hours_2d * ai_weight
+        )
+
+        # Blend confidence
+        blended_confidence = pattern.confidence * pattern_weight + component.confidence * ai_weight
+
+        return Component(
+            name=component.name,
+            hours_3d_layout=blended_layout,
+            hours_3d_detail=blended_detail,
+            hours_2d=blended_doc,
+            confidence=blended_confidence,
+            confidence_reason=(
+                f"Blended: {int(pattern_weight*100)}% pattern (n={n}) "
+                f"+ {int(ai_weight*100)}% AI"
+            ),
+            category=component.category,
+            comment=component.comment,
+            subcomponents=component.subcomponents,
+            metadata={
+                "pattern_key": pattern.pattern_key,
+                "match_type": "blended",
+                "pattern_weight": pattern_weight,
+                "ai_weight": ai_weight
+            },
+        )
+
+    def _blend_similar_pattern_with_ai(
+        self,
+        component: Component,
+        similar_pattern: dict
+    ) -> Component:
+        """
+        Blend similar pattern (from vector search) with AI estimate.
+
+        Args:
+            component: AI-generated component
+            similar_pattern: Similar pattern dict from vector search
+
+        Returns:
+            Blended component
+        """
+        similarity = similar_pattern.get('similarity', 0.0)
+        occurrences = similar_pattern.get('occurrences', 0)
+
+        # Weight based on similarity and occurrences
+        if occurrences >= 2:
+            pattern_weight = similarity * 0.6  # Max 60% for similar with n>=2
+        else:
+            pattern_weight = similarity * 0.4  # Max 40% for similar with n=1
+
+        ai_weight = 1.0 - pattern_weight
+
+        # Blend hours
+        blended_layout = (
+            similar_pattern['avg_hours_3d_layout'] * pattern_weight +
+            component.hours_3d_layout * ai_weight
+        )
+        blended_detail = (
+            similar_pattern['avg_hours_3d_detail'] * pattern_weight +
+            component.hours_3d_detail * ai_weight
+        )
+        blended_doc = (
+            similar_pattern['avg_hours_2d'] * pattern_weight +
+            component.hours_2d * ai_weight
+        )
+
+        # Blend confidence
+        pattern_confidence = similar_pattern.get('confidence', 0.5) * similarity
+        blended_confidence = pattern_confidence * pattern_weight + component.confidence * ai_weight
+
+        return Component(
+            name=component.name,
+            hours_3d_layout=blended_layout,
+            hours_3d_detail=blended_detail,
+            hours_2d=blended_doc,
+            confidence=blended_confidence,
+            confidence_reason=(
+                f"Blended with similar '{similar_pattern['name']}': "
+                f"{int(pattern_weight*100)}% pattern + {int(ai_weight*100)}% AI "
+                f"(similarity: {similarity:.0%}, n={occurrences})"
+            ),
+            category=component.category,
+            comment=component.comment,
+            subcomponents=component.subcomponents,
+            metadata={
+                "pattern_key": similar_pattern['pattern_key'],
+                "match_type": "blended_similar",
+                "pattern_weight": pattern_weight,
+                "ai_weight": ai_weight,
+                "similarity": similarity,
+                "similar_to": similar_pattern['name']
+            },
+        )
 
     def _apply_minimum_hours_to_components(
         self, components: list[Component], department: DepartmentCode
