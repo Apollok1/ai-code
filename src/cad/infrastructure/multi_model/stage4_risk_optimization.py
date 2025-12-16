@@ -41,7 +41,7 @@ class RiskOptimizationStage:
     def analyze_risks(
         self,
         context: StageContext,
-        model: str | None = None
+        model: str | None = None,
     ) -> tuple[list[Risk], list[str], list[str], list[str]]:
         """
         Analyze risks and generate suggestions.
@@ -72,35 +72,40 @@ class RiskOptimizationStage:
             response = self.ai_client.generate_text(
                 prompt=prompt,
                 model=model_to_use,
-                json_mode=True
+                json_mode=True,
             )
 
             # Parse JSON response
             try:
                 analysis_data = json.loads(response)
             except json.JSONDecodeError:
-                start_idx = response.find('{')
-                end_idx = response.rfind('}') + 1
+                start_idx = response.find("{")
+                end_idx = response.rfind("}") + 1
                 if start_idx >= 0 and end_idx > start_idx:
                     analysis_data = json.loads(response[start_idx:end_idx])
                 else:
-                    raise AIGenerationError(f"Invalid JSON response from model: {response[:200]}")
+                    raise AIGenerationError(
+                        f"Invalid JSON response from model: {response[:200]}"
+                    )
 
             # Parse risks
-            risks = []
-            for risk_data in analysis_data.get('risks', []):
+            risks: list[Risk] = []
+            for risk_data in analysis_data.get("risks", []):
                 risk = Risk(
-                    category=risk_data.get('category', 'other'),
-                    description=risk_data.get('description', ''),
-                    impact=risk_data.get('impact', 'medium'),
-                    mitigation=risk_data.get('mitigation', '')
+                    category=risk_data.get("category", "other"),
+                    description=risk_data.get("description", ""),
+                    impact=risk_data.get("impact", "medium"),
+                    mitigation=risk_data.get("mitigation", ""),
                 )
                 risks.append(risk)
 
-            # Extract other outputs
-            suggestions = analysis_data.get('optimization_suggestions', [])
-            assumptions = analysis_data.get('assumptions', [])
-            warnings = analysis_data.get('warnings', [])
+            # Extract other outputs (obsługujemy oba klucze: suggestions / optimization_suggestions)
+            suggestions = (
+                analysis_data.get("suggestions")
+                or analysis_data.get("optimization_suggestions", [])
+            )
+            assumptions = analysis_data.get("assumptions", [])
+            warnings = analysis_data.get("warnings", [])
 
             return risks, suggestions, assumptions, warnings
 
@@ -108,28 +113,72 @@ class RiskOptimizationStage:
             logger.error(f"Risk analysis failed: {e}", exc_info=True)
             raise AIGenerationError(f"Stage 4 failed: {e}")
 
-    
-    def _build_risk_analysis_prompt(context, tech_analysis, materials, key_challenges,
-                                    structure, total_hours, avg_confidence,
-                                    components_summary: str) -> str:
+    def _build_risk_analysis_prompt(self, context: StageContext) -> str:
+        """
+        Zbuduj prompt dla Stage 4 na podstawie:
+        - opisu projektu
+        - technical_analysis (Stage 1)
+        - struktury komponentów (Stage 2)
+        - wyceny komponentów (Stage 3)
+        """
+        tech = context.technical_analysis
+        structure = context.structural_decomposition
+        components = context.estimated_components or []
+
+        # Podstawowe statystyki
+        total_components = len(components)
+        total_hours = sum(c.total_hours for c in components) if components else 0.0
+        avg_confidence = (
+            sum(c.confidence for c in components) / total_components
+            if total_components > 0
+            else 0.0
+        )
+
+        materials = ", ".join(tech.materials or []) if tech and tech.materials else "unknown"
+        key_challenges = (
+            "; ".join(tech.key_challenges or []) if tech and tech.key_challenges else "none"
+        )
+
+        structure_total_count = (
+            structure.total_component_count if structure else total_components
+        )
+        structure_depth = structure.max_depth if structure else 1
+
+        # TOP komponenty wg godzin
+        if components:
+            comps_sorted = sorted(
+                components, key=lambda c: c.total_hours, reverse=True
+            )
+            top = comps_sorted[:10]
+            comp_lines: list[str] = []
+            for c in top:
+                comp_lines.append(
+                    f"- {c.name}: {c.total_hours:.1f}h "
+                    f"(layout={c.hours_3d_layout:.1f}, detail={c.hours_3d_detail:.1f}, 2D={c.hours_2d:.1f}, "
+                    f"confidence={c.confidence:.2f})"
+                )
+            components_summary = "\n".join(comp_lines)
+        else:
+            components_summary = "No components available."
+
         return f"""
 You are a senior CAD/CAM project manager performing a CRITICAL RISK REVIEW of a CAD hours estimate before it is sent to the client.
 
 PROJECT SUMMARY:
 - Description: {context.description}
 - Department code: {context.department_code}
-- Total components: {len(context.estimated_components)}
-- Total estimated hours: {total_hours} h
-- Average confidence (0–1): {avg_confidence}
+- Total components: {total_components}
+- Total estimated hours: {total_hours:.1f} h
+- Average confidence (0–1): {avg_confidence:.2f}
 
 TECHNICAL ANALYSIS (from Stage 1):
-- Complexity level: {tech_analysis.project_complexity}
+- Complexity level: {tech.project_complexity if tech else "unknown"}
 - Main materials: {materials}
 - Key technical challenges: {key_challenges}
 
-COMPONENT STRUCTURE:
-- Total component count: {structure.total_component_count}
-- Structure depth: {structure.max_depth} levels
+COMPONENT STRUCTURE (from Stage 2):
+- Total component count: {structure_total_count}
+- Structure depth: {structure_depth} levels
 
 TOP COMPONENTS BY HOURS:
 {components_summary}
@@ -146,7 +195,7 @@ Perform a STRICT, PRACTICAL PROJECT REVIEW and identify:
 2. OPTIMIZATION SUGGESTIONS – realistic ways to reduce hours or improve reliability:
    - Reuse of existing designs / patterns.
    - Standardization and simplification opportunities.
-   - Better splitting of work between team members / senior vs junior.
+   - Better splitting of work between team members (senior vs junior).
 
 3. ASSUMPTIONS – what has been implicitly assumed in this estimate?
    - Data completeness, client collaboration, reuse of templates, etc.
@@ -165,7 +214,7 @@ JSON SCHEMA:
   "risks": [
     {{
       "description": "Concrete risk description",
-      "severity": "low|medium|high|critical",
+      "impact": "low|medium|high|critical",
       "mitigation": "Concrete mitigation action"
     }}
   ],
