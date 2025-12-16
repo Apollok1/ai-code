@@ -45,7 +45,7 @@ class EstimationPipeline:
         pattern_learner: PatternLearner,
         bundle_learner: BundleLearner,
         pgvector_service: PgVectorService,
-        multi_model_orchestrator: MultiModelOrchestrator | None = None
+        multi_model_orchestrator: MultiModelOrchestrator | None = None,
     ):
         """
         Initialize EstimationPipeline.
@@ -83,7 +83,7 @@ class EstimationPipeline:
         stage1_model: str | None = None,
         stage2_model: str | None = None,
         stage3_model: str | None = None,
-        stage4_model: str | None = None
+        stage4_model: str | None = None,
     ) -> Estimate:
         """
         Generate estimate from project description.
@@ -113,14 +113,28 @@ class EstimationPipeline:
 
         # Route to appropriate method
         if should_use_multi_model and self.multi_model is not None:
-            logger.info(f"🚀 Starting MULTI-MODEL estimation for department {department.value}")
+            logger.info(
+                f"🚀 Starting MULTI-MODEL estimation for department {department.value}"
+            )
             return self._estimate_multi_model(
-                description, department, pdf_files, excel_file,
-                stage1_model, stage2_model, stage3_model, stage4_model
+                description,
+                department,
+                pdf_files,
+                excel_file,
+                stage1_model,
+                stage2_model,
+                stage3_model,
+                stage4_model,
             )
         else:
-            logger.info(f"🚀 Starting SINGLE-MODEL estimation for department {department.value}")
-            return self._estimate_single_model(description, department, pdf_files, excel_file)
+            logger.info(
+                f"🚀 Starting SINGLE-MODEL estimation for department {department.value}"
+            )
+            return self._estimate_single_model(
+                description, department, pdf_files, excel_file
+            )
+
+    # ================= MULTI-MODEL =================
 
     def _estimate_multi_model(
         self,
@@ -131,7 +145,7 @@ class EstimationPipeline:
         stage1_model: str | None = None,
         stage2_model: str | None = None,
         stage3_model: str | None = None,
-        stage4_model: str | None = None
+        stage4_model: str | None = None,
     ) -> Estimate:
         """Execute multi-model pipeline estimation."""
         # Parse files
@@ -139,7 +153,9 @@ class EstimationPipeline:
         if excel_file:
             try:
                 excel_data = self.excel_parser.parse(excel_file)
-                logger.info(f"📊 Parsed {len(excel_data['components'])} components from Excel")
+                logger.info(
+                    f"📊 Parsed {len(excel_data['components'])} components from Excel"
+                )
             except Exception as e:
                 logger.warning(f"Excel parsing failed: {e}")
 
@@ -156,12 +172,12 @@ class EstimationPipeline:
         if description:
             try:
                 similar_projects = self.pgvector.find_similar_projects(
-                    description,
-                    department.value,
-                    limit=5
+                    description, department.value, limit=5
                 )
                 if similar_projects:
-                    logger.info(f"🔍 Found {len(similar_projects)} similar projects")
+                    logger.info(
+                        f"🔍 Found {len(similar_projects)} similar projects (multi-model)"
+                    )
             except Exception as e:
                 logger.warning(f"Semantic search failed: {e}")
 
@@ -171,7 +187,7 @@ class EstimationPipeline:
             department_code=department.value,
             pdf_texts=pdf_texts,
             excel_data=excel_data,
-            similar_projects=similar_projects
+            similar_projects=similar_projects,
         )
 
         # Execute pipeline with model overrides
@@ -181,29 +197,35 @@ class EstimationPipeline:
             stage1_model=stage1_model,
             stage2_model=stage2_model,
             stage3_model=stage3_model,
-            stage4_model=stage4_model
+            stage4_model=stage4_model,
         )
 
-        logger.info(f"✅ Multi-model estimation complete: {estimate.total_hours:.1f}h, {estimate.component_count} components")
+        logger.info(
+            f"✅ Multi-model estimation complete: {estimate.total_hours:.1f}h, {estimate.component_count} components"
+        )
         return estimate
+
+    # ================= SINGLE-MODEL =================
 
     def _estimate_single_model(
         self,
         description: str,
         department: DepartmentCode,
         pdf_files: list[BinaryIO] | None,
-        excel_file: BinaryIO | None
+        excel_file: BinaryIO | None,
     ) -> Estimate:
         """Execute single-model (legacy) estimation."""
-        logger.info(f"🚀 Starting estimation for department {department.value}")
+        logger.info(f"🚀 Starting SINGLE-MODEL estimation for department {department.value}")
 
         # Parse Excel hints (if provided)
         excel_components = []
         if excel_file:
             try:
                 excel_data = self.excel_parser.parse(excel_file)
-                excel_components = excel_data['components']
-                logger.info(f"📊 Parsed {len(excel_components)} components from Excel")
+                excel_components = excel_data["components"]
+                logger.info(
+                    f"📊 Parsed {len(excel_components)} components from Excel (single-model)"
+                )
             except Exception as e:
                 logger.warning(f"Excel parsing failed: {e}")
 
@@ -213,7 +235,9 @@ class EstimationPipeline:
             try:
                 pdf_texts = [self.pdf_parser.extract_text(f) for f in pdf_files]
                 pdf_text = "\n\n".join(pdf_texts)
-                logger.info(f"📄 Extracted {len(pdf_text)} chars from {len(pdf_files)} PDFs")
+                logger.info(
+                    f"📄 Extracted {len(pdf_text)} chars from {len(pdf_files)} PDFs (single-model)"
+                )
             except Exception as e:
                 logger.warning(f"PDF parsing failed: {e}")
 
@@ -222,22 +246,22 @@ class EstimationPipeline:
         if description:
             try:
                 similar_projects = self.pgvector.find_similar_projects(
-                    description,
-                    department.value,
-                    limit=5
+                    description, department.value, limit=5
                 )
                 if similar_projects:
-                    logger.info(f"🔍 Found {len(similar_projects)} similar projects")
+                    logger.info(
+                        f"🔍 Found {len(similar_projects)} similar projects (single-model)"
+                    )
             except Exception as e:
                 logger.warning(f"Semantic search failed: {e}")
 
-        # Build AI prompt (simplified - full implementation would be more complex)
+        # Build AI prompt
         prompt = self._build_estimation_prompt(
             description,
             department,
             excel_components,
             pdf_text,
-            similar_projects
+            similar_projects,
         )
 
         # Generate AI estimation
@@ -246,7 +270,7 @@ class EstimationPipeline:
                 prompt,
                 model=None,  # Use default
                 json_mode=True,
-                timeout=self.config.ollama.timeout_seconds
+                timeout=self.config.ollama.timeout_seconds,
             )
             logger.info(f"✅ AI response received ({len(ai_response)} chars)")
         except Exception as e:
@@ -254,11 +278,13 @@ class EstimationPipeline:
             raise AIGenerationError(f"Failed to generate estimate: {e}")
 
         # Parse AI response to components
-        # (Simplified - real implementation would use component_parser.parse_ai_response)
         components = self._parse_ai_components(ai_response, excel_components)
 
         # Enrich with pattern matching
         components = self._enrich_with_patterns(components, department)
+
+        # Minimalne godziny — skalowanie w górę, jeśli total jest nienaturalnie niski
+        components = self._apply_minimum_hours_to_components(components, department)
 
         # Create estimate
         estimate = Estimate.from_components(
@@ -267,16 +293,18 @@ class EstimationPipeline:
             suggestions=[],
             assumptions=[],
             warnings=[],
-            raw_ai_response=ai_response
+            raw_ai_response=ai_response,
         )
 
-        logger.info(f"✅ Estimation complete: {estimate.total_hours:.1f}h, {estimate.component_count} components")
+        logger.info(
+            f"✅ Estimation complete (single-model): {estimate.total_hours:.1f}h, {estimate.component_count} components"
+        )
         return estimate
 
+    # ================= BUNDLES =================
+
     def suggest_bundle_additions(
-        self,
-        components: list[Component],
-        department: DepartmentCode
+        self, components: list[Component], department: DepartmentCode
     ) -> list[dict]:
         """
         Suggest additional components based on bundles.
@@ -296,32 +324,36 @@ class EstimationPipeline:
 
             # Get typical bundles
             bundles = self.bundle_learner.get_typical_bundles(
-                component.name,
-                department.value
+                component.name, department.value
             )
 
             if bundles:
                 for bundle in bundles:
                     # Get pattern for sub-component
                     pattern = self.pattern_learner.get_pattern_for_component(
-                        bundle['sub_name'],
-                        department.value
+                        bundle["sub_name"], department.value
                     )
 
                     if pattern:
-                        suggestions.append({
-                            'parent': component.name,
-                            'sub_name': bundle['sub_name'],
-                            'avg_quantity': bundle['avg_quantity'],
-                            'hours_layout': pattern.avg_hours_layout,
-                            'hours_detail': pattern.avg_hours_detail,
-                            'hours_doc': pattern.avg_hours_doc,
-                            'confidence': min(pattern.confidence, bundle['confidence']),
-                            'source': 'bundle'
-                        })
+                        suggestions.append(
+                            {
+                                "parent": component.name,
+                                "sub_name": bundle["sub_name"],
+                                "avg_quantity": bundle["avg_quantity"],
+                                "hours_layout": pattern.avg_hours_layout,
+                                "hours_detail": pattern.avg_hours_detail,
+                                "hours_doc": pattern.avg_hours_doc,
+                                "confidence": min(
+                                    pattern.confidence, bundle["confidence"]
+                                ),
+                                "source": "bundle",
+                            }
+                        )
 
         logger.info(f"💡 Generated {len(suggestions)} bundle suggestions")
         return suggestions
+
+    # ================= PROMPT DLA SINGLE-MODELU =================
 
     def _build_estimation_prompt(
         self,
@@ -329,50 +361,102 @@ class EstimationPipeline:
         department: DepartmentCode,
         excel_components: list[dict],
         pdf_text: str,
-        similar_projects: list[dict]
+        similar_projects: list[dict],
     ) -> str:
-        """Build AI estimation prompt (simplified)."""
-        # This is a simplified version - real implementation would be much more detailed
-        prompt = f"""You are a CAD estimation expert. Analyze this project and provide detailed component breakdown.
+        """Build AI estimation prompt for SINGLE-MODEL pipeline."""
+        # krótki przegląd komponentów z Excela (jeśli są)
+        excel_preview = "none"
+        if excel_components:
+            names = [c.get("name", "Unknown") for c in excel_components[:10]]
+            excel_preview = f"{len(excel_components)} components, e.g.: " + ", ".join(
+                names
+            )
 
-Department: {department.value}
-Description: {description}
+        # podobne projekty
+        if similar_projects:
+            similar_block_lines = []
+            for proj in similar_projects[:3]:
+                name = proj.get("name", "N/A")
+                est = proj.get("estimated_hours", 0.0) or 0.0
+                sim = proj.get("similarity", 0.0) or 0.0
+                similar_block_lines.append(
+                    f"- {name}: {est:.1f}h (similarity: {sim:.0%})"
+                )
+            similar_block = "\n".join(similar_block_lines)
+        else:
+            similar_block = "none"
 
-PDF Specifications: {pdf_text[:1000] if pdf_text else 'None'}
+        pdf_preview = pdf_text[:1000] if pdf_text else "none"
 
-Excel Components (hints): {len(excel_components)} components provided
+        return f"""You are a senior CAD/CAM estimator. Analyze this project and provide a realistic, engineering-grade estimate.
 
-Similar Projects:
-"""
-        for proj in similar_projects[:3]:
-            prompt += f"- {proj['name']}: {proj['estimated_hours']:.1f}h (similarity: {proj['similarity']:.0%})\n"
+PROJECT CONTEXT:
+- Department code: {department.value}
+- Description: {description}
 
-        prompt += """
-Return JSON with:
-{
+PDF SPECIFICATIONS (truncated):
+{pdf_preview}
+
+EXCEL COMPONENT HINTS:
+{excel_preview}
+
+SIMILAR HISTORICAL PROJECTS (from internal database):
+{similar_block}
+
+TASK:
+1. Propose a reasonable component breakdown for this project (4–12 unique components for typical mechanical projects).
+2. For EACH component estimate three hour buckets:
+   - layout_h  – 3D layout / positioning in assembly,
+   - detail_h  – detailed 3D modelling with all relevant features,
+   - doc_h     – 2D drawings with dimensions and annotations.
+3. Provide a global overall_confidence between 0.3 and 0.9.
+
+CONSTRAINTS AND RANGES:
+- Use realistic ranges: 0.3–80 hours per component per phase (most parts will be lower).
+- Total project hours should realistically NOT be below:
+  - 25–30h for very simple welded frames or fixtures,
+  - 40h+ for medium projects,
+  - 60h+ for more complex projects.
+- If in doubt, ERR ON THE SIDE OF OVERESTIMATION rather than underestimation.
+- Keep all numbers as plain decimals (e.g. 1.5, 3.0), not strings.
+
+OUTPUT FORMAT:
+Return ONE valid JSON object and NOTHING else. No markdown, no comments.
+
+EXPECTED JSON STRUCTURE:
+{{
   "components": [
-    {"name": "Component name", "layout_h": 1.0, "detail_h": 3.0, "doc_h": 1.0, "confidence": 0.8}
+    {{
+      "name": "Component name",
+      "layout_h": 2.0,
+      "detail_h": 8.0,
+      "doc_h": 4.0,
+      "confidence": 0.7
+    }}
   ],
   "overall_confidence": 0.75
-}
+}}
 """
-        return prompt
 
-    def _parse_ai_components(self, ai_response: str, excel_components: list[dict]) -> list[Component]:
+    # ================= PARSING/ENRICHMENT =================
+
+    def _parse_ai_components(
+        self, ai_response: str, excel_components: list[dict]
+    ) -> list[Component]:
         """Parse AI response to Component objects (simplified)."""
-        # Simplified - real implementation would use proper JSON parsing with fallbacks
         import json
+
         try:
             data = json.loads(ai_response)
-            components = []
+            components: list[Component] = []
 
-            for comp_data in data.get('components', []):
+            for comp_data in data.get("components", []):
                 component = Component(
-                    name=comp_data.get('name', 'Unknown'),
-                    hours_3d_layout=float(comp_data.get('layout_h', 0)),
-                    hours_3d_detail=float(comp_data.get('detail_h', 0)),
-                    hours_2d=float(comp_data.get('doc_h', 0)),
-                    confidence=float(comp_data.get('confidence', 0.5))
+                    name=comp_data.get("name", "Unknown"),
+                    hours_3d_layout=float(comp_data.get("layout_h", 0)),
+                    hours_3d_detail=float(comp_data.get("detail_h", 0)),
+                    hours_2d=float(comp_data.get("doc_h", 0)),
+                    confidence=float(comp_data.get("confidence", 0.5)),
                 )
                 components.append(component)
 
@@ -382,28 +466,27 @@ Return JSON with:
             # Fallback: use Excel components
             return [
                 Component(
-                    name=c.get('name', 'Unknown'),
-                    hours_3d_layout=float(c.get('hours_3d_layout', 0)),
-                    hours_3d_detail=float(c.get('hours_3d_detail', 0)),
-                    hours_2d=float(c.get('hours_2d', 0)),
-                    confidence=0.5
+                    name=c.get("name", "Unknown"),
+                    hours_3d_layout=float(c.get("hours_3d_layout", 0)),
+                    hours_3d_detail=float(c.get("hours_3d_detail", 0)),
+                    hours_2d=float(c.get("hours_2d", 0)),
+                    confidence=0.5,
                 )
                 for c in excel_components[:20]
             ]
 
-    def _enrich_with_patterns(self, components: list[Component], department: DepartmentCode) -> list[Component]:
+    def _enrich_with_patterns(
+        self, components: list[Component], department: DepartmentCode
+    ) -> list[Component]:
         """Enrich components with pattern data."""
-        enriched = []
+        enriched: list[Component] = []
 
         for component in components:
-            # Try to find pattern
             pattern = self.pattern_learner.get_pattern_for_component(
-                component.name,
-                department.value
+                component.name, department.value
             )
 
             if pattern and pattern.occurrences >= 3:
-                # Use pattern data if high confidence
                 enriched_component = Component(
                     name=component.name,
                     hours_3d_layout=pattern.avg_hours_layout,
@@ -414,10 +497,70 @@ Return JSON with:
                     category=component.category,
                     comment=component.comment,
                     subcomponents=component.subcomponents,
-                    metadata={'pattern_key': pattern.pattern_key}
+                    metadata={"pattern_key": pattern.pattern_key},
                 )
                 enriched.append(enriched_component)
             else:
                 enriched.append(component)
 
         return enriched
+
+    def _apply_minimum_hours_to_components(
+        self, components: list[Component], department: DepartmentCode
+    ) -> list[Component]:
+        """
+        Zapewnia, że całkowita liczba godzin nie jest nienaturalnie niska.
+        Jeśli total_hours < progu minimalnego dla działu, skaluje wszystkie godziny w górę.
+        """
+        total_hours = sum(
+            c.total_hours for c in components
+            if not getattr(c, "is_summary", False)
+        )
+
+        if total_hours <= 0:
+            return components
+
+        # Minimalne progi per dział – skalibruj pod siebie
+        min_total_by_dept: dict[str, float] = {
+            "131": 25.0,  # Automotive
+            "132": 35.0,  # Industrial Machinery
+            "133": 35.0,  # Transportation
+            "134": 45.0,  # Heavy Equipment
+            "135": 35.0,  # Special Purpose Machinery
+        }
+        min_total = min_total_by_dept.get(department.value, 30.0)
+
+        if total_hours >= min_total:
+            return components
+
+        scale = min_total / total_hours
+        logger.info(
+            f"⚖️ Single-model estimate too low ({total_hours:.1f}h < {min_total:.1f}h), "
+            f"scaling all component hours by x{scale:.2f}"
+        )
+
+        scaled: list[Component] = []
+        for c in components:
+            if getattr(c, "is_summary", False):
+                scaled.append(c)
+                continue
+
+            scaled.append(
+                Component(
+                    name=c.name,
+                    hours_3d_layout=c.hours_3d_layout * scale,
+                    hours_3d_detail=c.hours_3d_detail * scale,
+                    hours_2d=c.hours_2d * scale,
+                    confidence=c.confidence,
+                    confidence_reason=(
+                        (c.confidence_reason or "")
+                        + f" (scaled x{scale:.2f} to min total {min_total:.1f}h)"
+                    ),
+                    category=c.category,
+                    comment=c.comment,
+                    subcomponents=c.subcomponents,
+                    metadata=c.metadata,
+                )
+            )
+
+        return scaled
