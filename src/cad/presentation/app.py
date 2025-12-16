@@ -222,7 +222,28 @@ def render_dashboard_page(app: dict, session: SessionManager):
 
     st.info("💡 Dashboard w pełni funkcjonalny będzie dostępny w kolejnej iteracji")
 
+def is_description_poor(desc: str) -> bool:
+    """
+    Prosta heurystyka – czy opis projektu jest ubogi:
+    - bardzo krótki,
+    - brak liczb (długość, masa, moc),
+    - brak słów typu 'rama', 'napęd', 'silnik', 'przenośnik' itd.
+    """
+    if not desc:
+        return True
+    text = desc.strip().lower()
+    if len(text) < 60:
+        return True
 
+    has_number = any(ch.isdigit() for ch in text)
+    keywords = [
+        "rama", "konstrukcja", "napęd", "silnik", "serwo", "przenośnik", "taśma",
+        "długość", "szerokość", "wysokość", "kg", "kw", "n", "siłownik", "czujnik",
+    ]
+    has_keyword = any(kw in text for kw in keywords)
+
+    # jeśli nie ma ani liczb, ani typowych słów technicznych → opis raczej słaby
+    return not (has_number and has_keyword)
 def render_new_project_page(app: dict, session: SessionManager, config: dict):
     """Render New Project page."""
     st.header("🆕 Nowy Projekt")
