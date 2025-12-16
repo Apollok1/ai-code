@@ -32,7 +32,7 @@ class OllamaConfig(BaseModel):
     embed_model: str = Field(default="nomic-embed-text", description="Embedding model")
     embed_dim: int = Field(default=768, ge=128, le=4096, description="Embedding dimension")
     cache_ttl_seconds: int = Field(default=300, ge=0, description="Model cache TTL")
-    timeout_seconds: int = Field(default=120, ge=10, le=600, description="Request timeout")
+    timeout_seconds: int = Field(default=500, ge=10, le=600, description="Request timeout")
 
 
 class ParserConfig(BaseModel):
