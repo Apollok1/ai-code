@@ -1115,7 +1115,7 @@ def send_to_anythingllm(text: str, filename: str):
 
 
 # === PODSUMOWANIA AUDIO I DOKUMENTÓW (Map-Reduce JSON + Markdown) ===
-# === PODSUMOWANIA AUDIO (Map-Reduce JSON + Markdown) ===
+# === PODSUMOWANIA AUDIO I DOKUMENTÓW (Map-Reduce JSON + Markdown) ===
 
 MAP_PROMPT_TEMPLATE = """
 Jesteś asystentem ds. spotkań (PL). Otrzymasz FRAGMENT transkrypcji rozmowy z klientem
@@ -1214,10 +1214,10 @@ FORMAT WYJŚCIOWY (TYLKO JSON, bez komentarzy/markdownu):
   "key_points": ["punkt 1", "punkt 2"],
   "decisions": ["decyzja 1", "decyzja 2"],
   "action_items": [
-    {{"owner":"","task":"","due":"","priority":"low/medium/high","notes":""}}
+    {{ "owner":"","task":"","due":"","priority":"low/medium/high","notes":"" }}
   ],
   "risks": [
-    {{"risk":"","impact":"low/medium/high","mitigation":""}}
+    {{ "risk":"","impact":"low/medium/high","mitigation":"" }}
   ],
   "open_questions": ["pytanie 1","pytanie 2"]
 }}
@@ -1240,14 +1240,14 @@ WEJŚCIE (lista JSON-ów):
 {partials}
 
 FORMAT WYJŚCIOWY (TYLKO JSON):
-{
+{{
   "summary": "1-3 akapity całościowego skrótu",
   "key_points": [...],
   "decisions": [...],
   "action_items": [...],
   "risks": [...],
   "open_questions": [...]
-}
+}}
 
 ZASADY:
 - Usuń duplikaty, połącz podobne punkty.
@@ -1440,6 +1440,7 @@ def summarize_document_text(
 
 
 # === PROJECT BRAIN (klasyfikacja, zadania, ryzyka, brief, web queries) ===
+# === PROJECT BRAIN (klasyfikacja, zadania, ryzyka, brief, web queries) ===
 
 DOC_CLASS_PROMPT = """
 Jesteś asystentem analizującym dokumenty (PL).
@@ -1451,7 +1452,9 @@ Dozwolone typy:
 ["email","chat","meeting_transcript","spec","invoice","drawing","image_text","note","other"]
 
 FORMAT WYJŚCIA (TYLKO JSON):
-{"type": "<jeden_z_powyższych_typów>"}
+{{
+  "type": "<jeden_z_powyższych_typów>"
+}}
 
 TREŚĆ (początek dokumentu):
 {content}
@@ -1461,11 +1464,11 @@ TASKS_PROMPT = """
 Jesteś asystentem PM (PL). Z treści dokumentu wyodrębnij listę KONKRETNYCH zadań do wykonania.
 
 FORMAT WYJŚCIA (TYLKO JSON):
-{
+{{
  "tasks":[
-   {"owner":"","task":"","due":"","priority":"low/medium/high","tags":[],"source":""}
+   {{ "owner":"","task":"","due":"","priority":"low/medium/high","tags":[],"source":"" }}
  ]
-}
+}}
 
 ZASADY:
 - "task" musi być konkretnym działaniem (co dokładnie zrobić).
@@ -1486,11 +1489,11 @@ Jesteś asystentem PM (PL). Z treści dokumentu wyodrębnij:
 - pytania do wyjaśnienia (RFI).
 
 FORMAT WYJŚCIA (TYLKO JSON):
-{
- "risks":[{"risk":"","impact":"low/medium/high","mitigation":""}],
+{{
+ "risks":[{{"risk":"","impact":"low/medium/high","mitigation":""}}],
  "assumptions":["..."],
  "rfis":["pytanie 1","pytanie 2"]
-}
+}}
 
 ZASADY:
 - "risks" – tylko realne ryzyka wynikające z treści (techniczne, zakresowe, harmonogramowe, organizacyjne).
@@ -1520,14 +1523,14 @@ Każdy element może zawierać m.in.:
 Twoje zadanie: Stwórz projektowy BRIEF dla PM.
 
 FORMAT WYJŚCIA (TYLKO JSON):
-{
+{{
  "brief":"1-3 akapity podsumowania projektu (PL)",
  "key_points":[],
  "decisions":[],
  "rfis":[],
- "risks":[{"risk":"","impact":"low/medium/high","mitigation":""}],
+ "risks":[{{"risk":"","impact":"low/medium/high","mitigation":""}}],
  "next_steps":[]
-}
+}}
 
 ZASADY:
 - "brief" ma być zrozumiały dla PM który nie czytał dokumentu.
@@ -1544,7 +1547,7 @@ Na bazie treści dokumentu zaproponuj 3–5 neutralnych zapytań do wyszukiwarki
 bez danych wrażliwych (bez nazw firm, osób, maili, numerów).
 
 FORMAT WYJŚCIA (TYLKO JSON):
-{"queries":["zapytanie 1","zapytanie 2"]}
+{{"queries":["zapytanie 1","zapytanie 2"]}}
 
 TREŚĆ:
 {content}
