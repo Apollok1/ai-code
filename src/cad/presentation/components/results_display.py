@@ -106,8 +106,16 @@ def _render_component_table(components: list) -> None:
     for i, comp in enumerate(components):
         conf_emoji = "🟢" if comp.confidence > 0.7 else ("🟡" if comp.confidence > 0.4 else "🔴")
 
+        # jeśli komponent pochodzi z patternu, dodamy ikonę 🔁 w nagłówku
+        pattern_key = None
+        if hasattr(comp, "metadata") and isinstance(comp.metadata, dict):
+            pattern_key = comp.metadata.get("pattern_key")
+
+        prefix = "🔁 " if pattern_key else ""
+        header = f"{prefix}{conf_emoji} {comp.name} — {comp.total_hours:.1f}h"
+
         with st.expander(
-            f"{conf_emoji} {comp.name} — {comp.total_hours:.1f}h",
+            header,
             expanded=(i < 5)  # Expand first 5
         ):
             # Metrics
@@ -117,12 +125,17 @@ def _render_component_table(components: list) -> None:
             col3.metric("2D", f"{comp.hours_2d:.1f}h")
             col4.metric("Total", f"{comp.total_hours:.1f}h")
 
-            # Confidence
+            # Confidence bar
             st.progress(comp.confidence)
             st.caption(f"**Confidence:** {comp.confidence_level} ({comp.accuracy_estimate})")
 
+            # Powód confidence (AI vs wzorzec)
             if comp.confidence_reason:
-                st.caption(f"**Powód:** {comp.confidence_reason}")
+                st.caption(f"**Źródło godzin:** {comp.confidence_reason}")
+
+            # Informacja o użytym wzorcu (jeśli jest)
+            if pattern_key:
+                st.caption(f"🔁 **Wzorzec historyczny:** `{pattern_key}`")
 
             # Category
             if comp.category:
