@@ -7,7 +7,7 @@ import logging
 from typing import BinaryIO, Any, Dict
 
 
-from cad.domain.models import Estimate, Component, DepartmentCode, Risk, Suggestion
+from cad.domain.models import Estimate, Component, DepartmentCode, Risk, Suggestion, ComponentPattern
 from cad.domain.models.config import AppConfig
 from cad.domain.exceptions import AIGenerationError, ParsingError
 from cad.infrastructure.ai.ollama_client import OllamaClient
