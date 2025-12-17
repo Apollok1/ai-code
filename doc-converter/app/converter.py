@@ -654,7 +654,12 @@ def extract_audio_whisper(file, enable_chunking=False, chunk_minutes=10):
             total_duration = 0.0
 
             for chunk_idx, (chunk_path, time_offset) in enumerate(chunks):
-                logger.info(f"Przetwarzanie chunka {chunk_idx + 1}/{len(chunks)} (offset: {time_offset:.1f}s)")
+                chunk_info = f"Przetwarzanie chunka {chunk_idx + 1}/{len(chunks)} (offset: {time_offset:.1f}s)"
+                logger.info(chunk_info)
+
+                # Pokaż info użytkownikowi jeśli więcej niż 1 chunk
+                if len(chunks) > 1:
+                    st.info(f"🎙️ Whisper: Transkrypcja chunka {chunk_idx + 1}/{len(chunks)}")
 
                 # Odczytaj chunk
                 with open(chunk_path, 'rb') as cf:
@@ -831,7 +836,12 @@ def diarize_audio(file, enable_chunking=False, chunk_minutes=10):
         all_segments = []
 
         for chunk_idx, (chunk_path, time_offset) in enumerate(chunks):
-            logger.info(f"Diaryzacja chunka {chunk_idx + 1}/{len(chunks)} (offset: {time_offset:.1f}s)")
+            chunk_info = f"Diaryzacja chunka {chunk_idx + 1}/{len(chunks)} (offset: {time_offset:.1f}s)"
+            logger.info(chunk_info)
+
+            # Pokaż info użytkownikowi jeśli więcej niż 1 chunk
+            if len(chunks) > 1:
+                st.info(f"🎤 Pyannote: Identyfikacja mówców w chunka {chunk_idx + 1}/{len(chunks)}")
 
             with open(chunk_path, "rb") as chunk_file:
                 size_bytes = os.path.getsize(chunk_path)
@@ -2245,6 +2255,7 @@ if st.session_state.get("converting", False):
             st.info(f"💾 Wyniki będą zapisane w: {st.session_state['run_dir']}")
 
     progress = st.progress(0)
+    progress_info = st.empty()  # Placeholder dla szczegółowych informacji
     all_texts = []
 
     for idx, file in enumerate(uploaded_files):
@@ -2255,10 +2266,54 @@ if st.session_state.get("converting", False):
                 del st.session_state["conversion_started"]
             st.rerun()
 
+        # Aktualizuj progress bar i info
+        current_file_num = idx + 1
+        total_files = len(uploaded_files)
+        progress_pct = current_file_num / total_files
+
         try:
-            progress.progress((idx + 1) / len(uploaded_files), text=f"Przetwarzam: {file.name}")
+            progress.progress(progress_pct)
         except TypeError:
-            progress.progress((idx + 1) / len(uploaded_files))
+            progress.progress(progress_pct)
+
+        # Wyświetl szczegółowy status
+        with progress_info.container():
+            st.markdown(f"### 🔄 Przetwarzanie: Plik {current_file_num}/{total_files}")
+            st.markdown(f"**📄 {file.name}** ({getattr(file, 'size', 0) / 1024:.1f} KB)")
+
+            # Określ typ pliku i co będzie robione
+            file_ext = file.name.lower()
+            if file_ext.endswith(('.mp3', '.wav', '.m4a', '.ogg', '.flac')):
+                file_type = "🎙️ Audio"
+                enable_chunking = st.session_state.get("enable_audio_chunking", False)
+                chunk_min = st.session_state.get("audio_chunk_minutes", 10)
+                if enable_chunking:
+                    st.markdown(f"- {file_type} → Dzielenie na chunki ({chunk_min} min)")
+                    st.markdown(f"- Transkrypcja przez Whisper (z podziałem)")
+                    st.markdown(f"- Identyfikacja mówców (Pyannote)")
+                else:
+                    st.markdown(f"- {file_type} → Transkrypcja (Whisper)")
+                    st.markdown(f"- Identyfikacja mówców (Pyannote)")
+            elif file_ext.endswith('.pdf'):
+                file_type = "📄 PDF"
+                st.markdown(f"- {file_type} → Ekstrakcja tekstu")
+                if use_vision:
+                    st.markdown(f"- Vision: {selected_vision}")
+                st.markdown(f"- OCR (limit: {ocr_pages_limit} stron)")
+            elif file_ext.endswith(('.jpg', '.jpeg', '.png')):
+                file_type = "🖼️ Obraz"
+                st.markdown(f"- {file_type} → {image_mode}")
+                if use_vision:
+                    st.markdown(f"- Vision: {selected_vision}")
+            elif file_ext.endswith(('.pptx', '.ppt')):
+                file_type = "📊 PowerPoint"
+                st.markdown(f"- {file_type} → Ekstrakcja slajdów")
+            elif file_ext.endswith('.docx'):
+                file_type = "📝 Word"
+                st.markdown(f"- {file_type} → Ekstrakcja tekstu")
+            else:
+                file_type = "📄 Dokument"
+                st.markdown(f"- {file_type} → Przetwarzanie")
 
         st.subheader(f"📄 {file.name}")
 
@@ -2304,6 +2359,7 @@ if st.session_state.get("converting", False):
             st.session_state["stats"]["errors"] += 1
 
     progress.empty()
+    progress_info.empty()  # Wyczyść info progress
     st.session_state["combined_text"] = "\n".join(all_texts)
     st.session_state["converted"] = True
     end_conversion()
