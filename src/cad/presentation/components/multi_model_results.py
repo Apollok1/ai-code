@@ -251,10 +251,9 @@ def render_risks_and_suggestions(estimate: Estimate, metadata: dict) -> None:
             impact_icon = impact_icons.get(risk.impact, "⚪")
 
             with st.expander(
-                f"{impact_icon} Ryzyko {i}: {risk.description}", expanded=False
+                f"{impact_icon} Ryzyko {i}: {risk.risk}", expanded=False
             ):
-                st.markdown(f"**Kategoria:** `{risk.category}`")
-                st.markdown(f"**Impact:** `{risk.impact}`")
+                st.markdown(f"**Impact:** `{risk.impact.value}`")
                 if risk.mitigation:
                     st.markdown(f"**Mitigacja:** {risk.mitigation}")
     else:

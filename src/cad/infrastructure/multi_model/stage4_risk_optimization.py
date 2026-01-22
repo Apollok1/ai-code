@@ -91,13 +91,22 @@ class RiskOptimizationStage:
             # Parse risks
             risks: list[Risk] = []
             for risk_data in analysis_data.get("risks", []):
-                risk = Risk(
-                    category=risk_data.get("category", "other"),
-                    description=risk_data.get("description", ""),
-                    impact=risk_data.get("impact", "medium"),
-                    mitigation=risk_data.get("mitigation", ""),
-                )
-                risks.append(risk)
+                # Map from AI response fields to Risk model fields
+                # 'description' -> 'risk', 'category' is ignored (not used in Risk model)
+                risk_dict = {
+                    "risk": risk_data.get("description", "") or risk_data.get("risk", ""),
+                    "impact": risk_data.get("impact", "medium"),
+                    "mitigation": risk_data.get("mitigation", ""),
+                }
+                try:
+                    risk = Risk.from_dict(risk_dict)
+                    risks.append(risk)
+                except (ValueError, KeyError) as e:
+                    # Skip invalid risks
+                    self._report_progress(
+                        context, f"⚠️ Skipping invalid risk: {str(e)}", stage=4
+                    )
+                    continue
 
             # Extract other outputs (obsługujemy oba klucze: suggestions / optimization_suggestions)
             suggestions = (
