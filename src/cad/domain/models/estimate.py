@@ -61,6 +61,7 @@ class Estimate:
     assumptions: tuple[str, ...] = field(default_factory=tuple)
     warnings: tuple[str, ...] = field(default_factory=tuple)
     raw_ai_response: str = ""
+    generation_metadata: dict = field(default_factory=dict)
 
     def __post_init__(self):
         if not self.components:
@@ -123,7 +124,8 @@ class Estimate:
         suggestions: list[Suggestion] | None = None,
         assumptions: list[str] | None = None,
         warnings: list[str] | None = None,
-        raw_ai_response: str = ""
+        raw_ai_response: str = "",
+        generation_metadata: dict | None = None
     ) -> "Estimate":
         """
         Create Estimate from components list.
@@ -137,6 +139,7 @@ class Estimate:
             assumptions: Optional list of assumptions
             warnings: Optional list of warnings
             raw_ai_response: Raw AI response text
+            generation_metadata: Optional metadata about the generation process
 
         Returns:
             Estimate instance
@@ -174,7 +177,8 @@ class Estimate:
             suggestions=tuple(suggestions or []),
             assumptions=tuple(assumptions or []),
             warnings=tuple(warnings or []),
-            raw_ai_response=raw_ai_response
+            raw_ai_response=raw_ai_response,
+            generation_metadata=generation_metadata or {}
         )
 
     def to_dict(self) -> dict:
@@ -190,5 +194,6 @@ class Estimate:
             "suggestions": [s.to_dict() for s in self.suggestions],
             "assumptions": list(self.assumptions),
             "warnings": list(self.warnings),
-            "raw_ai_response": self.raw_ai_response
+            "raw_ai_response": self.raw_ai_response,
+            "generation_metadata": self.generation_metadata
         }

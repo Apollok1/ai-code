@@ -311,9 +311,6 @@ class EstimationPipeline:
         )
 
         # Enrich with single-model metadata
-        if not estimate.generation_metadata:
-            estimate.generation_metadata = {}
-
         estimate.generation_metadata.update({
             "multi_model": False,
             "pipeline_type": "single_model",
