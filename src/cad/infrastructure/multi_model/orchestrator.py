@@ -293,9 +293,9 @@ class MultiModelOrchestrator:
         total_2d = sum(c.hours_2d for c in context.estimated_components)
 
         phases = EstimatePhases(
-            hours_3d_layout=total_layout,
-            hours_3d_detail=total_detail,
-            hours_2d=total_2d
+            layout=total_layout,
+            detail=total_detail,
+            documentation=total_2d
         )
 
         # Calculate overall confidence
