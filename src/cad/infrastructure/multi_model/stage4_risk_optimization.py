@@ -91,12 +91,13 @@ class RiskOptimizationStage:
             # Parse risks
             risks: list[Risk] = []
             for risk_data in analysis_data.get("risks", []):
-                risk = Risk(
-                    category=risk_data.get("category", "other"),
-                    description=risk_data.get("description", ""),
-                    impact=risk_data.get("impact", "medium"),
-                    mitigation=risk_data.get("mitigation", ""),
-                )
+                # Map JSON 'description' field to Risk class 'risk' field
+                risk_dict = {
+                    "risk": risk_data.get("description", ""),
+                    "impact": risk_data.get("impact", "medium"),
+                    "mitigation": risk_data.get("mitigation", ""),
+                }
+                risk = Risk.from_dict(risk_dict)
                 risks.append(risk)
 
             # Extract other outputs (obsługujemy oba klucze: suggestions / optimization_suggestions)
