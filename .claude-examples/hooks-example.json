@@ -1,0 +1,58 @@
+{
+  "hooks": {
+    "preToolUse": [
+      {
+        "description": "Warn about EstimatePhases parameter usage before editing",
+        "matcher": "tool == 'Edit' && tool_input.file_path matches '\\.py$'",
+        "hooks": [{
+          "type": "command",
+          "command": "#!/bin/bash\n# Check for potential EstimatePhases parameter issues\nif grep -n 'EstimatePhases(' \"$file_path\" | grep -v 'layout=' >/dev/null 2>&1; then\n  echo '[HOOK] ⚠️  EstimatePhases found - verify params: layout, detail, documentation' >&2\nfi\nexit 0"
+        }]
+      },
+      {
+        "description": "Warn about print() statements in src/ code",
+        "matcher": "tool == 'Edit' && tool_input.file_path matches 'src/.*\\.py$'",
+        "hooks": [{
+          "type": "command",
+          "command": "#!/bin/bash\n# Check for print() statements that should be logging\nif grep -n 'print(' \"$file_path\" >/dev/null 2>&1; then\n  echo '[HOOK] 💡 Found print() statements - consider using logging instead' >&2\nfi\nexit 0"
+        }]
+      },
+      {
+        "description": "Remind to read dataclass definition before using",
+        "matcher": "tool == 'Grep' && tool_input.pattern matches '(EstimatePhases|Risk|Component)\\('",
+        "hooks": [{
+          "type": "command",
+          "command": "#!/bin/bash\necho '[HOOK] 📖 Remember: Read dataclass definition in estimate.py before using!' >&2\nexit 0"
+        }]
+      }
+    ],
+    "postToolUse": [
+      {
+        "description": "Remind about coverage after running pytest",
+        "matcher": "tool == 'Bash' && tool_input.command matches 'pytest'",
+        "hooks": [{
+          "type": "command",
+          "command": "#!/bin/bash\nif echo \"$stdout\" | grep -q 'passed'; then\n  echo '[HOOK] ✅ Tests passed! Run /coverage-check to see detailed coverage' >&2\nfi\nif echo \"$stdout\" | grep -q 'failed'; then\n  echo '[HOOK] ❌ Tests failed. Consider using python-tester agent to fix' >&2\nfi\nexit 0"
+        }]
+      },
+      {
+        "description": "Suggest type checking after editing Python files",
+        "matcher": "tool == 'Edit' && tool_input.file_path matches 'src/.*\\.py$'",
+        "hooks": [{
+          "type": "command",
+          "command": "#!/bin/bash\necho '[HOOK] 💡 Edited Python file. Consider running: mypy src/' >&2\nexit 0"
+        }]
+      }
+    ],
+    "stop": [
+      {
+        "description": "Remind to run tests before ending session",
+        "matcher": "true",
+        "hooks": [{
+          "type": "command",
+          "command": "#!/bin/bash\necho '' >&2\necho '========================================' >&2\necho '🏁 Session Ending - Quick Checklist:' >&2\necho '========================================' >&2\necho '[ ] Run /pipeline-test' >&2\necho '[ ] Check coverage with /coverage-check' >&2\necho '[ ] Run mypy src/' >&2\necho '[ ] Commit changes with clear message' >&2\necho '========================================' >&2\nexit 0"
+        }]
+      }
+    ]
+  }
+}
