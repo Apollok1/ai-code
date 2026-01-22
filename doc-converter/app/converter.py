@@ -1528,11 +1528,17 @@ def build_meeting_summary_markdown(data: Dict[str, Any]) -> str:
         md.append("- brak")
     else:
         for ai in action_items:
-            owner = ai.get("owner", "") or "N/A"
-            task = ai.get("task", "") or "N/A"
-            due = ai.get("due", "") or "-"
-            notes = ai.get("notes", "") or ""
-            md.append(f"- [ ] {task} (owner: {owner}, termin: {due}) {('- ' + notes) if notes else ''}")
+            # Handle both dict and string formats
+            if isinstance(ai, dict):
+                owner = ai.get("owner", "") or "N/A"
+                task = ai.get("task", "") or "N/A"
+                due = ai.get("due", "") or "-"
+                notes = ai.get("notes", "") or ""
+                md.append(f"- [ ] {task} (owner: {owner}, termin: {due}) {('- ' + notes) if notes else ''}")
+            elif isinstance(ai, str):
+                md.append(f"- [ ] {ai}")
+            else:
+                md.append(f"- [ ] {str(ai)}")
 
     md.append("\n## Ryzyka")
     risks = data.get("risks", [])
@@ -1540,10 +1546,16 @@ def build_meeting_summary_markdown(data: Dict[str, Any]) -> str:
         md.append("- brak")
     else:
         for r in risks:
-            risk = r.get("risk", "")
-            impact = r.get("impact", "")
-            mit = r.get("mitigation", "")
-            md.append(f"- {risk} (wpływ: {impact}) → mitygacja: {mit}")
+            # Handle both dict and string formats
+            if isinstance(r, dict):
+                risk = r.get("risk", "")
+                impact = r.get("impact", "")
+                mit = r.get("mitigation", "")
+                md.append(f"- {risk} (wpływ: {impact}) → mitygacja: {mit}")
+            elif isinstance(r, str):
+                md.append(f"- {r}")
+            else:
+                md.append(f"- {str(r)}")
 
     md.append("\n## Pytania / Otwarte kwestie")
     for q in (data.get("open_questions") or []) or ["brak"]:
