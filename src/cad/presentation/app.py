@@ -565,8 +565,6 @@ def render_new_project_page(app: dict, session: SessionManager, config: dict):
                     # Attach precheck results from session if available
                     precheck = session.get_precheck_results()
                     if precheck:
-                        if not estimate.generation_metadata:
-                            estimate.generation_metadata = {}
                         estimate.generation_metadata["precheck_results"] = precheck
 
                     session.set_estimate(estimate)
