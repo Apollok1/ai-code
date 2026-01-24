@@ -1,5 +1,12 @@
 # CAD Estimator Pro - Analiza "Przenieść vs Przepisać"
 
+> **WERDYKT: 90% PRZENIEŚĆ + 10% REFAKTOR**
+>
+> Kod jest dobrej jakości (DDD, Clean Architecture). Nie wymaga przepisywania od zera.
+> Wymaga tylko kilku refaktorów i poprawek bezpieczeństwa.
+
+---
+
 ## 1. Drzewo Projektu (kluczowe ścieżki)
 
 ```
@@ -288,13 +295,183 @@ PYANNOTE_URL=http://127.0.0.1:8000
 
 ---
 
-## 6. Sugerowane etapy migracji
+## 6. KONKRETNA DECYZJA: Co z czym?
 
-1. **Testy jednostkowe** dla `domain/models/` (Component, Estimate)
-2. **Refaktor `app.py`** - wydzielić pages do osobnych plików
-3. **Usunąć duplikaty** (is_description_poor)
-4. **Config z env/secrets** zamiast hardcoded
-5. **Przepisać doc-converter** na modułową architekturę
-6. **Dodać typing** tam gdzie brakuje
-7. **CI/CD** z testami
+### ✅ PRZENIEŚĆ (bez zmian lub minimalne poprawki)
+
+| Plik/Moduł | Stan | Dlaczego OK |
+|------------|------|-------------|
+| `src/cad/domain/models/` | ✅ Gotowe | Czyste dataclassy, immutable, dobrze typowane |
+| `src/cad/domain/interfaces/` | ✅ Gotowe | Protocol-based, łatwo podmienić implementacje |
+| `src/cad/infrastructure/multi_model/` | ✅ Gotowe | 4-etapowy pipeline, walidacje, logging |
+| `src/cad/infrastructure/ai/ollama_client.py` | ✅ Gotowe | Prosty, działa, cache modeli |
+| `src/cad/infrastructure/parsers/` | ✅ Gotowe | Excel/PDF parsery, error handling |
+| `src/cad/infrastructure/learning/` | ✅ Gotowe | Pattern/Bundle learner z blending |
+| `src/cad/infrastructure/embeddings/` | ✅ Gotowe | pgvector search działa |
+| `src/cad/application/estimation_pipeline.py` | ✅ Gotowe | Główna orkiestracja, multi-strategy matching |
+
+### ⚠️ REFAKTOR (poprawki, nie przepisywanie)
+
+| Plik | Problem | Rozwiązanie |
+|------|---------|-------------|
+| `src/cad/presentation/app.py` | 2x `is_description_poor()` (linie 121-176 i 283-304) | Usunąć duplikat (linia 283-304) |
+| `src/cad/presentation/app.py` | Hardcoded `password == "polmic"` (linia 753) | Przenieść do env: `ADMIN_PASSWORD` |
+| `src/cad/presentation/app.py` | 816 linii, wszystkie pages w jednym pliku | Wydzielić do `pages/dashboard.py`, `pages/new_project.py`, etc. |
+| `docker-compose.yml` | Hasło DB jawne w pliku | Przenieść do `.env` lub secrets |
+
+### ❌ NIE PRZENOSIĆ (jeśli nie jest potrzebne)
+
+| Moduł | Dlaczego |
+|-------|----------|
+| `doc-converter/app/converter.py` | Monolit 1000+ LOC, osobna aplikacja, ma już refaktorowaną wersję w `src/` |
+| `whisper-rocm/`, `pyannote/` | Zewnętrzne serwery, nie są częścią CAD Estimator |
+
+---
+
+## 7. ZADANIA DO WYKONANIA (w kolejności)
+
+### Faza 1: Krytyczne poprawki (1-2h)
+
+```
+[ ] 1. Usunąć duplikat is_description_poor() z app.py (linie 283-304)
+[ ] 2. Przenieść hasło admina do env:
+      - app.py linia 753: password == os.getenv("CAD_ADMIN_PASSWORD", "change_me")
+      - docker-compose: dodać CAD_ADMIN_PASSWORD do environment
+[ ] 3. Przenieść hasła DB do .env (już są częściowo, sprawdzić)
+```
+
+### Faza 2: Refaktor app.py (2-4h)
+
+```
+[ ] 4. Wydzielić pages do osobnych plików:
+      src/cad/presentation/
+      ├── app.py              # tylko routing + init_app()
+      ├── pages/
+      │   ├── __init__.py
+      │   ├── dashboard.py    # render_dashboard_page()
+      │   ├── new_project.py  # render_new_project_page()
+      │   ├── history.py      # render_history_page()
+      │   └── admin.py        # render_admin_page()
+      └── utils/
+          └── validators.py   # is_description_poor()
+```
+
+### Faza 3: Testy (4-8h)
+
+```
+[ ] 5. Testy jednostkowe dla domain/models/:
+      - test_component.py
+      - test_estimate.py
+      - test_multi_model.py
+[ ] 6. Testy integracyjne dla pipeline:
+      - test_estimation_pipeline.py (mock AI)
+      - test_multi_model_orchestrator.py
+[ ] 7. Testy dla parsers:
+      - test_excel_parser.py
+      - test_pdf_parser.py
+```
+
+### Faza 4: Opcjonalne ulepszenia (4-8h)
+
+```
+[ ] 8. Dodać mypy strict mode (pyproject.toml ma już konfigurację)
+[ ] 9. CI/CD pipeline (GitHub Actions):
+      - lint (ruff)
+      - type check (mypy)
+      - tests (pytest)
+[ ] 10. Dokumentacja API (docstringi są, ale można dodać mkdocs)
+```
+
+---
+
+## 8. Zależności (requirements)
+
+### CAD Estimator (`cad/requirements.txt`)
+```
+streamlit>=1.28.0       # UI framework
+psycopg2-binary>=2.9.9  # PostgreSQL + pgvector
+pandas>=2.1.0           # Data processing
+numpy>=1.24.0           # Numerics
+PyPDF2>=3.0.0           # PDF parsing
+openpyxl>=3.1.0         # Excel parsing
+Pillow>=10.0.0          # Image processing
+rapidfuzz>=3.5.0        # Fuzzy string matching
+requests>=2.31.0        # HTTP (Ollama API)
+plotly>=5.18.0          # Charts
+pydantic>=2.5.0         # Config validation
+pydantic-settings>=2.1.0
+```
+
+### Brakujące (do dodania jeśli potrzebne)
+```
+pytest>=7.4.0           # Testing
+pytest-cov>=4.1.0       # Coverage
+black>=23.7.0           # Formatting
+ruff>=0.0.286           # Linting
+mypy>=1.5.0             # Type checking
+```
+
+---
+
+## 9. Docker Stack
+
+```yaml
+# Serwisy dla CAD Estimator Pro:
+ollama:         # LLM backend (AMD ROCm)
+  - port: 11434
+  - models: llama3, deepseek-coder, nomic-embed-text
+
+cad-postgres:   # PostgreSQL + pgvector
+  - port: 5432
+  - db: cad_estimator
+
+cad-panel:      # Streamlit UI
+  - port: 8501
+  - mounts: src/cad → /app/src
+
+# Opcjonalne (dla doc-converter):
+whisper:        # ASR
+pyannote:       # Speaker diarization
+doc-converter:  # Document processing UI
+```
+
+---
+
+## 10. Podsumowanie architektoniczne
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│                        CAD ESTIMATOR PRO                           │
+├────────────────────────────────────────────────────────────────────┤
+│  PRESENTATION (Streamlit)                                          │
+│  ├── app.py (routing)                                              │
+│  ├── components/ (UI widgets)                                      │
+│  └── state/session_manager.py                                      │
+├────────────────────────────────────────────────────────────────────┤
+│  APPLICATION (Use Cases)                                           │
+│  ├── estimation_pipeline.py (main orchestrator)                    │
+│  └── batch_importer.py                                             │
+├────────────────────────────────────────────────────────────────────┤
+│  DOMAIN (Business Logic)                                           │
+│  ├── models/ (Component, Estimate, Risk, etc.)                     │
+│  ├── interfaces/ (AIClient, DatabaseClient, etc.)                  │
+│  └── exceptions.py                                                 │
+├────────────────────────────────────────────────────────────────────┤
+│  INFRASTRUCTURE (External Services)                                │
+│  ├── ai/ollama_client.py → Ollama API                              │
+│  ├── multi_model/ → 4-stage pipeline                               │
+│  ├── database/postgres_client.py → PostgreSQL                      │
+│  ├── embeddings/pgvector_service.py → Vector search                │
+│  ├── parsers/ → Excel, PDF                                         │
+│  └── learning/ → Pattern/Bundle learner                            │
+└────────────────────────────────────────────────────────────────────┘
+         ↓                    ↓                    ↓
+    ┌─────────┐         ┌─────────┐         ┌───────────┐
+    │ Ollama  │         │PostgreSQL│        │ PDF/Excel │
+    │ (LLM)   │         │+pgvector│         │  Files    │
+    └─────────┘         └─────────┘         └───────────┘
+```
+
+**WNIOSEK:** Architektura jest czysta (DDD + Clean Architecture).
+Kod wymaga tylko drobnych poprawek, nie przepisywania od zera.
 
