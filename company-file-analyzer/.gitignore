@@ -1,31 +1,5 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
 .venv/
-venv/
-ENV/
-
-# Data (uploaded files and results)
-data/uploads/
-data/results/
-data/*.db
-
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# Environment
+__pycache__/
+*.pyc
 .env
-.env.local
-
-# Logs
-*.log
-
-# OS
-.DS_Store
-Thumbs.db
+data/

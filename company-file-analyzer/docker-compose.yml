@@ -1,56 +1,17 @@
-# Company File Analyzer - Docker Compose (MVP)
-# Services: Redis (queue), Ollama (LLM), Whisper (optional)
-
 services:
-  # Redis for job queue (RQ)
   redis:
-    image: redis:7-alpine
-    container_name: cfa-redis
+    image: redis:7
     ports:
       - "127.0.0.1:6379:6379"
-    volumes:
-      - redis-data:/data
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
 
-  # Ollama for text summarization
   ollama:
     image: ollama/ollama:latest
-    container_name: cfa-ollama
     ports:
       - "127.0.0.1:11434:11434"
     volumes:
-      - ollama-data:/root/.ollama
+      - ollama:/root/.ollama
     restart: unless-stopped
-    # For GPU support, uncomment below:
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: 1
-    #           capabilities: [gpu]
-    healthcheck:
-      test: ["CMD", "ollama", "list"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
-  # Whisper for audio transcription (optional - can use external)
-  # whisper:
-  #   image: onerahmet/openai-whisper-asr-webservice:latest
-  #   container_name: cfa-whisper
-  #   ports:
-  #     - "127.0.0.1:9000:9000"
-  #   environment:
-  #     - ASR_MODEL=base
-  #     - ASR_ENGINE=openai_whisper
-  #   restart: unless-stopped
 
 volumes:
-  redis-data:
-  ollama-data:
+  ollama:

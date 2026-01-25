@@ -1,77 +1,36 @@
 {% extends "base.html" %}
-
-{% block title %}Lista zadań - Company File Analyzer{% endblock %}
-
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-4">
-    <h2><i class="bi bi-list-task"></i> Lista zadań</h2>
-    <a href="/" class="btn btn-primary">
-        <i class="bi bi-plus-lg"></i> Nowe zadanie
-    </a>
-</div>
-
-{% if jobs %}
-<div class="card">
-    <div class="table-responsive">
-        <table class="table table-hover mb-0">
-            <thead class="table-light">
-                <tr>
-                    <th>ID</th>
-                    <th>Plik</th>
-                    <th>Typ</th>
-                    <th>Status</th>
-                    <th>Data</th>
-                    <th></th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for job in jobs %}
-                <tr>
-                    <td><code>{{ job.id }}</code></td>
-                    <td>{{ job.filename }}</td>
-                    <td>
-                        {% if job.file_type.value == 'audio' %}
-                        <span class="badge bg-primary"><i class="bi bi-mic"></i> Audio</span>
-                        {% elif job.file_type.value == 'document' %}
-                        <span class="badge bg-danger"><i class="bi bi-file-pdf"></i> Dokument</span>
-                        {% else %}
-                        <span class="badge bg-success"><i class="bi bi-image"></i> Obraz</span>
-                        {% endif %}
-                    </td>
-                    <td>
-                        {% if job.status.value == 'queued' %}
-                        <span class="status-queued"><i class="bi bi-hourglass"></i> W kolejce</span>
-                        {% elif job.status.value == 'running' %}
-                        <span class="status-running"><i class="bi bi-arrow-repeat spin"></i> Przetwarzanie...</span>
-                        {% elif job.status.value == 'done' %}
-                        <span class="status-done"><i class="bi bi-check-circle"></i> Gotowe</span>
-                        {% else %}
-                        <span class="status-failed"><i class="bi bi-x-circle"></i> Błąd</span>
-                        {% endif %}
-                    </td>
-                    <td>{{ job.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
-                    <td>
-                        <a href="/jobs/{{ job.id }}" class="btn btn-sm btn-outline-primary">
-                            <i class="bi bi-eye"></i> Zobacz
-                        </a>
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-</div>
-{% else %}
-<div class="alert alert-info">
-    <i class="bi bi-info-circle"></i> Brak zadań. <a href="/">Wgraj pierwszy plik</a>.
-</div>
-{% endif %}
-
-<style>
-@keyframes spin {
-    from { transform: rotate(0deg); }
-    to { transform: rotate(360deg); }
-}
-.spin { animation: spin 1s linear infinite; display: inline-block; }
-</style>
+<h4>Lista zadań</h4>
+<table class="table table-sm table-striped align-middle">
+  <thead>
+    <tr>
+      <th>ID</th>
+      <th>Plik</th>
+      <th>Profil</th>
+      <th>Status</th>
+      <th>Utworzono</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for j in jobs %}
+    <tr>
+      <td><a href="/jobs/{{ j.id }}">{{ j.id }}</a></td>
+      <td>{{ j.filename }}</td>
+      <td>{{ j.profile }}</td>
+      <td>
+        {% if j.status == 'done' %}
+          <span class="badge text-bg-success">done</span>
+        {% elif j.status == 'failed' %}
+          <span class="badge text-bg-danger">failed</span>
+        {% elif j.status == 'running' %}
+          <span class="badge text-bg-warning">running</span>
+        {% else %}
+          <span class="badge text-bg-secondary">{{ j.status }}</span>
+        {% endif %}
+      </td>
+      <td style="white-space:nowrap">{{ j.created_at }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
 {% endblock %}

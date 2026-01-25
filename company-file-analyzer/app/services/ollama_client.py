@@ -1,110 +1,33 @@
-"""
-Ollama client for text summarization and analysis.
-"""
-import logging
 import requests
-from typing import Optional
 
-from app.config import OLLAMA_URL, OLLAMA_MODEL
+class OllamaClient:
+    def __init__(self, host: str, model: str):
+        self.host = host.rstrip("/")
+        self.model = model
 
-logger = logging.getLogger(__name__)
+    def summarize_pl(self, text: str, max_chars: int = 12000) -> str:
+        text = (text or "").strip()
+        if not text:
+            return "Brak tekstu do podsumowania."
 
+        if len(text) > max_chars:
+            text = text[:max_chars] + "\n\n[Ucięto tekst do limitu w MVP]"
 
-def generate_text(prompt: str, model: Optional[str] = None, timeout: int = 120) -> str:
-    """
-    Generate text using Ollama.
-
-    Args:
-        prompt: The prompt to send
-        model: Model to use (defaults to OLLAMA_MODEL)
-        timeout: Request timeout in seconds
-
-    Returns:
-        Generated text
-
-    Raises:
-        Exception: If generation fails
-    """
-    model = model or OLLAMA_MODEL
-
-    try:
-        response = requests.post(
-            f"{OLLAMA_URL}/api/generate",
-            json={
-                "model": model,
-                "prompt": prompt,
-                "stream": False
-            },
-            timeout=timeout
+        prompt = (
+            "Jesteś asystentem w firmie. Streszcz poniższy tekst po polsku.\n"
+            "Wymagania:\n"
+            "- najpierw 5–10 punktów najważniejszych informacji,\n"
+            "- potem sekcja: 'Ryzyka / niejasności' (jeśli są),\n"
+            "- potem: 'Następne kroki' (konkretne).\n\n"
+            "TEKST:\n"
+            f"{text}\n"
         )
-        response.raise_for_status()
-        return response.json().get("response", "")
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Ollama request failed: {e}")
-        raise
 
-
-def summarize_text(text: str, language: str = "pl") -> str:
-    """
-    Summarize text using Ollama.
-
-    Args:
-        text: Text to summarize
-        language: Output language (pl/en)
-
-    Returns:
-        Summary text
-    """
-    if language == "pl":
-        prompt = f"""Przygotuj zwięzłe podsumowanie poniższego tekstu w języku polskim.
-Wyodrębnij kluczowe punkty i najważniejsze informacje.
-
-TEKST:
-{text}
-
-PODSUMOWANIE:"""
-    else:
-        prompt = f"""Prepare a concise summary of the following text.
-Extract key points and most important information.
-
-TEXT:
-{text}
-
-SUMMARY:"""
-
-    return generate_text(prompt)
-
-
-def analyze_document(text: str, analysis_type: str = "summary") -> str:
-    """
-    Analyze document content.
-
-    Args:
-        text: Document text
-        analysis_type: Type of analysis (summary, key_points, action_items)
-
-    Returns:
-        Analysis result
-    """
-    prompts = {
-        "summary": f"""Przygotuj zwięzłe podsumowanie dokumentu:
-
-{text}
-
-PODSUMOWANIE:""",
-
-        "key_points": f"""Wyodrębnij kluczowe punkty z dokumentu jako listę:
-
-{text}
-
-KLUCZOWE PUNKTY:""",
-
-        "action_items": f"""Wyodrębnij zadania do wykonania (action items) z dokumentu:
-
-{text}
-
-ZADANIA:"""
-    }
-
-    prompt = prompts.get(analysis_type, prompts["summary"])
-    return generate_text(prompt)
+        r = requests.post(
+            f"{self.host}/api/generate",
+            json={"model": self.model, "prompt": prompt, "stream": False},
+            timeout=600,
+        )
+        r.raise_for_status()
+        data = r.json()
+        return (data.get("response") or "").strip()

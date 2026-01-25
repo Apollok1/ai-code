@@ -1,139 +1,74 @@
-"""
-Database models and operations (SQLite for MVP).
-"""
 import sqlite3
-import uuid
-from datetime import datetime
-from enum import Enum
 from pathlib import Path
-from typing import Optional
-from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Optional, Dict, Any, List
 
-from app.config import DATA_DIR
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
-
-class JobStatus(str, Enum):
-    QUEUED = "queued"
-    RUNNING = "running"
-    DONE = "done"
-    FAILED = "failed"
-
-
-class JobType(str, Enum):
-    AUDIO = "audio"
-    DOCUMENT = "document"
-    IMAGE = "image"
-
-
-@dataclass
-class Job:
-    id: str
-    filename: str
-    file_type: JobType
-    status: JobStatus
-    created_at: datetime
-    updated_at: datetime
-    result_path: Optional[str] = None
-    error: Optional[str] = None
-    user_email: Optional[str] = None
-
-
-DB_PATH = DATA_DIR / "jobs.db"
-
-
-def get_connection() -> sqlite3.Connection:
-    """Get database connection."""
-    conn = sqlite3.connect(str(DB_PATH))
+def get_conn(db_path: str) -> sqlite3.Connection:
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     return conn
 
+def init_db(db_path: str) -> None:
+    conn = get_conn(db_path)
+    cur = conn.cursor()
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS jobs (
+      id TEXT PRIMARY KEY,
+      filename TEXT NOT NULL,
+      content_type TEXT,
+      profile TEXT NOT NULL,
+      status TEXT NOT NULL,
+      upload_path TEXT NOT NULL,
+      result_path TEXT,
+      error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    """)
+    conn.commit()
+    conn.close()
 
-def init_db():
-    """Initialize database schema."""
-    with get_connection() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS jobs (
-                id TEXT PRIMARY KEY,
-                filename TEXT NOT NULL,
-                file_type TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'queued',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                result_path TEXT,
-                error TEXT,
-                user_email TEXT
-            )
-        """)
-        conn.commit()
+def create_job(db_path: str, job_id: str, filename: str, content_type: str, profile: str, upload_path: str) -> None:
+    conn = get_conn(db_path)
+    cur = conn.cursor()
+    now = utc_now()
+    cur.execute("""
+      INSERT INTO jobs (id, filename, content_type, profile, status, upload_path, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 'queued', ?, ?, ?)
+    """, (job_id, filename, content_type, profile, upload_path, now, now))
+    conn.commit()
+    conn.close()
 
+def update_job(db_path: str, job_id: str, **fields: Any) -> None:
+    allowed = {"status", "result_path", "error", "updated_at"}
+    fields = {k: v for k, v in fields.items() if k in allowed}
+    fields["updated_at"] = utc_now()
 
-def create_job(filename: str, file_type: JobType, user_email: Optional[str] = None) -> str:
-    """Create a new job and return its ID."""
-    job_id = str(uuid.uuid4())[:8]
-    with get_connection() as conn:
-        conn.execute(
-            """
-            INSERT INTO jobs (id, filename, file_type, status, user_email)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (job_id, filename, file_type.value, JobStatus.QUEUED.value, user_email)
-        )
-        conn.commit()
-    return job_id
+    set_clause = ", ".join([f"{k}=?" for k in fields.keys()])
+    values = list(fields.values()) + [job_id]
 
+    conn = get_conn(db_path)
+    cur = conn.cursor()
+    cur.execute(f"UPDATE jobs SET {set_clause} WHERE id=?", values)
+    conn.commit()
+    conn.close()
 
-def get_job(job_id: str) -> Optional[Job]:
-    """Get job by ID."""
-    with get_connection() as conn:
-        row = conn.execute(
-            "SELECT * FROM jobs WHERE id = ?", (job_id,)
-        ).fetchone()
-        if row:
-            return Job(
-                id=row["id"],
-                filename=row["filename"],
-                file_type=JobType(row["file_type"]),
-                status=JobStatus(row["status"]),
-                created_at=datetime.fromisoformat(row["created_at"]),
-                updated_at=datetime.fromisoformat(row["updated_at"]),
-                result_path=row["result_path"],
-                error=row["error"],
-                user_email=row["user_email"]
-            )
-    return None
+def get_job(db_path: str, job_id: str) -> Optional[Dict[str, Any]]:
+    conn = get_conn(db_path)
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM jobs WHERE id=?", (job_id,))
+    row = cur.fetchone()
+    conn.close()
+    return dict(row) if row else None
 
-
-def get_all_jobs(limit: int = 50) -> list[Job]:
-    """Get all jobs, most recent first."""
-    with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)
-        ).fetchall()
-        return [
-            Job(
-                id=row["id"],
-                filename=row["filename"],
-                file_type=JobType(row["file_type"]),
-                status=JobStatus(row["status"]),
-                created_at=datetime.fromisoformat(row["created_at"]),
-                updated_at=datetime.fromisoformat(row["updated_at"]),
-                result_path=row["result_path"],
-                error=row["error"],
-                user_email=row["user_email"]
-            )
-            for row in rows
-        ]
-
-
-def update_job_status(job_id: str, status: JobStatus, result_path: Optional[str] = None, error: Optional[str] = None):
-    """Update job status."""
-    with get_connection() as conn:
-        conn.execute(
-            """
-            UPDATE jobs
-            SET status = ?, result_path = ?, error = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-            """,
-            (status.value, result_path, error, job_id)
-        )
-        conn.commit()
+def list_jobs(db_path: str, limit: int = 100) -> List[Dict[str, Any]]:
+    conn = get_conn(db_path)
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,))
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]

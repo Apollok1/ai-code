@@ -1,32 +1,35 @@
-"""
-File storage operations.
-"""
 from pathlib import Path
+import uuid
+from fastapi import UploadFile
+import aiofiles
 
-from app.config import UPLOADS_DIR, RESULTS_DIR
+def ensure_dirs(base: str) -> None:
+    Path(base).mkdir(parents=True, exist_ok=True)
+    (Path(base) / "uploads").mkdir(parents=True, exist_ok=True)
+    (Path(base) / "results").mkdir(parents=True, exist_ok=True)
 
+async def save_upload(base_dir: str, file: UploadFile) -> tuple[str, str]:
+    """
+    Zwraca: (job_id, upload_path)
+    """
+    ensure_dirs(base_dir)
+    job_id = str(uuid.uuid4())
+    safe_name = file.filename or "upload.bin"
+    upload_dir = Path(base_dir) / "uploads" / job_id
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    upload_path = upload_dir / safe_name
 
-def get_upload_path(job_id: str) -> Path:
-    """Get upload directory for a job."""
-    return UPLOADS_DIR / job_id
+    async with aiofiles.open(upload_path, "wb") as f:
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            await f.write(chunk)
 
+    return job_id, str(upload_path)
 
-def get_uploaded_file(job_id: str) -> Path | None:
-    """Get the uploaded file path for a job."""
-    job_dir = get_upload_path(job_id)
-    if not job_dir.exists():
-        return None
-    files = list(job_dir.iterdir())
-    return files[0] if files else None
-
-
-def save_result(job_id: str, content: str) -> Path:
-    """Save job result to file."""
-    result_path = RESULTS_DIR / f"{job_id}.txt"
-    result_path.write_text(content, encoding="utf-8")
-    return result_path
-
-
-def get_result_path(job_id: str) -> Path:
-    """Get result file path."""
-    return RESULTS_DIR / f"{job_id}.txt"
+def save_result_text(base_dir: str, job_id: str, text: str) -> str:
+    ensure_dirs(base_dir)
+    path = Path(base_dir) / "results" / f"{job_id}.txt"
+    path.write_text(text, encoding="utf-8")
+    return str(path)
