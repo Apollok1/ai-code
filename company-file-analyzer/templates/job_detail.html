@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block content %}
+<h4>Szczegóły zadania</h4>
+
+{% if not job %}
+  <div class="alert alert-danger">Nie znaleziono zadania.</div>
+{% else %}
+  <div class="card shadow-sm">
+    <div class="card-body">
+      <div><strong>ID:</strong> {{ job.id }}</div>
+      <div><strong>Plik:</strong> {{ job.filename }}</div>
+      <div><strong>Profil:</strong> {{ job.profile }}</div>
+      <div><strong>Status:</strong> {{ job.status }}</div>
+      <div><strong>Utworzono:</strong> {{ job.created_at }}</div>
+      <div><strong>Aktualizacja:</strong> {{ job.updated_at }}</div>
+
+      {% if job.status == 'failed' %}
+        <hr>
+        <div class="alert alert-danger"><strong>Błąd:</strong> {{ job.error }}</div>
+      {% endif %}
+
+      {% if job.status == 'done' and job.result_path %}
+        <hr>
+        <div class="alert alert-success">Gotowe. Wynik zapisany w: <code>{{ job.result_path }}</code></div>
+        <pre class="bg-body-tertiary p-3 rounded" style="white-space: pre-wrap;">{{ (open(job.result_path, 'r', encoding='utf-8').read()) }}</pre>
+      {% elif job.status in ['queued','running'] %}
+        <hr>
+        <div class="alert alert-info">Przetwarzanie w toku. Odśwież stronę za chwilę.</div>
+      {% endif %}
+    </div>
+  </div>
+{% endif %}
+{% endblock %}

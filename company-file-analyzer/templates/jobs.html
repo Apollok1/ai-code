@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block content %}
+<h4>Lista zadań</h4>
+<table class="table table-sm table-striped align-middle">
+  <thead>
+    <tr>
+      <th>ID</th>
+      <th>Plik</th>
+      <th>Profil</th>
+      <th>Status</th>
+      <th>Utworzono</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for j in jobs %}
+    <tr>
+      <td><a href="/jobs/{{ j.id }}">{{ j.id }}</a></td>
+      <td>{{ j.filename }}</td>
+      <td>{{ j.profile }}</td>
+      <td>
+        {% if j.status == 'done' %}
+          <span class="badge text-bg-success">done</span>
+        {% elif j.status == 'failed' %}
+          <span class="badge text-bg-danger">failed</span>
+        {% elif j.status == 'running' %}
+          <span class="badge text-bg-warning">running</span>
+        {% else %}
+          <span class="badge text-bg-secondary">{{ j.status }}</span>
+        {% endif %}
+      </td>
+      <td style="white-space:nowrap">{{ j.created_at }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}
