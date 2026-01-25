@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+
+{% block title %}Zadanie {{ job.id if job else '' }} - Company File Analyzer{% endblock %}
+
+{% block content %}
+{% if error %}
+<div class="alert alert-danger">
+    <i class="bi bi-exclamation-triangle"></i> {{ error }}
+</div>
+<a href="/jobs" class="btn btn-secondary">
+    <i class="bi bi-arrow-left"></i> Wróć do listy
+</a>
+{% else %}
+
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>
+        <i class="bi bi-file-earmark"></i> Zadanie: <code>{{ job.id }}</code>
+    </h2>
+    <a href="/jobs" class="btn btn-outline-secondary">
+        <i class="bi bi-arrow-left"></i> Lista zadań
+    </a>
+</div>
+
+<!-- Job info card -->
+<div class="card mb-4">
+    <div class="card-body">
+        <div class="row">
+            <div class="col-md-3">
+                <strong>Plik:</strong><br>
+                {{ job.filename }}
+            </div>
+            <div class="col-md-2">
+                <strong>Typ:</strong><br>
+                {% if job.file_type.value == 'audio' %}
+                <span class="badge bg-primary"><i class="bi bi-mic"></i> Audio</span>
+                {% elif job.file_type.value == 'document' %}
+                <span class="badge bg-danger"><i class="bi bi-file-pdf"></i> Dokument</span>
+                {% else %}
+                <span class="badge bg-success"><i class="bi bi-image"></i> Obraz</span>
+                {% endif %}
+            </div>
+            <div class="col-md-3">
+                <strong>Status:</strong><br>
+                {% if job.status.value == 'queued' %}
+                <span class="status-queued"><i class="bi bi-hourglass"></i> W kolejce</span>
+                {% elif job.status.value == 'running' %}
+                <span class="status-running"><i class="bi bi-arrow-repeat"></i> Przetwarzanie...</span>
+                {% elif job.status.value == 'done' %}
+                <span class="status-done"><i class="bi bi-check-circle"></i> Gotowe</span>
+                {% else %}
+                <span class="status-failed"><i class="bi bi-x-circle"></i> Błąd</span>
+                {% endif %}
+            </div>
+            <div class="col-md-4">
+                <strong>Data:</strong><br>
+                {{ job.created_at.strftime('%Y-%m-%d %H:%M:%S') }}
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Result or status message -->
+{% if job.status.value == 'done' and result %}
+<div class="card">
+    <div class="card-header bg-success text-white">
+        <h5 class="mb-0"><i class="bi bi-check-circle"></i> Wynik analizy</h5>
+    </div>
+    <div class="card-body">
+        <pre style="white-space: pre-wrap; font-family: inherit;">{{ result }}</pre>
+    </div>
+</div>
+
+{% elif job.status.value == 'running' %}
+<div class="alert alert-info">
+    <i class="bi bi-hourglass-split"></i> <strong>Przetwarzanie w toku...</strong><br>
+    Odśwież stronę za chwilę, aby zobaczyć wynik.
+    <script>setTimeout(() => location.reload(), 10000);</script>
+</div>
+
+{% elif job.status.value == 'queued' %}
+<div class="alert alert-secondary">
+    <i class="bi bi-clock"></i> <strong>Zadanie czeka w kolejce...</strong><br>
+    Odśwież stronę za chwilę.
+    <script>setTimeout(() => location.reload(), 5000);</script>
+</div>
+
+{% elif job.status.value == 'failed' %}
+<div class="alert alert-danger">
+    <i class="bi bi-x-circle"></i> <strong>Przetwarzanie nie powiodło się</strong><br>
+    {% if job.error %}
+    <code>{{ job.error }}</code>
+    {% endif %}
+</div>
+
+{% endif %}
+
+{% endif %}
+{% endblock %}

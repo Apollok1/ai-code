@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+
+{% block title %}Upload pliku - Company File Analyzer{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-8 col-lg-6">
+        <div class="card">
+            <div class="card-header bg-primary text-white">
+                <h4 class="mb-0"><i class="bi bi-cloud-upload"></i> Wgraj plik do analizy</h4>
+            </div>
+            <div class="card-body">
+                {% if error %}
+                <div class="alert alert-danger">
+                    <i class="bi bi-exclamation-triangle"></i> {{ error }}
+                </div>
+                {% endif %}
+
+                <form action="/upload" method="post" enctype="multipart/form-data">
+                    <div class="mb-4">
+                        <label for="file" class="form-label">Wybierz plik</label>
+                        <input type="file" class="form-control form-control-lg" id="file" name="file" required>
+                        <div class="form-text">
+                            Dozwolone formaty: {{ allowed_extensions }}
+                        </div>
+                    </div>
+
+                    <div class="mb-4">
+                        <label for="user_email" class="form-label">Email (opcjonalnie)</label>
+                        <input type="email" class="form-control" id="user_email" name="user_email"
+                               placeholder="twoj@email.com">
+                        <div class="form-text">
+                            Otrzymasz powiadomienie gdy analiza się zakończy.
+                        </div>
+                    </div>
+
+                    <div class="d-grid">
+                        <button type="submit" class="btn btn-primary btn-lg">
+                            <i class="bi bi-upload"></i> Wgraj i analizuj
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Info boxes -->
+        <div class="row mt-4">
+            <div class="col-md-4">
+                <div class="card text-center">
+                    <div class="card-body">
+                        <i class="bi bi-mic fs-1 text-primary"></i>
+                        <h6 class="mt-2">Audio</h6>
+                        <small class="text-muted">Transkrypcja + podsumowanie</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card text-center">
+                    <div class="card-body">
+                        <i class="bi bi-file-pdf fs-1 text-danger"></i>
+                        <h6 class="mt-2">Dokumenty</h6>
+                        <small class="text-muted">PDF, DOCX, TXT</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card text-center">
+                    <div class="card-body">
+                        <i class="bi bi-image fs-1 text-success"></i>
+                        <h6 class="mt-2">Obrazy</h6>
+                        <small class="text-muted">OCR + analiza</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
