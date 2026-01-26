@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block content %}
+{% if not offer %}
+  <div class="alert alert-danger">Nie znaleziono oferty.</div>
+  <a href="/offers" class="btn btn-secondary">Wróć</a>
+{% else %}
+
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h4><i class="bi bi-file-earmark-text"></i> Oferta: {{ offer.name }}</h4>
+  <a href="/offers" class="btn btn-outline-secondary btn-sm">Wróć do listy</a>
+</div>
+
+<!-- Offer info -->
+<div class="card shadow-sm mb-4">
+  <div class="card-body">
+    <div class="row">
+      <div class="col-md-4"><strong>ID:</strong> {{ offer.id }}</div>
+      <div class="col-md-4"><strong>Klient:</strong> {{ offer.client or '—' }}</div>
+      <div class="col-md-4"><strong>Data:</strong> {{ offer.created_at[:16] }}</div>
+    </div>
+    {% if offer.notes %}
+    <div class="mt-2"><strong>Notatki:</strong> {{ offer.notes }}</div>
+    {% endif %}
+  </div>
+</div>
+
+<!-- SAFETY CHECK -->
+{% if offer.safety_ok %}
+<div class="alert alert-success d-flex align-items-center">
+  <i class="bi bi-shield-check fs-3 me-3"></i>
+  <div>
+    <strong>Oferta bezpieczna</strong><br>
+    Wszystkie krytyczne wykluczenia zostały uwzględnione.
+  </div>
+</div>
+{% else %}
+<div class="alert alert-danger">
+  <div class="d-flex align-items-center mb-2">
+    <i class="bi bi-shield-exclamation fs-3 me-3"></i>
+    <div>
+      <strong>UWAGA: Brakujące krytyczne wykluczenia!</strong><br>
+      Oferta nie zawiera następujących krytycznych klauzul:
+    </div>
+  </div>
+  <ul class="mb-2">
+    {% for m in missing_list %}
+    <li><strong>{{ m }}</strong></li>
+    {% endfor %}
+  </ul>
+  <form method="post" action="/offers/{{ offer.id }}/recheck" class="d-inline">
+    <button class="btn btn-outline-danger btn-sm" type="submit">
+      <i class="bi bi-arrow-repeat"></i> Sprawdź ponownie
+    </button>
+  </form>
+</div>
+{% endif %}
+
+<!-- Scope -->
+<div class="card shadow-sm mb-4">
+  <div class="card-header bg-success text-white">
+    <i class="bi bi-check-circle"></i> Zakres prac ({{ scope|length }})
+  </div>
+  <div class="card-body">
+    {% if scope %}
+    <ul class="mb-0">
+      {% for c in scope %}
+      <li>{{ c.text }}</li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="text-muted mb-0">Brak wybranych klauzul zakresu.</p>
+    {% endif %}
+  </div>
+</div>
+
+<!-- Exclusions -->
+<div class="card shadow-sm mb-4">
+  <div class="card-header bg-warning">
+    <i class="bi bi-x-circle"></i> Wykluczenia ({{ exclusions|length }})
+  </div>
+  <div class="card-body">
+    {% if exclusions %}
+    <ul class="mb-0">
+      {% for c in exclusions %}
+      <li>
+        {% if c.is_critical %}
+        <i class="bi bi-exclamation-triangle-fill text-danger"></i>
+        {% endif %}
+        {{ c.text }}
+        {% if c.is_critical %}
+        <span class="badge text-bg-danger">KRYTYCZNE</span>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="text-muted mb-0">Brak wybranych wykluczeń.</p>
+    {% endif %}
+  </div>
+</div>
+
+{% endif %}
+{% endblock %}

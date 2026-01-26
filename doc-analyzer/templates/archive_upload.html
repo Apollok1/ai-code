@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block content %}
+<h4 class="mb-4"><i class="bi bi-cloud-upload"></i> Upload dokumentów do archiwum</h4>
+
+<div class="card shadow-sm">
+  <div class="card-body">
+    <p class="text-muted">
+      Wgraj historyczne oferty (PDF, DOCX, TXT).
+      System wyodrębni z nich klauzule zakresu prac i wykluczenia.
+    </p>
+
+    <form method="post" action="/archive/upload" enctype="multipart/form-data">
+      <div class="mb-3">
+        <label class="form-label">Pliki ofertowe</label>
+        <input class="form-control" type="file" name="files" multiple required
+               accept=".pdf,.docx,.doc,.txt,.md">
+        <div class="form-text">Możesz wybrać wiele plików naraz. Obsługiwane: PDF, DOCX, TXT</div>
+      </div>
+      <button class="btn btn-primary" type="submit">
+        <i class="bi bi-upload"></i> Wgraj i analizuj
+      </button>
+    </form>
+  </div>
+</div>
+{% endblock %}

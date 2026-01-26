@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h4><i class="bi bi-archive"></i> Archiwum dokumentów</h4>
+  <div class="d-flex gap-2">
+    <a href="/archive/upload" class="btn btn-primary btn-sm">
+      <i class="bi bi-upload"></i> Wgraj nowe
+    </a>
+    <form method="post" action="/archive/analyze-all" class="d-inline">
+      <button class="btn btn-outline-warning btn-sm" type="submit">
+        <i class="bi bi-arrow-repeat"></i> Prze-analizuj wszystkie
+      </button>
+    </form>
+  </div>
+</div>
+
+{% if docs %}
+<table class="table table-sm table-striped align-middle">
+  <thead>
+    <tr>
+      <th>ID</th>
+      <th>Plik</th>
+      <th>Status</th>
+      <th>Klauzul</th>
+      <th>Data</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for d in docs %}
+    <tr>
+      <td><code>{{ d.id }}</code></td>
+      <td>{{ d.filename }}</td>
+      <td>
+        {% if d.status == 'done' %}<span class="badge text-bg-success">done</span>
+        {% elif d.status == 'failed' %}<span class="badge text-bg-danger">failed</span>
+        {% elif d.status in ('extracting', 'analyzing') %}<span class="badge text-bg-warning">{{ d.status }}</span>
+        {% elif d.status == 'empty' %}<span class="badge text-bg-secondary">pusty</span>
+        {% else %}<span class="badge text-bg-info">{{ d.status }}</span>{% endif %}
+      </td>
+      <td>{{ d.clause_count or 0 }}</td>
+      <td>{{ d.created_at[:16] }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="alert alert-info">
+  Brak dokumentów. <a href="/archive/upload">Wgraj pierwsze oferty</a>.
+</div>
+{% endif %}
+{% endblock %}

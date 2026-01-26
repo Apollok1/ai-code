@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h4><i class="bi bi-list-check"></i> Baza klauzul</h4>
+  <div class="d-flex gap-2">
+    <a href="/clauses" class="btn btn-sm {% if not filter_category %}btn-dark{% else %}btn-outline-dark{% endif %}">Wszystkie</a>
+    <a href="/clauses?category=scope" class="btn btn-sm {% if filter_category == 'scope' %}btn-success{% else %}btn-outline-success{% endif %}">Zakres prac</a>
+    <a href="/clauses?category=exclusion" class="btn btn-sm {% if filter_category == 'exclusion' %}btn-warning{% else %}btn-outline-warning{% endif %}">Wykluczenia</a>
+  </div>
+</div>
+
+<!-- Add clause manually -->
+<div class="card shadow-sm mb-4">
+  <div class="card-header">Dodaj klauzulę ręcznie</div>
+  <div class="card-body">
+    <form method="post" action="/clauses/add" class="row g-2 align-items-end">
+      <div class="col-md-2">
+        <label class="form-label">Kategoria</label>
+        <select class="form-select form-select-sm" name="category" required>
+          <option value="scope">Zakres prac</option>
+          <option value="exclusion">Wykluczenie</option>
+        </select>
+      </div>
+      <div class="col-md-7">
+        <label class="form-label">Treść klauzuli</label>
+        <input class="form-control form-control-sm" type="text" name="text" required
+               placeholder="Np. Montaż konstrukcji stalowej wg projektu wykonawczego">
+      </div>
+      <div class="col-md-1">
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" name="is_critical" value="1">
+          <label class="form-check-label"><small>Krytyczna</small></label>
+        </div>
+      </div>
+      <div class="col-md-2">
+        <button class="btn btn-primary btn-sm w-100" type="submit">Dodaj</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Clauses table -->
+{% if clauses %}
+<table class="table table-sm align-middle">
+  <thead>
+    <tr>
+      <th style="width:5%">ID</th>
+      <th style="width:10%">Kategoria</th>
+      <th>Treść</th>
+      <th style="width:5%">Freq</th>
+      <th style="width:8%">Krytyczna</th>
+      <th style="width:12%">Akcje</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for c in clauses %}
+    <tr class="{% if c.is_critical %}table-danger{% endif %}">
+      <td><small>{{ c.id }}</small></td>
+      <td>
+        {% if c.category == 'scope' %}
+        <span class="badge text-bg-success">zakres</span>
+        {% else %}
+        <span class="badge text-bg-warning">wykluczenie</span>
+        {% endif %}
+      </td>
+      <td>{{ c.text }}</td>
+      <td class="text-center">{{ c.frequency }}</td>
+      <td class="text-center">
+        {% if c.is_critical %}
+        <i class="bi bi-exclamation-triangle-fill text-danger"></i>
+        {% endif %}
+      </td>
+      <td>
+        <div class="d-flex gap-1">
+          <form method="post" action="/clauses/{{ c.id }}/toggle-critical" class="d-inline">
+            <button class="btn btn-outline-warning btn-sm" type="submit" title="Toggle krytyczna">
+              <i class="bi bi-exclamation-triangle"></i>
+            </button>
+          </form>
+          <form method="post" action="/clauses/{{ c.id }}/delete" class="d-inline"
+                onsubmit="return confirm('Na pewno usunąć?')">
+            <button class="btn btn-outline-danger btn-sm" type="submit" title="Usuń">
+              <i class="bi bi-trash"></i>
+            </button>
+          </form>
+        </div>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="alert alert-info">
+  Brak klauzul. <a href="/archive/upload">Wgraj dokumenty</a> aby AI wyodrębniło klauzule,
+  lub dodaj ręcznie powyżej.
+</div>
+{% endif %}
+{% endblock %}
