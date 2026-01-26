@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block content %}
+<h4 class="mb-4">Dashboard</h4>
+
+<div class="row g-3 mb-4">
+  <div class="col-md-3">
+    <div class="card text-center">
+      <div class="card-body">
+        <i class="bi bi-file-earmark-text fs-1 text-primary"></i>
+        <h3>{{ doc_count }}</h3>
+        <small class="text-muted">Dokumentów w archiwum</small>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="card text-center">
+      <div class="card-body">
+        <i class="bi bi-check-circle fs-1 text-success"></i>
+        <h3>{{ scope_count }}</h3>
+        <small class="text-muted">Klauzul zakresu</small>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="card text-center">
+      <div class="card-body">
+        <i class="bi bi-x-circle fs-1 text-warning"></i>
+        <h3>{{ excl_count }}</h3>
+        <small class="text-muted">Wykluczeń</small>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="card text-center">
+      <div class="card-body">
+        <i class="bi bi-exclamation-triangle fs-1 text-danger"></i>
+        <h3>{{ crit_count }}</h3>
+        <small class="text-muted">Krytycznych wykluczeń</small>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-3">
+  <div class="col-md-4">
+    <div class="card">
+      <div class="card-body text-center">
+        <h5>{{ offer_count }}</h5>
+        <small class="text-muted">Utworzonych ofert</small>
+        <div class="mt-2">
+          <a href="/offers/new" class="btn btn-primary btn-sm">Nowa oferta</a>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-8">
+    <div class="card">
+      <div class="card-header">Ostatnie zadania</div>
+      <div class="card-body p-0">
+        <table class="table table-sm mb-0">
+          <thead><tr><th>Typ</th><th>Status</th><th>Szczegóły</th><th>Data</th></tr></thead>
+          <tbody>
+            {% for j in jobs %}
+            <tr>
+              <td><small>{{ j.job_type }}</small></td>
+              <td>
+                {% if j.status == 'done' %}<span class="badge text-bg-success">done</span>
+                {% elif j.status == 'failed' %}<span class="badge text-bg-danger">failed</span>
+                {% elif j.status == 'running' %}<span class="badge text-bg-warning">running</span>
+                {% else %}<span class="badge text-bg-secondary">{{ j.status }}</span>{% endif %}
+              </td>
+              <td><small>{{ j.detail or j.error or '' }}</small></td>
+              <td><small>{{ j.created_at[:16] }}</small></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
